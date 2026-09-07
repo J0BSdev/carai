@@ -1,4 +1,5 @@
 import { MockDiagnosticEngine, type DiagnosticEngine } from "./engine";
+import { LlmDiagnosticEngine } from "./llm-engine";
 
 export type {
   AiActionType,
@@ -17,10 +18,11 @@ export type {
 } from "./types";
 
 export {
-  LlmDiagnosticEngine,
   MockDiagnosticEngine,
   type DiagnosticEngine,
 } from "./engine";
+
+export { LlmDiagnosticEngine } from "./llm-engine";
 
 export {
   NoopWebSearchTool,
@@ -28,14 +30,18 @@ export {
   type WebSearchTool,
 } from "./web-search";
 
+function hasOpenAiKey(): boolean {
+  return Boolean(
+    process.env.OPENAI_API_KEY?.trim() || process.env.AI_API_KEY?.trim(),
+  );
+}
+
 /**
- * Returns the active diagnostic engine.
- * Today: always mock so the frontend → backend → frontend loop works without AI.
- * Later: if process.env.AI_API_KEY is set, return LlmDiagnosticEngine
- * (with optional WebSearchTool for SEARCH_WEB).
+ * LLM when OPENAI_API_KEY or AI_API_KEY is set; otherwise mock for local UI testing.
  */
 export function getDiagnosticEngine(): DiagnosticEngine {
-  // const apiKey = process.env.AI_API_KEY?.trim();
-  // if (apiKey) return new LlmDiagnosticEngine(/* provider, new RealWebSearchTool() */);
+  if (hasOpenAiKey()) {
+    return new LlmDiagnosticEngine();
+  }
   return new MockDiagnosticEngine();
 }

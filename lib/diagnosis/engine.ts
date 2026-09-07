@@ -233,25 +233,3 @@ export class MockDiagnosticEngine implements DiagnosticEngine {
   }
 }
 
-/**
- * Placeholder for a future LLM-backed engine (structured outputs + optional WebSearchTool).
- */
-export class LlmDiagnosticEngine implements DiagnosticEngine {
-  async startCase(problemText: string): Promise<DiagnoseResponse> {
-    void problemText;
-    throw new Error(
-      "LlmDiagnosticEngine još nije implementiran. Kasnije postavite AI_API_KEY i povežite providera.",
-    );
-  }
-
-  async continueCase(
-    diagnosticCase: DiagnosticCase,
-    resultText: string,
-  ): Promise<DiagnoseResponse> {
-    void diagnosticCase;
-    void resultText;
-    throw new Error(
-      "LlmDiagnosticEngine još nije implementiran. Kasnije postavite AI_API_KEY i povežite providera.",
-    );
-  }
-}
