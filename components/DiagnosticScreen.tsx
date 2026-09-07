@@ -2,12 +2,26 @@
 
 import { useState } from "react";
 import type {
+  AiActionType,
   DiagnoseResponse,
   DiagnosticCase,
   DiagnosticStep,
 } from "@/lib/diagnosis";
 
 type Phase = "intake" | "active" | "completed";
+
+function actionLabel(actionType: AiActionType): string {
+  switch (actionType) {
+    case "ASK":
+      return "Pitanje";
+    case "TEST":
+      return "Test";
+    case "SEARCH_WEB":
+      return "Pretraga";
+    case "FINISH":
+      return "Zaključak";
+  }
+}
 
 export default function DiagnosticScreen() {
   const [phase, setPhase] = useState<Phase>("intake");
@@ -20,6 +34,18 @@ export default function DiagnosticScreen() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  function applyResponse(data: DiagnoseResponse) {
+    setDiagnosticCase(data.case);
+    setNextStep(data.nextStep);
+    setMessage(data.message ?? null);
+    setResultText("");
+
+    const finished =
+      data.case.status === "completed" ||
+      data.nextStep?.actionType === "FINISH";
+    setPhase(finished ? "completed" : "active");
+  }
 
   function resetCase() {
     setPhase("intake");
@@ -56,11 +82,7 @@ export default function DiagnosticScreen() {
         action: "start",
         problemText,
       });
-      setDiagnosticCase(data.case);
-      setNextStep(data.nextStep);
-      setMessage(data.message ?? null);
-      setResultText("");
-      setPhase(data.case.status === "completed" ? "completed" : "active");
+      applyResponse(data);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Nije moguće pokrenuti dijagnozu",
@@ -80,11 +102,7 @@ export default function DiagnosticScreen() {
         case: diagnosticCase,
         observation: { resultText },
       });
-      setDiagnosticCase(data.case);
-      setNextStep(data.nextStep);
-      setMessage(data.message ?? null);
-      setResultText("");
-      setPhase(data.case.status === "completed" ? "completed" : "active");
+      applyResponse(data);
     } catch (err) {
       setError(
         err instanceof Error
@@ -95,6 +113,14 @@ export default function DiagnosticScreen() {
       setLoading(false);
     }
   }
+
+  const extracted = diagnosticCase?.extracted;
+  const vehicleBits = [
+    extracted?.vehicle?.make,
+    extracted?.vehicle?.model,
+    extracted?.vehicle?.year,
+    extracted?.vehicle?.engine,
+  ].filter(Boolean);
 
   return (
     <main className="mx-auto flex w-full max-w-lg flex-1 flex-col gap-6 px-4 py-6 sm:px-6 sm:py-10">
@@ -107,7 +133,7 @@ export default function DiagnosticScreen() {
             Dijagnoza vozila
           </h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            Opišite vozilo i kvar, zatim prođite kroz svaki dijagnostički korak.
+            Opišite vozilo i kvar — sustav vodi jedan korak odjednom.
           </p>
         </div>
         {phase !== "intake" && (
@@ -140,7 +166,7 @@ export default function DiagnosticScreen() {
               value={problemText}
               onChange={(e) => setProblemText(e.target.value)}
               rows={8}
-              placeholder="npr. VW Golf 1.6 TDI 2016 — nestabilan rad u praznom hodu kad je topao, bez lampice kvara, nedavno mijenjane grijače…"
+              placeholder='npr. Golf 7 GTD 2015, P0299, gubi snagu iznad 3000 o/min. Smoke test napravljen, nema curenja. Turbo aktuator se miče normalno.'
               className="min-h-40 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-base leading-relaxed text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
               disabled={loading}
             />
@@ -160,17 +186,27 @@ export default function DiagnosticScreen() {
         <section className="flex flex-col gap-5">
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
             <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-              Slučaj
+              Vozilo / trenutni slučaj
             </p>
+            {vehicleBits.length > 0 && (
+              <p className="mt-1 text-sm font-medium text-[var(--foreground)]">
+                {vehicleBits.join(" · ")}
+              </p>
+            )}
             <p className="mt-1 text-sm leading-relaxed text-[var(--foreground)]">
               {diagnosticCase.problemText}
             </p>
+            {extracted?.dtcs && extracted.dtcs.length > 0 && (
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                DTC: {extracted.dtcs.join(", ")}
+              </p>
+            )}
           </div>
 
           {diagnosticCase.observations.length > 0 && (
             <div className="flex flex-col gap-3">
               <h2 className="text-sm font-semibold text-[var(--foreground)]">
-                Povijest
+                Trenutna evidencija
               </h2>
               <ol className="flex flex-col gap-3">
                 {diagnosticCase.observations.map((obs) => {
@@ -182,8 +218,11 @@ export default function DiagnosticScreen() {
                       key={`${obs.stepId}-${obs.recordedAt}`}
                       className="border-l-2 border-[var(--border)] pl-3"
                     >
-                      <p className="text-sm font-medium text-[var(--foreground)]">
-                        {step?.instruction ?? obs.stepId}
+                      <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
+                        {step ? actionLabel(step.actionType) : obs.stepId}
+                      </p>
+                      <p className="mt-1 text-sm font-medium text-[var(--foreground)]">
+                        {step?.content ?? obs.stepId}
                       </p>
                       <p className="mt-1 text-sm text-[var(--muted)]">
                         Rezultat: {obs.resultText}
@@ -195,36 +234,39 @@ export default function DiagnosticScreen() {
             </div>
           )}
 
-          {phase === "active" && nextStep && (
+          {phase === "active" && nextStep && nextStep.actionType !== "FINISH" && (
             <div className="flex flex-col gap-4">
               <div className="rounded-md border border-[var(--accent)] bg-[var(--accent-soft)] px-4 py-4">
                 <p className="text-xs font-medium uppercase tracking-wide text-[var(--accent)]">
-                  Sljedeći dijagnostički korak
+                  {actionLabel(nextStep.actionType)} · Sljedeći korak
                 </p>
                 <p className="mt-2 text-base font-medium leading-snug text-[var(--foreground)]">
-                  {nextStep.instruction}
+                  {nextStep.content}
                 </p>
-                {nextStep.rationale && (
-                  <p className="mt-2 text-sm text-[var(--muted)]">
-                    {nextStep.rationale}
-                  </p>
-                )}
+                <p className="mt-3 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
+                  Zašto
+                </p>
+                <p className="mt-1 text-sm text-[var(--muted)]">
+                  {nextStep.rationale}
+                </p>
                 {nextStep.expectedResultHint && (
                   <p className="mt-2 text-sm text-[var(--muted)]">
-                    Napomena: {nextStep.expectedResultHint}
+                    Zabilježite: {nextStep.expectedResultHint}
                   </p>
                 )}
               </div>
 
               <label className="flex flex-col gap-2">
                 <span className="text-sm font-medium text-[var(--foreground)]">
-                  Rezultat testa
+                  {nextStep.actionType === "ASK"
+                    ? "Vaš odgovor"
+                    : "Rezultat testa"}
                 </span>
                 <textarea
                   value={resultText}
                   onChange={(e) => setResultText(e.target.value)}
                   rows={5}
-                  placeholder="Unesite što ste primijetili ili izmjerili…"
+                  placeholder="Unesite odgovor ili što ste izmjerili…"
                   className="min-h-28 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-base leading-relaxed text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
                   disabled={loading}
                 />
@@ -236,20 +278,36 @@ export default function DiagnosticScreen() {
                 disabled={loading || !resultText.trim()}
                 className="w-full rounded-md bg-[var(--accent)] px-4 py-3 text-base font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loading ? "Šaljem…" : "Pošalji rezultat"}
+                {loading ? "Šaljem…" : "Nastavi"}
               </button>
             </div>
           )}
 
           {phase === "completed" && (
             <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
-              <p className="text-base font-semibold text-[var(--foreground)]">
-                Dijagnoza završena
+              <p className="text-xs font-medium uppercase tracking-wide text-[var(--accent)]">
+                Finish · Dijagnoza
               </p>
-              <p className="mt-2 text-sm text-[var(--muted)]">
-                {message ??
-                  "Nema više mock koraka. Pregledajte povijest i odlučite o popravku."}
+              <p className="mt-2 text-base font-semibold text-[var(--foreground)]">
+                {diagnosticCase.confirmedFault ??
+                  nextStep?.confirmedFault ??
+                  "Slučaj završen"}
               </p>
+              {(nextStep?.content || message) && (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  {nextStep?.content ?? message}
+                </p>
+              )}
+              {nextStep?.rationale && (
+                <>
+                  <p className="mt-3 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
+                    Zašto
+                  </p>
+                  <p className="mt-1 text-sm text-[var(--muted)]">
+                    {nextStep.rationale}
+                  </p>
+                </>
+              )}
               <button
                 type="button"
                 onClick={resetCase}

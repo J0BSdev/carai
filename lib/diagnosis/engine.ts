@@ -22,36 +22,107 @@ function buildScriptedSteps(problemText: string): DiagnosticStep[] {
   return [
     {
       id: "step-1",
-      instruction:
-        "Potvrdite podatke o vozilu (marka, model, godina, motor) i očitajte pohranjene DTC kodove dijagnostičkim uređajem.",
-      rationale: `Uspostavite početnu sliku za: "${snippet}"`,
+      actionType: "ASK",
+      content:
+        "Potvrdite marku, model, godinu, motor i približnu kilometražu. Jesu li svi simptomi i DTC kodovi koje ste naveli točni?",
+      rationale: `Prije testova treba potvrditi osnovne činjenice za: "${snippet}"`,
+      facts: ["Ulazni opis mehaničara zabilježen kao polazna evidencija."],
+      hypotheses: [
+        {
+          label: "Uzrok još nije sužen",
+          status: "plausible",
+          note: "Nedovoljno potvrđenih podataka o vozilu.",
+        },
+      ],
+      insufficientEvidence: true,
+      confidence: "low",
       expectedResultHint:
-        "Navedite pronađene kodove ili zabilježite da kodova nema.",
+        "Npr. VW Golf 7 GTD 2015, 2.0 TDI, ~180 tkm, P0299 potvrđen.",
     },
     {
       id: "step-2",
-      instruction:
-        "Napravite vizualni pregled povezanih sustava (kablovi, konektori, tekućine i očita mehanička oštećenja).",
-      rationale: "Isključite jednostavne fizičke uzroke prije dubljih testova.",
-      expectedResultHint: "Opišite što izgleda normalno, a što neuobičajeno.",
+      actionType: "TEST",
+      content:
+        "Očitajte pohranjene i pending DTC kodove, te napravite brzi vizualni pregled usisa/turbo crijeva (očita oštećenja, stezaljke).",
+      rationale:
+        "DTC + očit usis razlikuju senzorske greške od grubih curenja prije dubljih mjerenja.",
+      recommendedTest: {
+        name: "Očitavanje DTC + vizualni pregled usisa",
+        howTo:
+          "Spojite dijagnostiku, zabilježite kodove. Provjerite crijeva i spojeve na usisu/turbinu.",
+        whatToRecord: "Lista kodova + što ste vidjeli na usisu.",
+      },
+      hypotheses: [
+        {
+          label: "Curenje usisa / boost",
+          status: "plausible",
+        },
+        {
+          label: "Problem aktuatora / senzora boost-a",
+          status: "plausible",
+        },
+      ],
+      confidence: "medium",
+      expectedResultHint: "Kodovi + nalaz vizualnog pregleda.",
     },
     {
       id: "step-3",
-      instruction:
-        "Reproducirajte simptom u kontroliranim uvjetima i zabilježite kada se javlja (hladan/topao motor, prazan hod, opterećenje, brzina).",
-      rationale: "Sužite način kvara prema radnim uvjetima.",
-      expectedResultHint:
-        "Navedite jeste li uspjeli reproducirati kvar i u kojim uvjetima.",
+      actionType: "TEST",
+      content:
+        "Izvedite smoke test usisnog/boost sustava (ako već nije) ili izmjerite stvarni vs. traženi boost pri opterećenju iznad 3000 o/min.",
+      rationale:
+        "Ciljani test razdvaja curenje od problema kontrole turbine bez nagađanja skupih dijelova.",
+      recommendedTest: {
+        name: "Smoke test ili usporedba boost signala",
+        howTo:
+          "Smoke na usisu/boostu ILI log actual/requested boost pri vožnji/opterećenju.",
+        whatToRecord:
+          "Curenje da/ne (gdje) ILI kratki opis actual vs requested (bez izmišljenih brojki ako niste mjerili).",
+        specs: {
+          value: "Točne OEM granice nisu verificirane u mock motoru",
+          verified: false,
+        },
+      },
+      hypotheses: [
+        {
+          label: "Curenje boosta",
+          status: "plausible",
+        },
+        {
+          label: "Podboost zbog kontrole turbine",
+          status: "plausible",
+        },
+      ],
+      confidence: "medium",
+      expectedResultHint: "Rezultat smoke testa ili boost usporedbe.",
     },
     {
       id: "step-4",
-      instruction:
-        "Na temelju dosadašnjih nalaza provjerite najvjerojatniju komponentu ili krug multimetrom ili testom dimom/tlakom, ovisno o slučaju.",
-      rationale: "Prijeđite s općih provjera na ciljanu verifikaciju.",
-      expectedResultHint:
-        "Zabilježite izmjerene vrijednosti ili prolaz/pad ciljanog testa.",
+      actionType: "FINISH",
+      content:
+        "Na temelju mock petlje: pregledajte prikupljenu evidenciju i potvrdite najpodržaniji kvar prije zamjene dijelova. (Pravi LLM kasnije će dati konkretan confirmedFault.)",
+      rationale:
+        "Dovoljno koraka za demonstraciju petlje; mock ne izmišlja točne specifikacije ni skupu zamjenu bez dokaza.",
+      confirmedFault:
+        "Mock: uzrok još treba potvrditi stvarnim mjerenjem — nema dovoljno verificiranih dokaza za skupi dio.",
+      confidence: "low",
+      insufficientEvidence: true,
+      facts: [
+        "Mock engine ne tvrdi OEM napone, tlakove ni pinoute.",
+      ],
     },
   ];
+}
+
+function applyLightExtraction(
+  problemText: string,
+): DiagnosticCase["extracted"] {
+  const dtcMatches = problemText.toUpperCase().match(/P[0-9A-F]{4}/g);
+  return {
+    symptoms: [problemText.trim()],
+    dtcs: dtcMatches ? [...new Set(dtcMatches)] : undefined,
+    priorTests: undefined,
+  };
 }
 
 export class MockDiagnosticEngine implements DiagnosticEngine {
@@ -67,6 +138,7 @@ export class MockDiagnosticEngine implements DiagnosticEngine {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       problemText: trimmed,
+      extracted: applyLightExtraction(trimmed),
       observations: [],
       steps: [firstStep],
       status: "active",
@@ -85,7 +157,7 @@ export class MockDiagnosticEngine implements DiagnosticEngine {
   ): Promise<DiagnoseResponse> {
     const trimmed = resultText.trim();
     if (!trimmed) {
-      throw new Error("Za nastavak dijagnoze potreban je rezultat testa");
+      throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
     }
 
     if (diagnosticCase.status === "completed") {
@@ -99,6 +171,20 @@ export class MockDiagnosticEngine implements DiagnosticEngine {
     const currentStep = diagnosticCase.steps[diagnosticCase.steps.length - 1];
     if (!currentStep) {
       throw new Error("Slučaj nema aktivni korak za zabilježiti");
+    }
+
+    // FINISH step should not require another answer; if somehow continued, complete.
+    if (currentStep.actionType === "FINISH") {
+      const completed: DiagnosticCase = {
+        ...diagnosticCase,
+        status: "completed",
+        confirmedFault: currentStep.confirmedFault,
+      };
+      return {
+        case: completed,
+        nextStep: null,
+        message: "Slučaj označen kao riješen (FINISH).",
+      };
     }
 
     const observation: Observation = {
@@ -121,30 +207,34 @@ export class MockDiagnosticEngine implements DiagnosticEngine {
       return {
         case: completed,
         nextStep: null,
-        message:
-          "Mock dijagnostički motor: nema više koraka. Pregledajte opažanja i odlučite o popravku.",
+        message: "Mock dijagnostički motor: nema više koraka.",
       };
     }
 
     const nextStep = script[nextIndex];
+    const isFinish = nextStep.actionType === "FINISH";
+
     const updated: DiagnosticCase = {
       ...diagnosticCase,
       observations,
       steps: [...diagnosticCase.steps, nextStep],
-      status: "active",
+      status: isFinish ? "completed" : "active",
+      confirmedFault: isFinish ? nextStep.confirmedFault : diagnosticCase.confirmedFault,
     };
 
     return {
       case: updated,
+      // FINISH is returned so the UI can show the conclusion; case.status is already completed.
       nextStep,
-      message: `Mock dijagnostički motor: napredak na ${nextStep.id}.`,
+      message: isFinish
+        ? "Mock dijagnostički motor: FINISH."
+        : `Mock dijagnostički motor: ${nextStep.actionType} (${nextStep.id}).`,
     };
   }
 }
 
 /**
- * Placeholder for a future LLM-backed engine.
- * Keep the same DiagnosticEngine interface so the API route can swap engines.
+ * Placeholder for a future LLM-backed engine (structured outputs + optional WebSearchTool).
  */
 export class LlmDiagnosticEngine implements DiagnosticEngine {
   async startCase(problemText: string): Promise<DiagnoseResponse> {
