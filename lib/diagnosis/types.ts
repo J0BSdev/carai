@@ -30,6 +30,10 @@ export interface Hypothesis {
   label: string;
   status: HypothesisStatus;
   note?: string;
+  /** Evidence-based ranking estimate (0–100), not statistical probability. */
+  confidence?: number | null;
+  supportingEvidence?: string[];
+  contradictingEvidence?: string[];
 }
 
 export interface SourceRef {

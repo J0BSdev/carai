@@ -375,7 +375,7 @@ export default function DiagnosticScreen() {
               <NextActionCard
                 step={nextStep}
                 stepNumber={diagnosticCase.steps.length}
-                onEnterResult={() => setResultOpen(true)}
+                onSubmitResult={(text) => handleContinue(text)}
                 onCantPerform={() => setCantOpen(true)}
                 onSkip={() => handleContinue("Preskočeno za sada.")}
                 onHowTo={() => setHowToOpen(true)}

@@ -18,6 +18,7 @@ import {
   buildDiagnosticRetryPrompt,
   buildDiagnosticUserPrompt,
   buildVerifierUserPrompt,
+  findDraftQualityIssue,
 } from "./prompts";
 import type {
   AiActionType,
@@ -30,25 +31,50 @@ import type {
 
 const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
 
+function normalizeHypothesisStatus(status: string): Hypothesis["status"] {
+  const key = status.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  switch (key) {
+    case "LEADING":
+    case "SUPPORTED":
+      return "supported";
+    case "POSSIBLE":
+    case "PLAUSIBLE":
+      return "plausible";
+    case "WEAK":
+    case "WEAKENED":
+      return "weakened";
+    case "RULED_OUT":
+      return "ruled_out";
+    default:
+      return "plausible";
+  }
+}
+
 function parseHypotheses(
   value: LlmStepPayload["hypotheses"],
 ): Hypothesis[] | undefined {
   if (!value || !Array.isArray(value)) return undefined;
-  const allowed = new Set([
-    "plausible",
-    "weakened",
-    "ruled_out",
-    "supported",
-  ]);
-  return value
-    .filter((h) => h && typeof h.label === "string")
-    .map((h) => ({
-      label: h.label,
-      status: (allowed.has(h.status)
-        ? h.status
-        : "plausible") as Hypothesis["status"],
+  const parsed: Hypothesis[] = [];
+  for (const h of value) {
+    if (!h) continue;
+    const label = (h.label ?? h.cause ?? "").trim();
+    if (!label) continue;
+    const confidence =
+      typeof h.confidence === "number" && Number.isFinite(h.confidence)
+        ? Math.max(0, Math.min(100, Math.round(h.confidence)))
+        : h.confidence === null
+          ? null
+          : undefined;
+    parsed.push({
+      label,
+      status: normalizeHypothesisStatus(h.status ?? "POSSIBLE"),
       note: h.note ?? undefined,
-    }));
+      confidence,
+      supportingEvidence: h.supportingEvidence?.filter(Boolean),
+      contradictingEvidence: h.contradictingEvidence?.filter(Boolean),
+    });
+  }
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 function toDiagnosticStep(
@@ -130,8 +156,9 @@ async function verifyWithOpenAi(
 /**
  * Dual-model pipeline:
  * 1) Claude (DIAGNOSTIC_MODEL) proposes the next ASK/TEST/FINISH step.
- * 2) OpenAI (VERIFIER_MODEL) approves, corrects, or rejects.
- * 3) On reject without correction, Claude retries once with verifier issues.
+ * 2) Programmatic guard rejects repeats, similar-test branches, low-value ASKs.
+ * 3) OpenAI (VERIFIER_MODEL) approves, corrects, or rejects.
+ * 4) On reject without correction, Claude retries with verifier issues.
  */
 async function callVerifiedDiagnosticStep(
   diagnosticCase: DiagnosticCase,
@@ -143,10 +170,27 @@ async function callVerifiedDiagnosticStep(
     buildDiagnosticUserPrompt(diagnosticCase),
   );
 
+  draft = await ensureDraftPassesQualityGates(diagnosticCase, draft);
+
   let verdict = await verifyWithOpenAi(diagnosticCase, draft);
 
   if (!verdict.approved && verdict.correctedStep) {
-    draft = verdict.correctedStep;
+    const correctedIssue = findDraftQualityIssue(
+      diagnosticCase,
+      verdict.correctedStep,
+    );
+    if (correctedIssue) {
+      draft = await ensureDraftPassesQualityGates(
+        diagnosticCase,
+        verdict.correctedStep,
+        [
+          correctedIssue,
+          "Predloži drugačiji korak bez ponavljanja iste dijagnostičke grane.",
+        ],
+      );
+    } else {
+      draft = verdict.correctedStep;
+    }
   } else if (!verdict.approved) {
     draft = await draftWithClaude(
       diagnosticCase,
@@ -158,9 +202,22 @@ async function callVerifiedDiagnosticStep(
           : ["Draft nije odobren; predloži ispravan jedan korak."],
       ),
     );
+    draft = await ensureDraftPassesQualityGates(diagnosticCase, draft);
     verdict = await verifyWithOpenAi(diagnosticCase, draft);
     if (!verdict.approved && verdict.correctedStep) {
-      draft = verdict.correctedStep;
+      const correctedIssue = findDraftQualityIssue(
+        diagnosticCase,
+        verdict.correctedStep,
+      );
+      if (correctedIssue) {
+        draft = await ensureDraftPassesQualityGates(
+          diagnosticCase,
+          verdict.correctedStep,
+          [correctedIssue],
+        );
+      } else {
+        draft = verdict.correctedStep;
+      }
     } else if (!verdict.approved) {
       throw new Error(
         `Verifier je odbio korak: ${verdict.issues.join("; ") || "nepoznat razlog"}`,
@@ -169,6 +226,80 @@ async function callVerifiedDiagnosticStep(
   }
 
   return toDiagnosticStep(draft, stepId);
+}
+
+async function ensureDraftPassesQualityGates(
+  diagnosticCase: DiagnosticCase,
+  initialDraft: LlmStepPayload,
+  extraIssues: string[] = [],
+): Promise<LlmStepPayload> {
+  let draft = initialDraft;
+  let issue = findDraftQualityIssue(diagnosticCase, draft);
+  if (!issue && extraIssues.length === 0) return draft;
+
+  const firstIssues = [
+    ...(issue ? [issue] : []),
+    ...extraIssues,
+    "Predloži DRUGAČIJI sljedeći korak koristeći CASE STATE.",
+    "Ne ponavljaj već postavljena pitanja ni završene/semantički slične testove.",
+    "Ako ASK nema decision value → TEST. Ako TEST ne razlikuje hipoteze → bolji TEST ili FINISH.",
+    "Skipped test nije dokaz — ne parafraziraj ga.",
+  ];
+
+  draft = await draftWithClaude(
+    diagnosticCase,
+    buildDiagnosticRetryPrompt(diagnosticCase, draft, firstIssues),
+  );
+  issue = findDraftQualityIssue(diagnosticCase, draft);
+  if (!issue) return draft;
+
+  draft = await draftWithClaude(
+    diagnosticCase,
+    buildDiagnosticRetryPrompt(diagnosticCase, draft, [
+      issue,
+      "OBAVEZNO: vrati akciju iz DRUGE dijagnostičke grane ILI FINISH.",
+      "Zabranjeno: isti dio + ista vrsta mjerenja kao completedTests/skippedUnavailableTests.",
+      "Ako completedTests već snažno podupiru LEADING hipotezu → FINISH s confirmedFault.",
+      "Inače: jedan TEST koji razlikuje LEADING od najjače alternative (druga metoda/točka/sustav).",
+      "U rationale navedi koje hipoteze razlikuješ.",
+    ]),
+  );
+  issue = findDraftQualityIssue(diagnosticCase, draft);
+  if (!issue) return draft;
+
+  // Last resort: stop checklist loops — force FINISH from evidence rather than hard-failing the case.
+  draft = await draftWithClaude(
+    diagnosticCase,
+    buildDiagnosticRetryPrompt(diagnosticCase, draft, [
+      issue,
+      "ZADNJI POKUŠAJ: actionType MORA biti FINISH.",
+      "Sažmi vodeću hipotezu iz CASE STATE (completedTests + answers).",
+      "Nemoj predlagati novi TEST.",
+      "Ako dokaz nije potpun, stavi insufficientEvidence: true i objasni što nedostaje.",
+      "skippedUnavailableTests nisu dokaz.",
+    ]),
+  );
+  if (draft.actionType !== "FINISH") {
+    draft = {
+      ...draft,
+      actionType: "FINISH",
+      content:
+        draft.content?.trim() ||
+        "Na temelju prikupljenih dokaza vodeća dijagnoza je najvjerojatniji uzrok; dodatni slični testovi ne bi dali novu informaciju.",
+      rationale:
+        draft.rationale?.trim() ||
+        "Dodatni semantički slični testovi ne mijenjaju ranking hipoteza — završavam na temelju postojećih dokaza.",
+      insufficientEvidence: draft.insufficientEvidence ?? true,
+      confirmedFault:
+        draft.confirmedFault ??
+        "Vodeća hipoteza prema dostupnim dokazima (provjeri insufficientEvidence).",
+    };
+  }
+  issue = findDraftQualityIssue(diagnosticCase, draft);
+  if (issue && draft.actionType !== "FINISH") {
+    throw new Error(`AI draft odbijen: ${issue}. Pokušaj ponovno.`);
+  }
+  return draft;
 }
 
 function lightExtract(problemText: string): DiagnosticCase["extracted"] {

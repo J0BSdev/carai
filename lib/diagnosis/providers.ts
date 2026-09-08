@@ -11,9 +11,13 @@ export type LlmStepPayload = {
   facts?: string[] | null;
   evidence?: string[] | null;
   hypotheses?: Array<{
-    label: string;
+    label?: string;
+    cause?: string;
     status: string;
     note?: string | null;
+    confidence?: number | null;
+    supportingEvidence?: string[] | null;
+    contradictingEvidence?: string[] | null;
   }> | null;
 };
 

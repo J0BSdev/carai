@@ -72,7 +72,7 @@ export default function NewCaseExperience({
         </div>
 
         <p className="mt-3 text-sm text-[var(--muted)]">
-          Piši prirodno. DTC kodovi nisu obavezni.
+          Piši prirodno.
         </p>
 
         <div className="mt-8 flex flex-wrap gap-2">

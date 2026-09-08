@@ -85,7 +85,7 @@ export default function VehicleHeader({
           <Field label="VIN" value={undefined} hint="Uskoro" />
           <Field
             label="DTC"
-            value={dtcs.length ? dtcs.join(", ") : "Nema DTC"}
+            value={dtcs.length ? dtcs.join(", ") : undefined}
             mono
           />
           <div className="sm:col-span-2">
