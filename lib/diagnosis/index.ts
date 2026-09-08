@@ -10,11 +10,13 @@ export type {
   DiagnoseResponse,
   DiagnosticCase,
   DiagnosticStep,
+  DiagnosisCertainty,
   ExtractedCaseFacts,
   Hypothesis,
   HypothesisStatus,
   Observation,
   RecommendedTest,
+  RejectedDiagnosis,
   SourceRef,
   VehicleInfo,
 } from "./types";

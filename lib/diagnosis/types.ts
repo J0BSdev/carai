@@ -9,6 +9,20 @@ export type HypothesisStatus =
   | "ruled_out"
   | "supported";
 
+/** Overall diagnosis certainty for FINISH (stricter than hypothesis ranking). */
+export type DiagnosisCertainty =
+  | "SUSPECTED"
+  | "LIKELY"
+  | "HIGH_CONFIDENCE"
+  | "CONFIRMED";
+
+export interface RejectedDiagnosis {
+  diagnosis: string;
+  rejectedAtStep: string;
+  reason: "technician_rejected" | string;
+  rejectedAt: string;
+}
+
 export type SourceAuthority = "oem" | "tsb" | "manual" | "forum" | "other";
 
 export interface VehicleInfo {
@@ -71,6 +85,10 @@ export interface DiagnosticStep {
   sources?: SourceRef[];
   confirmedFault?: string;
   confidence?: "low" | "medium" | "high";
+  /** Evidence-based ranking 0–100 for the leading diagnosis (FINISH). */
+  diagnosisConfidence?: number | null;
+  /** Strict certainty ladder for FINISH. CONFIRMED is rare. */
+  diagnosisCertainty?: DiagnosisCertainty;
   insufficientEvidence?: boolean;
   /** What the mechanic should record when answering. */
   expectedResultHint?: string;
@@ -80,6 +98,22 @@ export interface Observation {
   stepId: string;
   resultText: string;
   recordedAt: string;
+}
+
+export type SpecVerificationStatus = "VERIFIED" | "UNVERIFIED";
+
+/** Locked vehicle-specific reference specification claim. */
+export interface TechnicalSpecClaim {
+  parameterKey: string;
+  label: string;
+  valueText: string;
+  unit: string;
+  low: number | null;
+  high: number | null;
+  condition: string | null;
+  status: SpecVerificationStatus;
+  source?: string;
+  vehicleEngineMatch?: string;
 }
 
 export interface DiagnosticCase {
@@ -92,6 +126,15 @@ export interface DiagnosticCase {
   steps: DiagnosticStep[];
   status: CaseStatus;
   confirmedFault?: string;
+  /**
+   * Locked technical reference specs for this case.
+   * VERIFIED entries may only come from an external source mechanism (not the model).
+   */
+  verifiedTechnicalSpecs?: TechnicalSpecClaim[];
+  /** Previously stated reference claims (locked for consistency; still UNVERIFIED unless also verified). */
+  technicalSpecClaims?: TechnicalSpecClaim[];
+  /** Diagnoses rejected by the technician ("Dijagnoza ne izgleda točno"). */
+  rejectedDiagnoses?: RejectedDiagnosis[];
 }
 
 /** HTTP API body action (start/continue case), not AI actionType. */

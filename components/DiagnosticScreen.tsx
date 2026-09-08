@@ -170,24 +170,14 @@ export default function DiagnosticScreen() {
     }
   }
 
-  /** Client-side reopen after FINISH without changing engine code. */
+  /** Reopen FINISH via engine: rejection is stored in case.rejectedDiagnoses. */
   async function reopenAndContinue(reason: string) {
-    if (!diagnosticCase) return;
-    const steps = diagnosticCase.steps.filter((s) => s.actionType !== "FINISH");
-    if (steps.length === 0) {
-      resetCase();
-      return;
-    }
-    const reopened: DiagnosticCase = {
-      ...diagnosticCase,
-      steps,
-      status: "active",
-      confirmedFault: undefined,
-    };
+    if (!diagnosticCase || !finishStep) return;
     setPhase("active");
-    setDiagnosticCase(reopened);
-    setNextStep(steps[steps.length - 1] ?? null);
-    await handleContinue(reason, reopened);
+    await handleContinue(reason, {
+      ...diagnosticCase,
+      status: "active",
+    });
   }
 
   useEffect(() => {
@@ -389,12 +379,12 @@ export default function DiagnosticScreen() {
                 onComplete={resetCase}
                 onKeepDiagnosing={() =>
                   reopenAndContinue(
-                    "Mehaničar želi nastaviti dijagnostiku nakon prijedloga.",
+                    "Mehaničar želi nastaviti dijagnostiku nakon prijedloga. Predloži diskriminirajući sljedeći korak (ne CONFIRMED bez novog dokaza).",
                   )
                 }
                 onReject={() =>
                   reopenAndContinue(
-                    "Mehaničar odbija predloženu dijagnozu — treba drugi smjer.",
+                    "TECHNICIAN_REJECTED_DIAGNOSIS: Mehaničar odbija predloženu dijagnozu (dijagnoza ne izgleda točno). Reevaluate alternatives. Pitaj: Što u prethodnom zaključku možda nije objašnjeno?",
                   )
                 }
               />

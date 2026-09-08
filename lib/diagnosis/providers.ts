@@ -7,6 +7,9 @@ export type LlmStepPayload = {
   expectedResultHint?: string | null;
   confirmedFault?: string | null;
   confidence?: "low" | "medium" | "high" | null;
+  /** 0–100 evidence ranking for leading diagnosis; not statistical probability. */
+  diagnosisConfidence?: number | null;
+  diagnosisCertainty?: string | null;
   insufficientEvidence?: boolean | null;
   facts?: string[] | null;
   evidence?: string[] | null;

@@ -58,7 +58,12 @@ export function diagnosticStatusLabel(
       nextStep?.actionType === "FINISH"
         ? nextStep
         : diagnosticCase?.steps.find((s) => s.actionType === "FINISH");
-    if (finish?.insufficientEvidence) return "VJEROJATAN UZROK";
+    if (finish?.diagnosisCertainty === "CONFIRMED") {
+      return "DIJAGNOZA POTVRĐENA";
+    }
+    if (finish?.insufficientEvidence || finish?.diagnosisCertainty) {
+      return "VJEROJATAN UZROK";
+    }
     return "DIJAGNOZA POTVRĐENA";
   }
 

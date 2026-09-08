@@ -76,9 +76,14 @@ function HypothesisRow({ h }: { h: Hypothesis }) {
   const meta = evidenceBadgeMeta(hypothesisToKind(h.status));
   return (
     <li className="rounded-2xl border border-[var(--border)] p-3">
-      <span className={`rounded border px-2 py-0.5 text-[10px] ${meta.className}`}>
-        {meta.label}
-      </span>
+      <div className="flex items-center gap-2">
+        <span className={`rounded border px-2 py-0.5 text-[10px] ${meta.className}`}>
+          {meta.label}
+        </span>
+        {typeof h.confidence === "number" && (
+          <span className="text-[10px] text-[var(--muted)]">{h.confidence}%</span>
+        )}
+      </div>
       <p className="mt-2 text-sm font-medium">{h.label}</p>
       {h.note && <p className="mt-1 text-xs text-[var(--muted)]">{h.note}</p>}
     </li>

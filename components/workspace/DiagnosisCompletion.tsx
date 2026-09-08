@@ -1,4 +1,4 @@
-import type { DiagnosticStep } from "@/lib/diagnosis";
+import type { DiagnosisCertainty, DiagnosticStep } from "@/lib/diagnosis";
 
 type DiagnosisCompletionProps = {
   step: DiagnosticStep;
@@ -8,6 +8,26 @@ type DiagnosisCompletionProps = {
   onReject: () => void;
 };
 
+function certaintyLabel(certainty: DiagnosisCertainty | undefined, insufficient?: boolean): {
+  text: string;
+  tone: "confirmed" | "high" | "likely" | "suspected";
+} {
+  const c =
+    certainty ??
+    (insufficient === false ? "HIGH_CONFIDENCE" : "LIKELY");
+  switch (c) {
+    case "CONFIRMED":
+      return { text: "CONFIRMED", tone: "confirmed" };
+    case "HIGH_CONFIDENCE":
+      return { text: "HIGH CONFIDENCE", tone: "high" };
+    case "SUSPECTED":
+      return { text: "SUSPECTED", tone: "suspected" };
+    case "LIKELY":
+    default:
+      return { text: "LIKELY", tone: "likely" };
+  }
+}
+
 export default function DiagnosisCompletion({
   step,
   confirmedFault,
@@ -15,27 +35,40 @@ export default function DiagnosisCompletion({
   onKeepDiagnosing,
   onReject,
 }: DiagnosisCompletionProps) {
-  const confirmed = !step.insufficientEvidence;
+  const meta = certaintyLabel(step.diagnosisCertainty, step.insufficientEvidence);
+  const confirmed = meta.tone === "confirmed";
   const title = confirmedFault ?? step.confirmedFault ?? step.content;
   const evidence = [...(step.evidence ?? []), ...(step.facts ?? [])];
+  const pct =
+    typeof step.diagnosisConfidence === "number"
+      ? step.diagnosisConfidence
+      : step.hypotheses
+          ?.map((h) => h.confidence)
+          .filter((c): c is number => typeof c === "number")
+          .sort((a, b) => b - a)[0];
+
+  const shell =
+    meta.tone === "confirmed"
+      ? "border-[rgba(47,224,181,0.35)] bg-[linear-gradient(180deg,rgba(47,224,181,0.12),rgba(12,17,24,0.96))]"
+      : meta.tone === "high"
+        ? "border-[rgba(47,224,181,0.25)] bg-[linear-gradient(180deg,rgba(47,224,181,0.08),rgba(12,17,24,0.96))]"
+        : "border-[rgba(240,180,41,0.4)] bg-[linear-gradient(180deg,rgba(240,180,41,0.1),rgba(12,17,24,0.96))]";
+
+  const toneColor =
+    meta.tone === "confirmed" || meta.tone === "high"
+      ? "text-[var(--accent)]"
+      : "text-[var(--warning)]";
 
   return (
     <section
-      className={`anim-in rounded-[var(--radius-lg)] border p-4 sm:p-6 ${
-        confirmed
-          ? "border-[rgba(47,224,181,0.35)] bg-[linear-gradient(180deg,rgba(47,224,181,0.12),rgba(12,17,24,0.96))]"
-          : "border-[rgba(240,180,41,0.4)] bg-[linear-gradient(180deg,rgba(240,180,41,0.1),rgba(12,17,24,0.96))]"
-      }`}
+      className={`anim-in rounded-[var(--radius-lg)] border p-4 sm:p-6 ${shell}`}
     >
       <p className="text-xs font-semibold tracking-[0.16em] text-[var(--muted)]">
         DIJAGNOZA
       </p>
-      <p
-        className={`mt-2 text-sm font-semibold tracking-wide ${
-          confirmed ? "text-[var(--accent)]" : "text-[var(--warning)]"
-        }`}
-      >
-        {confirmed ? "POTVRĐENO" : "VJEROJATAN UZROK · JOŠ NIJE POTVRĐENO"}
+      <p className={`mt-2 text-sm font-semibold tracking-wide ${toneColor}`}>
+        {meta.text}
+        {typeof pct === "number" ? ` — ${pct}%` : ""}
       </p>
 
       <h2 className="mt-3 text-2xl font-semibold leading-snug tracking-tight">
@@ -44,7 +77,9 @@ export default function DiagnosisCompletion({
 
       {!confirmed && (
         <p className="mt-2 text-sm text-[var(--warning)]">
-          Potrebna je dodatna potvrda prije zamjene skupih dijelova.
+          {meta.tone === "high"
+            ? "Visoka pouzdanost prema trenutnim dokazima, ali još nije CONFIRMED — alternative nisu potpuno eliminirane ili nedostaje neovisni potvrđujući dokaz."
+            : "Potrebna je dodatna potvrda prije zamjene skupih dijelova."}
         </p>
       )}
 
@@ -56,6 +91,20 @@ export default function DiagnosisCompletion({
               <li key={e} className="flex gap-2 text-sm text-[var(--muted-strong)]">
                 <span className="text-[var(--accent)]">✓</span>
                 <span>{e}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {step.hypotheses && step.hypotheses.length > 0 && (
+        <div className="mt-5">
+          <p className="text-xs tracking-wide text-[var(--muted)]">HIPOTEZE</p>
+          <ul className="mt-2 space-y-1.5">
+            {step.hypotheses.slice(0, 4).map((h) => (
+              <li key={h.label} className="text-sm text-[var(--muted-strong)]">
+                {typeof h.confidence === "number" ? `${h.confidence}%` : "—"} ·{" "}
+                {h.label}
               </li>
             ))}
           </ul>
@@ -83,16 +132,16 @@ export default function DiagnosisCompletion({
         ) : (
           <button
             type="button"
-            onClick={onKeepDiagnosing}
-            className="min-h-12 rounded-2xl bg-[var(--accent)] px-5 text-sm font-semibold text-[#061018]"
+            onClick={onComplete}
+            className="min-h-12 rounded-2xl border border-[var(--border-strong)] px-5 text-sm"
           >
-            NASTAVI TESTIRANJE
+            ZAVRŠI KAO {meta.text}
           </button>
         )}
         <button
           type="button"
           onClick={onKeepDiagnosing}
-          className="min-h-12 rounded-2xl border border-[var(--border-strong)] px-5 text-sm"
+          className="min-h-12 rounded-2xl bg-[var(--accent)] px-5 text-sm font-semibold text-[#061018]"
         >
           NASTAVI DIJAGNOSTIKU
         </button>

@@ -20,35 +20,27 @@ import {
   buildVerifierUserPrompt,
   findDraftQualityIssue,
 } from "./prompts";
+import { mergeTechnicalSpecClaims } from "./spec-guard";
+import {
+  downgradeUnjustifiedConfirmed,
+  findConfirmationGuardIssue,
+  isContinueAfterFinish,
+  isTechnicianRejection,
+  mapHypothesisUiStatus,
+  resolveDiagnosisCertainty,
+} from "./confirmation-guard";
 import type {
   AiActionType,
   DiagnosticCase,
   DiagnosticStep,
   DiagnoseResponse,
+  DiagnosisCertainty,
   Hypothesis,
   Observation,
+  RejectedDiagnosis,
 } from "./types";
 
 const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
-
-function normalizeHypothesisStatus(status: string): Hypothesis["status"] {
-  const key = status.trim().toUpperCase().replace(/[\s-]+/g, "_");
-  switch (key) {
-    case "LEADING":
-    case "SUPPORTED":
-      return "supported";
-    case "POSSIBLE":
-    case "PLAUSIBLE":
-      return "plausible";
-    case "WEAK":
-    case "WEAKENED":
-      return "weakened";
-    case "RULED_OUT":
-      return "ruled_out";
-    default:
-      return "plausible";
-  }
-}
 
 function parseHypotheses(
   value: LlmStepPayload["hypotheses"],
@@ -67,7 +59,7 @@ function parseHypotheses(
           : undefined;
     parsed.push({
       label,
-      status: normalizeHypothesisStatus(h.status ?? "POSSIBLE"),
+      status: mapHypothesisUiStatus(h.status ?? "POSSIBLE"),
       note: h.note ?? undefined,
       confidence,
       supportingEvidence: h.supportingEvidence?.filter(Boolean),
@@ -75,6 +67,16 @@ function parseHypotheses(
     });
   }
   return parsed.length > 0 ? parsed : undefined;
+}
+
+function parseDiagnosisConfidence(
+  value: unknown,
+): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.min(100, Math.round(value)));
+  }
+  return undefined;
 }
 
 function toDiagnosticStep(
@@ -91,6 +93,26 @@ function toDiagnosticStep(
   }
 
   const actionType = payload.actionType as AiActionType;
+  let diagnosisCertainty: DiagnosisCertainty | undefined;
+  let insufficientEvidence = payload.insufficientEvidence ?? undefined;
+  let diagnosisConfidence = parseDiagnosisConfidence(payload.diagnosisConfidence);
+
+  if (actionType === "FINISH") {
+    diagnosisCertainty = resolveDiagnosisCertainty(payload);
+    // CONFIRMED is the only status that clears insufficientEvidence
+    insufficientEvidence = diagnosisCertainty !== "CONFIRMED";
+    if (
+      diagnosisConfidence === undefined &&
+      payload.hypotheses &&
+      payload.hypotheses.length > 0
+    ) {
+      const top = [...payload.hypotheses]
+        .map((h) => h.confidence)
+        .filter((c): c is number => typeof c === "number")
+        .sort((a, b) => b - a)[0];
+      if (typeof top === "number") diagnosisConfidence = top;
+    }
+  }
 
   return {
     id: stepId,
@@ -103,7 +125,9 @@ function toDiagnosticStep(
         ? payload.confirmedFault?.trim() || payload.content.trim()
         : undefined,
     confidence: payload.confidence ?? undefined,
-    insufficientEvidence: payload.insufficientEvidence ?? undefined,
+    diagnosisCertainty,
+    diagnosisConfidence,
+    insufficientEvidence,
     facts: payload.facts ?? undefined,
     evidence: payload.evidence ?? undefined,
     hypotheses: parseHypotheses(payload.hypotheses),
@@ -153,6 +177,27 @@ async function verifyWithOpenAi(
   };
 }
 
+async function applyConfirmationPolicy(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): Promise<LlmStepPayload> {
+  if (draft.actionType !== "FINISH") return draft;
+  const issue = findConfirmationGuardIssue(diagnosticCase, draft);
+  if (!issue) {
+    // Normalize certainty fields even when allowed
+    const certainty = resolveDiagnosisCertainty(draft);
+    return {
+      ...draft,
+      diagnosisCertainty: certainty,
+      insufficientEvidence: certainty !== "CONFIRMED",
+    };
+  }
+  return {
+    ...downgradeUnjustifiedConfirmed(draft, issue),
+    actionType: "FINISH",
+  } as LlmStepPayload;
+}
+
 /**
  * Dual-model pipeline:
  * 1) Claude (DIAGNOSTIC_MODEL) proposes the next ASK/TEST/FINISH step.
@@ -171,6 +216,7 @@ async function callVerifiedDiagnosticStep(
   );
 
   draft = await ensureDraftPassesQualityGates(diagnosticCase, draft);
+  draft = await applyConfirmationPolicy(diagnosticCase, draft);
 
   let verdict = await verifyWithOpenAi(diagnosticCase, draft);
 
@@ -225,6 +271,7 @@ async function callVerifiedDiagnosticStep(
     }
   }
 
+  draft = await applyConfirmationPolicy(diagnosticCase, draft);
   return toDiagnosticStep(draft, stepId);
 }
 
@@ -234,6 +281,17 @@ async function ensureDraftPassesQualityGates(
   extraIssues: string[] = [],
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
+
+  if (draft.actionType === "FINISH") {
+    const confIssue = findConfirmationGuardIssue(diagnosticCase, draft);
+    if (confIssue) {
+      draft = {
+        ...downgradeUnjustifiedConfirmed(draft, confIssue),
+        actionType: "FINISH",
+      } as LlmStepPayload;
+    }
+  }
+
   let issue = findDraftQualityIssue(diagnosticCase, draft);
   if (!issue && extraIssues.length === 0) return draft;
 
@@ -259,7 +317,7 @@ async function ensureDraftPassesQualityGates(
       issue,
       "OBAVEZNO: vrati akciju iz DRUGE dijagnostičke grane ILI FINISH.",
       "Zabranjeno: isti dio + ista vrsta mjerenja kao completedTests/skippedUnavailableTests.",
-      "Ako completedTests već snažno podupiru LEADING hipotezu → FINISH s confirmedFault.",
+      "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
       "Inače: jedan TEST koji razlikuje LEADING od najjače alternative (druga metoda/točka/sustav).",
       "U rationale navedi koje hipoteze razlikuješ.",
     ]),
@@ -267,36 +325,63 @@ async function ensureDraftPassesQualityGates(
   issue = findDraftQualityIssue(diagnosticCase, draft);
   if (!issue) return draft;
 
-  // Last resort: stop checklist loops — force FINISH from evidence rather than hard-failing the case.
+  // Spec / FINISH recovery: no invented OEM numbers; LIKELY without verified comparison.
   draft = await draftWithClaude(
     diagnosticCase,
     buildDiagnosticRetryPrompt(diagnosticCase, draft, [
       issue,
-      "ZADNJI POKUŠAJ: actionType MORA biti FINISH.",
-      "Sažmi vodeću hipotezu iz CASE STATE (completedTests + answers).",
-      "Nemoj predlagati novi TEST.",
-      "Ako dokaz nije potpun, stavi insufficientEvidence: true i objasni što nedostaje.",
-      "skippedUnavailableTests nisu dokaz.",
+      "ZADNJI POKUŠAJ ZA SPEC/FINISH PRAVILA:",
+      "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…).",
+      "Ako actionType=FINISH: insufficientEvidence=true, oznaci kao LIKELY / NEEDS CONFIRMATION.",
+      "Usporedi samo MEASURED_EVIDENCE i kvalitativne principe — bez expectedSpecification brojki.",
+      "Ili vrati TEST koji ne zahtijeva nepoznatu specifikaciju (npr. kontinuirana promjena signala).",
+      "Reci eksplicitno ako referentni raspon nije verificiran.",
     ]),
   );
+
+  issue = findDraftQualityIssue(diagnosticCase, draft);
+  if (!issue) return draft;
+
+  const isSpecIssue = /UNVERIFIED SPEC|FINISH GUARD|CONSISTENCY:/i.test(issue);
+
   if (draft.actionType !== "FINISH") {
     draft = {
       ...draft,
       actionType: "FINISH",
-      content:
-        draft.content?.trim() ||
-        "Na temelju prikupljenih dokaza vodeća dijagnoza je najvjerojatniji uzrok; dodatni slični testovi ne bi dali novu informaciju.",
-      rationale:
-        draft.rationale?.trim() ||
-        "Dodatni semantički slični testovi ne mijenjaju ranking hipoteza — završavam na temelju postojećih dokaza.",
-      insufficientEvidence: draft.insufficientEvidence ?? true,
-      confirmedFault:
-        draft.confirmedFault ??
-        "Vodeća hipoteza prema dostupnim dokazima (provjeri insufficientEvidence).",
+      content: isSpecIssue
+        ? "LIKELY / NEEDS CONFIRMATION: na temelju prikupljenih mjerenja i opažanja vodi se sumnja na navedeni uzrok, ali točan OEM/referentni raspon za ovo vozilo nije verificiran pa se usporedba measured vs expected ne smije koristiti kao potvrda. Potrebna je potvrda metodom koja ne ovisi o neprovjerenoj specifikaciji ili unos verificiranog podatka."
+        : draft.content?.trim() ||
+          "Na temelju prikupljenih dokaza vodeća dijagnoza je najvjerojatniji uzrok; dodatni slični testovi ne bi dali novu informaciju.",
+      rationale: isSpecIssue
+        ? "FINISH GUARD: requiresExactSpec bez verifiedSpec — dijagnoza ostaje LIKELY, ne CONFIRMED."
+        : draft.rationale?.trim() ||
+          "Dodatni semantički slični testovi ne mijenjaju ranking hipoteza — završavam na temelju postojećih dokaza.",
+      insufficientEvidence: true,
+      confidence: "medium",
+      confirmedFault: isSpecIssue
+        ? draft.confirmedFault?.trim() ||
+          "Vodeća sumnja prema mjerenjima (nije potvrđeno verificiranom specifikacijom)"
+        : draft.confirmedFault ??
+          "Vodeća hipoteza prema dostupnim dokazima (provjeri insufficientEvidence).",
     };
   }
+
   issue = findDraftQualityIssue(diagnosticCase, draft);
-  if (issue && draft.actionType !== "FINISH") {
+  if (issue) {
+    if (draft.actionType === "FINISH") {
+      return {
+        ...draft,
+        content:
+          "LIKELY / NEEDS CONFIRMATION: dijagnoza se temelji na izmjerenim rezultatima i općim dijagnostičkim principima. Točan referentni raspon za ovo vozilo nije verificiran (specStatus=UNVERIFIED), stoga se ne potvrđuje usporedba measured vs expected OEM vrijednosti.",
+        rationale:
+          "Programski FINISH guard: odbijene neprovjerene/kontradiktorne specifikacije. UNVERIFIED SPEC nije dokaz.",
+        insufficientEvidence: true,
+        confidence: "medium",
+        confirmedFault:
+          "Vodeća sumnja (nije CONFIRMED — nedostaje verified specifikacija)",
+        expectedResultHint: null,
+      };
+    }
     throw new Error(`AI draft odbijen: ${issue}. Pokušaj ponovno.`);
   }
   return draft;
@@ -329,12 +414,20 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const nextStep = await callVerifiedDiagnosticStep(baseCase);
     const isFinish = nextStep.actionType === "FINISH";
+    const draftText = [
+      nextStep.content,
+      nextStep.rationale,
+      nextStep.confirmedFault,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     const diagnosticCase: DiagnosticCase = {
       ...baseCase,
       steps: [nextStep],
       status: isFinish ? "completed" : "active",
       confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
+      technicalSpecClaims: mergeTechnicalSpecClaims(baseCase, draftText),
     };
 
     return {
@@ -353,7 +446,16 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
     }
 
-    if (diagnosticCase.status === "completed") {
+    const currentStep = diagnosticCase.steps[diagnosticCase.steps.length - 1];
+    if (!currentStep) {
+      throw new Error("Slučaj nema aktivni korak za zabilježiti");
+    }
+
+    const reopenAfterFinish =
+      currentStep.actionType === "FINISH" &&
+      (isTechnicianRejection(trimmed) || isContinueAfterFinish(trimmed));
+
+    if (diagnosticCase.status === "completed" && !reopenAfterFinish) {
       return {
         case: diagnosticCase,
         nextStep: null,
@@ -361,20 +463,79 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       };
     }
 
-    const currentStep = diagnosticCase.steps[diagnosticCase.steps.length - 1];
-    if (!currentStep) {
-      throw new Error("Slučaj nema aktivni korak za zabilježiti");
-    }
-
     if (currentStep.actionType === "FINISH") {
+      if (!reopenAfterFinish) {
+        return {
+          case: {
+            ...diagnosticCase,
+            status: "completed",
+            confirmedFault: currentStep.confirmedFault,
+          },
+          nextStep: null,
+          message: "Slučaj označen kao riješen (FINISH).",
+        };
+      }
+
+      const rejectedDiagnoses: RejectedDiagnosis[] = [
+        ...(diagnosticCase.rejectedDiagnoses ?? []),
+      ];
+      if (isTechnicianRejection(trimmed)) {
+        rejectedDiagnoses.push({
+          diagnosis:
+            currentStep.confirmedFault?.trim() || currentStep.content.trim(),
+          rejectedAtStep: currentStep.id,
+          reason: "technician_rejected",
+          rejectedAt: new Date().toISOString(),
+        });
+      }
+
+      const softenedSteps = diagnosticCase.steps.map((s) =>
+        s.id === currentStep.id
+          ? {
+              ...s,
+              diagnosisCertainty: "LIKELY" as DiagnosisCertainty,
+              insufficientEvidence: true,
+            }
+          : s,
+      );
+
+      const rejectionObservation: Observation = {
+        stepId: currentStep.id,
+        resultText: trimmed,
+        recordedAt: new Date().toISOString(),
+      };
+
+      const reopened: DiagnosticCase = {
+        ...diagnosticCase,
+        steps: softenedSteps,
+        status: "active",
+        confirmedFault: undefined,
+        rejectedDiagnoses,
+        observations: [...diagnosticCase.observations, rejectionObservation],
+      };
+
+      const nextStep = await callVerifiedDiagnosticStep(reopened);
+      const isFinish = nextStep.actionType === "FINISH";
+      const draftText = [
+        nextStep.content,
+        nextStep.rationale,
+        nextStep.confirmedFault,
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      const updated: DiagnosticCase = {
+        ...reopened,
+        steps: [...reopened.steps, nextStep],
+        status: isFinish ? "completed" : "active",
+        confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
+        technicalSpecClaims: mergeTechnicalSpecClaims(reopened, draftText),
+      };
+
       return {
-        case: {
-          ...diagnosticCase,
-          status: "completed",
-          confirmedFault: currentStep.confirmedFault,
-        },
-        nextStep: null,
-        message: "Slučaj označen kao riješen (FINISH).",
+        case: updated,
+        nextStep,
+        message: `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}): ${nextStep.actionType} (reevaluate after ${isTechnicianRejection(trimmed) ? "rejection" : "continue"})`,
       };
     }
 
@@ -391,6 +552,13 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);
     const isFinish = nextStep.actionType === "FINISH";
+    const draftText = [
+      nextStep.content,
+      nextStep.rationale,
+      nextStep.confirmedFault,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     const updated: DiagnosticCase = {
       ...caseWithObservation,
@@ -399,6 +567,10 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       confirmedFault: isFinish
         ? nextStep.confirmedFault
         : caseWithObservation.confirmedFault,
+      technicalSpecClaims: mergeTechnicalSpecClaims(
+        caseWithObservation,
+        draftText,
+      ),
     };
 
     return {

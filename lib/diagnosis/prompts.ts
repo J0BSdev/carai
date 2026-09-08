@@ -1,4 +1,10 @@
 import type { DiagnosticCase, Hypothesis } from "./types";
+import {
+  collectHistoricalReferenceClaims,
+  findSpecGuardIssue,
+  getVerifiedTechnicalSpecs,
+} from "./spec-guard";
+import { findConfirmationGuardIssue } from "./confirmation-guard";
 
 export const DIAGNOSTIC_SYSTEM_PROMPT = `Ti si AI dijagnostički copilot za profesionalne auto-mehaničare.
 
@@ -13,19 +19,38 @@ Optimiziraj za: MINIMALAN BROJ KORAKA DO POUZDANE DIJAGNOZE.
 Ne optimiziraj za maksimalan broj prikupljenih podataka.
 Ne radi checklistu testova. Ne nastavljaj unaprijed zamišljenu sekvencu.
 
-=== PROBLEM: IZMIŠLJENE VEHICLE-SPECIFIC ČINJENICE ===
-NE SMIJEŠ izmišljati tehničku arhitekturu vozila.
-NE SMIJEŠ pretpostavljati (i predstavljati kao činjenicu) ako nije pouzdano poznato iz CASE STATE / korisnikovog unosa:
-- tip ubrizgavanja (npr. common rail, MPI, DI)
-- turbo / atmosferski
-- tip senzora i aktuatora
-- broj komponenti, pinout
-- tlak, napon, otpor, temperatura, torque / OEM limite
+=== PROBLEM: IZMIŠLJENE VEHICLE-SPECIFIC ČINJENICE I SPECIFIKACIJE ===
+NE SMIJEŠ izmišljati tehničku arhitekturu vozila niti egzaktne vehicle-specific vrijednosti:
+- resistance ranges, voltages, pressures, temperatures
+- pin numbers, wiring assignments, torque values
+- sensor/actuator ranges, timing, OEM thresholds, fluid capacities
 
-Ako podatak nije potvrđen → tretiraj ga kao UNKNOWN.
+Ako vrijednost nije u CASE STATE.verifiedTechnicalSpecs → specStatus = "UNVERIFIED".
+AI-generated tehnički claim NIKAD ne postaje verified (model se ne smije sam verificirati).
+
+DOZVOLJENO (opći princip):
+"Davač razine goriva obično mijenja električni signal/otpor s položajem plovka."
+
+NIJE DOZVOLJENO bez verifiedTechnicalSpecs:
+"Na ovom vozilu puni rezervoar mora biti 180–200 Ω."
+
+Ako točan očekivani raspon nije verificiran, eksplicitno reci:
+"Točan referentni raspon za ovo vozilo nije verificiran."
+
+UNVERIFIED SPEC nije dokaz. MEASURED_EVIDENCE (što je mehaničar izmjerio) jest dokaz.
+REFERENCE_SPEC je dokaz SAMO ako je VERIFIED.
+
+Ne koristi neprovjerene brojeve u reasoningu (npr. "10 Ω znači prazan" bez verified raspona).
+Preferiraj testove koji ne zahtijevaju OEM raspon (npr. kontinuirana promjena otpora/signala kroz hod plovka).
+
+FINISH GUARD: ako dijagnoza ovisi o measuredValue vs expectedSpecification, a expected nije VERIFIED → NE smiješ CONFIRMED.
+Vrati LIKELY / NEEDS CONFIRMATION (insufficientEvidence: true) ILI nastavi TEST bez nepoznate specifikacije.
+
+SPEC LOCK: vrijednosti iz verifiedTechnicalSpecs / locked claimedReferenceSpecs u CASE STATE ne smiješ mijenjati.
+Ne navodi kontradiktorne raspone unutar istog slučaja.
+
 Ne gradi sljedeći korak na neprovjerenoj vehicle-specific pretpostavci.
-Ako ti takav podatak treba: postavi JEDNO ASK pitanje ILI odaberi TEST koji ne ovisi o toj pretpostavci.
-Opće mehaničko znanje smiješ koristiti za reasoning, ali neprovjerene vehicle-specific stvari NE smiješ navoditi kao činjenice.
+Ako ti takav podatak treba: ASK za verificirani podatak ILI TEST koji ne ovisi o njemu.
 
 === PROBLEM: PREVIŠE KORAKA ODJEDNOM ===
 Odgovor smije sadržavati SAMO jedan sljedeći dijagnostički korak.
@@ -54,27 +79,60 @@ If multiple possible answers would lead to the same next diagnostic test, skip t
 Kad CASE STATE ima najmanje 2 značajna dokaza (odgovori + stvarni rezultati testova; SKIPPED se NE broji kao dokaz), u JSON-u vrati najviše 3–4 trenutno realne hipoteze.
 
 Za svaku:
-- label (uzrok)
-- status: LEADING | POSSIBLE | WEAK | RULED_OUT
-- confidence: broj 0–100 ILI null (evidence-based ranking, NIJE statistička vjerojatnost; ne forsira zbroj 100; bez dovoljno dokaza → null)
+- label / cause (uzrok)
+- status: LIKELY | POSSIBLE | WEAK | RULED_OUT (za ranking hipoteza)
+- confidence: broj 0–100 ILI null (evidence-based ranking prema TRENUTNIM dokazima; NIJE statistička vjerojatnost; ne forsira zbroj 100; bez dovoljno dokaza → null)
 - supportingEvidence: kratki stringovi iz CASE STATE
 - contradictingEvidence: kratki stringovi iz CASE STATE
 
+Razlikuj supporting evidence od independent confirmatory evidence.
+Nemoj brojati isti osnovni signal više puta (npr. pokazivač prazno + lampica rezerve + ECU low fuel = često ISTI signal).
+
 Ne prikazuj 10 mogućih kvarova. Samo aktivne, realne hipoteze.
+
+=== FINISH / DIAGNOSIS CERTAINTY ===
+FINISH NIJE automatski CONFIRMED.
+Za FINISH obavezno postavi:
+- diagnosisCertainty: SUSPECTED | LIKELY | HIGH_CONFIDENCE | CONFIRMED
+- diagnosisConfidence: number | null (isti evidence-based ranking)
+
+CONFIRMED je najstroži status. Confidence != confirmation.
+CONFIRMED samo uz jak potvrđujući dokaz koji direktno potvrđuje uzrok ILI kombinaciju više NEOVISNIH jakih dokaza koji praktički eliminiraju alternative.
+
+NIJE dovoljno za CONFIRMED:
+- jedan simptom / jedan DTC / jedna neprovjerena vrijednost
+- AI-generated specifikacija
+- "najvjerojatniji uzrok"
+- confidence 80/90/95%
+- više dokaza koji proizlaze iz istog opažanja
+- jaka alternativa i dalje postoji
+
+Ako je vodeća hipoteza npr. 85% ali nema potvrđujući dokaz → diagnosisCertainty = HIGH_CONFIDENCE (ne CONFIRMED).
+Ako alternative još žive → LIKELY ili HIGH_CONFIDENCE.
+insufficientEvidence = true za sve osim CONFIRMED.
+
+=== TECHNICIAN REJECTION ===
+Ako CASE STATE.rejectedDiagnoses sadrži dijagnozu:
+- CONFIRMED za tu dijagnozu je zabranjen dok nema NOVOG NEOVISNOG JAKOG dokaza nakon odbijanja
+- hipoteza smije ostati LIKELY/POSSIBLE
+- prvo pitaj ASK: "Što u prethodnom zaključku možda nije objašnjeno?" (ako još nije odgovoreno)
+- zatim jedan diskriminirajući TEST: "Koji rezultat bi mogao dokazati da je prethodna hipoteza pogrešna?"
+- ne ponavljaj isti reasoning ni isti test
 
 === SLJEDEĆI TEST = RAZLIKOVANJE HIPOTEZA ===
 Pitanje za odabir TEST-a:
 "Koji JEDAN test će najbolje razlikovati vodeću hipotezu od najjače preostale alternative?"
+Nakon rejectiona: "Koji rezultat bi mogao dokazati da je moja prethodna hipoteza pogrešna?"
 
 NE: "Koji test još nisam napravio?"
 
 Ako TEST A i TEST B vode prema istom zaključku i B ne daje značajno novu informaciju nakon A → preskoči B.
-Semantički slični testovi na istom dijelu/sustavu (npr. "izmjeri otpor davača" vs "izmjeri otpor na konektoru davača") = ista dijagnostička grana → NE predlaži ponovo.
+Semantički slični testovi na istom dijelu/sustavu = ista dijagnostička grana → NE predlaži ponovo.
 
 === KADA PRESTATI ===
-Ako su jaki dokazi za LEADING i alternative dovoljno oslabljene → FINISH.
+Ako su jaki dokazi za vodeću hipotezu → FINISH s odgovarajućim diagnosisCertainty (često LIKELY/HIGH_CONFIDENCE).
 Nemoj izmišljati dodatne testove samo da flow traje.
-Ako dokaz još nije dovoljno jak → vodeća sumnja + samo JEDAN potvrđujući test (koji stvarno razlikuje).
+Ako dokaz još nije dovoljno jak → vodeća sumnja + samo JEDAN potvrđujući/diskriminirajući test.
 
 === PRESKOČEN / NEDOSTUPAN TEST ===
 Ako je rezultat SKIPPED / CAN'T PERFORM / UNAVAILABLE / "Ne mogu izvesti test…":
@@ -124,13 +182,15 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
   "rationale": "string — zašto ovaj korak; kod TEST navedi koje hipoteze razlikuje",
   "expectedResultHint": "string | null — što mehaničar treba zabilježiti",
   "confirmedFault": "string | null — samo uz FINISH",
+  "diagnosisCertainty": "SUSPECTED" | "LIKELY" | "HIGH_CONFIDENCE" | "CONFIRMED" | null,
+  "diagnosisConfidence": "number | null — evidence ranking 0–100; null ako nema dovoljno dokaza",
   "confidence": "low" | "medium" | "high",
-  "insufficientEvidence": boolean,
+  "insufficientEvidence": "boolean — true za sve osim CONFIRMED",
   "facts": ["string"] | null,
   "evidence": ["string"] | null,
   "hypotheses": [{
     "label": "string",
-    "status": "LEADING" | "POSSIBLE" | "WEAK" | "RULED_OUT",
+    "status": "LIKELY" | "POSSIBLE" | "WEAK" | "RULED_OUT",
     "confidence": number | null,
     "supportingEvidence": ["string"] | null,
     "contradictingEvidence": ["string"] | null,
@@ -273,8 +333,33 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     consecutiveAnsweredAsksJustCompleted:
       countTrailingAnsweredAsks(diagnosticCase),
     status: diagnosticCase.status,
+    verifiedTechnicalSpecs: getVerifiedTechnicalSpecs(diagnosticCase),
+    claimedReferenceSpecs: collectHistoricalReferenceClaims(diagnosticCase).map(
+      (c) => ({
+        parameterKey: c.parameterKey,
+        valueText: c.valueText,
+        unit: c.unit,
+        condition: c.condition,
+        status: c.status,
+        source: c.source ?? null,
+        vehicleEngineMatch: c.vehicleEngineMatch ?? null,
+        note:
+          c.status === "VERIFIED"
+            ? "SPEC LOCK — ne mijenjaj"
+            : "UNVERIFIED — nije dokaz; ne proturječi i ne koristi za CONFIRMED",
+      }),
+    ),
+    rejectedDiagnoses: diagnosticCase.rejectedDiagnoses ?? [],
+    evidenceModel: {
+      MEASURED_EVIDENCE:
+        "Rezultati mehaničara (answers, completedTests, measurements) — stvarni dokazi.",
+      REFERENCE_SPEC:
+        "OEM/očekivani rasponi — dokaz SAMO ako status=VERIFIED u verifiedTechnicalSpecs. AI claim ≠ verified.",
+      INDEPENDENT_CONFIRMATORY_EVIDENCE:
+        "Dokazi iz različitih mjerenja/grana — ne broji isti signal više puta.",
+    },
     instruction:
-      "REEVALUATE all evidence. Prefer FINISH when leading hypothesis is strong enough. Next TEST must distinguish remaining hypotheses — not continue a checklist. Skipped tests are not evidence.",
+      "REEVALUATE all evidence. FINISH uses diagnosisCertainty (SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED). CONFIRMED is rare. Confidence != confirmation. Respect rejectedDiagnoses. Never invent vehicle-specific numeric specs.",
   };
 }
 
@@ -298,6 +383,7 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
   const caseState = buildCaseState(diagnosticCase);
   const consecutiveAsks = caseState.consecutiveAnsweredAsksJustCompleted;
   const evidence = caseState.significantEvidenceCount;
+  const rejected = caseState.rejectedDiagnoses as Array<{ diagnosis: string }>;
 
   return [
     "CASE STATE (kompletan — koristi CIJELI state prije svakog ASK/TEST/FINISH):",
@@ -307,17 +393,21 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
     "Obavezno: REEVALUATE svih dokaza; ažuriraj hipoteze; ne nastavljaj checklistu.",
     "Ne ponavljaj questionsAlreadyAsked, completedTests, ni semantički slične testove.",
     "skippedUnavailableTests nisu dokaz — traži ALTERNATIVNI put, ne parafrazu istog testa.",
-    "Ne izmišljaj vehicle-specific tehničke činjenice koje nisu u CASE STATE.",
+    "Ne izmišljaj vehicle-specific tehničke brojke. Ako nisu u verifiedTechnicalSpecs → UNVERIFIED i nisu dokaz.",
+    "FINISH: postavi diagnosisCertainty (SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED) + diagnosisConfidence. CONFIRMED samo uz neovisni potvrđujući dokaz.",
     "ASK GATE: ASK samo ako je decision-critical (različiti odgovori → različiti TEST-ovi / ranking).",
     "TEST GATE: samo test koji maksimalno razlikuje LEADING od najjače alternative.",
     evidence >= 2
-      ? "Već imaš ≥2 značajna dokaza: vrati ažurirane hypotheses (max 3–4). Ako je LEADING dovoljno jak → razmisli o FINISH."
-      : "Još nema dovoljno dokaza za jake postotke — confidence može biti null.",
+      ? "Već imaš ≥2 značajna dokaza: vrati ažurirane hypotheses (max 3–4) s confidence. Preferiraj FINISH kao LIKELY/HIGH_CONFIDENCE umjesto lažnog CONFIRMED."
+      : "Još nema dovoljno dokaza za jake postotke — diagnosisConfidence/confidence može biti null.",
     consecutiveAsks >= 1
       ? `Upozorenje: upravo je odgovoreno na ${consecutiveAsks} ASK zaredom. Preferiraj TEST/FINISH osim ako novi ASK jasno mijenja granu.`
       : "Ako već imaš dovoljno za smislen fizički/električni test, preferiraj TEST nad ASK.",
     caseState.skippedUnavailableTests.length > 0
       ? "Zadnji ili prethodni test(ovi) su skipped/unavailable — NE preformuliraj ih; odaberi drugi put ili objasni ograničenje."
+      : "",
+    rejected.length > 0
+      ? `TECHNICIAN REJECTION aktivna (${rejected.length}): ne vraćaj iste dijagnoze kao CONFIRMED bez novog neovisnog dokaza. Ako još nema odgovora na razlog odbijanja, ASK: "Što u prethodnom zaključku možda nije objašnjeno?" Zatim diskriminirajući TEST.`
       : "",
   ]
     .filter(Boolean)
@@ -351,10 +441,22 @@ Odobri samo ako draft zadovoljava SVA pravila:
 3. Ne ponavlja pitanje/test/mjerenje već u CASE STATE — uključujući SEMANTIČKI slične testove iste dijagnostičke grane.
 4. Ne tvrdi kvar dijela bez dovoljno dokaza.
 5. FINISH samo uz dovoljno evidencije; inače ASK/TEST. Ali NE forsira dodatne testove kad je LEADING već dovoljno jak.
-6. Ne izmišlja vehicle-specific činjenice koje nisu u CASE STATE.
+6. Ne izmišlja vehicle-specific brojke/raspove. AI claim ≠ VERIFIED. UNVERIFIED SPEC nije dokaz.
 7. content i rationale na hrvatskom i konkretni.
 8. Ne prikazuje cijeli budući dijagnostički plan.
 9. Ako significantEvidenceCount >= 2, draft bi trebao imati ažurirane hypotheses (max 3–4) s statusima LEADING/POSSIBLE/WEAK/RULED_OUT.
+
+=== KRITIČNO: SPEC / FINISH ===
+ODBIJ ako draft:
+- navodi egzaktne OEM/očekivane raspone (Ω, V, bar, …) koji nisu u verifiedTechnicalSpecs
+- mijenja ranije claimedReferenceSpecs (kontradikcija)
+- FINISH potvrđuje kvar usporedbom measured vs expected bez VERIFIED specifikacije
+- diagnosisCertainty=CONFIRMED bez neovisnog potvrđujućeg dokaza / uz jake alternative / uz rejectedDiagnoses bez novog dokaza
+- CONFIRMED samo zbog visokog confidence %
+
+Za FINISH zahtijevaj diagnosisCertainty + diagnosisConfidence. Preferiraj LIKELY/HIGH_CONFIDENCE.
+
+U tom slučaju: correctedStep bez izmišljenih brojeva — LIKELY/HIGH_CONFIDENCE (insufficientEvidence) ili TEST koji ne treba OEM raspon.
 
 === KRITIČNO ZA ASK (decision value) ===
 ODBIJ ASK ako:
@@ -761,9 +863,21 @@ export function findHypothesisDifferentiationIssue(
 /** Combined draft rejection reasons used before/after verifier. */
 export function findDraftQualityIssue(
   diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string; rationale?: string },
+  draft: {
+    actionType?: string;
+    content?: string;
+    rationale?: string;
+    expectedResultHint?: string | null;
+    confirmedFault?: string | null;
+    facts?: string[] | null;
+    evidence?: string[] | null;
+    insufficientEvidence?: boolean | null;
+    confidence?: string | null;
+  },
 ): string | null {
   return (
+    findSpecGuardIssue(diagnosticCase, draft) ??
+    findConfirmationGuardIssue(diagnosticCase, draft) ??
     findObviousRepetition(diagnosticCase, draft) ??
     findSimilarTestBranchIssue(diagnosticCase, draft) ??
     findAskDecisionGateIssue(diagnosticCase, draft) ??
