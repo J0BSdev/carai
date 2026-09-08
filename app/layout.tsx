@@ -13,9 +13,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CarAI — AI dijagnostički copilot",
+  title: "CarAI — AI dijagnostički workspace",
   description:
-    "Profesionalni AI dijagnostički copilot za autoservise.",
+    "Premium AI dijagnostički workspace za profesionalne autoservise.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
