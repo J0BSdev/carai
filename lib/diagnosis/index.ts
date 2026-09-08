@@ -1,3 +1,4 @@
+import { hasLlmConfigured } from "./config";
 import { MockDiagnosticEngine, type DiagnosticEngine } from "./engine";
 import { LlmDiagnosticEngine } from "./llm-engine";
 
@@ -11,6 +12,7 @@ export type {
   DiagnosticStep,
   ExtractedCaseFacts,
   Hypothesis,
+  HypothesisStatus,
   Observation,
   RecommendedTest,
   SourceRef,
@@ -30,17 +32,19 @@ export {
   type WebSearchTool,
 } from "./web-search";
 
-function hasOpenAiKey(): boolean {
-  return Boolean(
-    process.env.OPENAI_API_KEY?.trim() || process.env.AI_API_KEY?.trim(),
-  );
-}
+export {
+  getClaudeApiKey,
+  getDiagnosticModel,
+  getOpenAiApiKey,
+  getVerifierModel,
+  hasLlmConfigured,
+} from "./config";
 
 /**
- * LLM when OPENAI_API_KEY or AI_API_KEY is set; otherwise mock for local UI testing.
+ * Dual LLM when both CLAUDE_API_KEY and OPENAI_API_KEY are set; otherwise mock.
  */
 export function getDiagnosticEngine(): DiagnosticEngine {
-  if (hasOpenAiKey()) {
+  if (hasLlmConfigured()) {
     return new LlmDiagnosticEngine();
   }
   return new MockDiagnosticEngine();

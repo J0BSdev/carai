@@ -1,6 +1,23 @@
 import {
+  getClaudeApiKey,
+  getDiagnosticModel,
+  getOpenAiApiKey,
+  getVerifierModel,
+} from "./config";
+import type { DiagnosticEngine } from "./engine";
+import {
+  callAnthropicJson,
+  callOpenAiJson,
+  parseJson,
+  type LlmStepPayload,
+  type VerifierPayload,
+} from "./providers";
+import {
   DIAGNOSTIC_SYSTEM_PROMPT,
+  VERIFIER_SYSTEM_PROMPT,
+  buildDiagnosticRetryPrompt,
   buildDiagnosticUserPrompt,
+  buildVerifierUserPrompt,
 } from "./prompts";
 import type {
   AiActionType,
@@ -10,41 +27,8 @@ import type {
   Hypothesis,
   Observation,
 } from "./types";
-import type { DiagnosticEngine } from "./engine";
-
-type LlmStepPayload = {
-  actionType: string;
-  content: string;
-  rationale: string;
-  expectedResultHint?: string | null;
-  confirmedFault?: string | null;
-  confidence?: "low" | "medium" | "high" | null;
-  insufficientEvidence?: boolean | null;
-  facts?: string[] | null;
-  evidence?: string[] | null;
-  hypotheses?: Array<{
-    label: string;
-    status: string;
-    note?: string | null;
-  }> | null;
-};
 
 const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
-
-function getApiKey(): string {
-  const key =
-    process.env.OPENAI_API_KEY?.trim() || process.env.AI_API_KEY?.trim();
-  if (!key) {
-    throw new Error(
-      "Nedostaje OPENAI_API_KEY (ili AI_API_KEY). Postavi ga u .env.local.",
-    );
-  }
-  return key;
-}
-
-function getModel(): string {
-  return process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
-}
 
 function parseHypotheses(
   value: LlmStepPayload["hypotheses"],
@@ -60,7 +44,9 @@ function parseHypotheses(
     .filter((h) => h && typeof h.label === "string")
     .map((h) => ({
       label: h.label,
-      status: (allowed.has(h.status) ? h.status : "plausible") as Hypothesis["status"],
+      status: (allowed.has(h.status)
+        ? h.status
+        : "plausible") as Hypothesis["status"],
       note: h.note ?? undefined,
     }));
 }
@@ -98,53 +84,91 @@ function toDiagnosticStep(
   };
 }
 
-async function callOpenAiForStep(
+async function draftWithClaude(
   diagnosticCase: DiagnosticCase,
-): Promise<DiagnosticStep> {
-  const apiKey = getApiKey();
-  const model = getModel();
+  userPrompt: string,
+): Promise<LlmStepPayload> {
+  const apiKey = getClaudeApiKey();
+  if (!apiKey) {
+    throw new Error("Nedostaje CLAUDE_API_KEY. Postavi ga u .env.");
+  }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: DIAGNOSTIC_SYSTEM_PROMPT },
-        { role: "user", content: buildDiagnosticUserPrompt(diagnosticCase) },
-      ],
-    }),
+  const raw = await callAnthropicJson({
+    apiKey,
+    model: getDiagnosticModel(),
+    system: DIAGNOSTIC_SYSTEM_PROMPT,
+    user: userPrompt,
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(
-      `OpenAI greška (${response.status}): ${errText.slice(0, 400)}`,
-    );
+  return parseJson<LlmStepPayload>(raw, "Claude dijagnostički odgovor");
+}
+
+async function verifyWithOpenAi(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): Promise<VerifierPayload> {
+  const apiKey = getOpenAiApiKey();
+  if (!apiKey) {
+    throw new Error("Nedostaje OPENAI_API_KEY. Postavi ga u .env.");
   }
 
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+  const raw = await callOpenAiJson({
+    apiKey,
+    model: getVerifierModel(),
+    system: VERIFIER_SYSTEM_PROMPT,
+    user: buildVerifierUserPrompt(diagnosticCase, draft),
+  });
+
+  const parsed = parseJson<VerifierPayload>(raw, "OpenAI verifier odgovor");
+  return {
+    approved: Boolean(parsed.approved),
+    issues: Array.isArray(parsed.issues) ? parsed.issues.map(String) : [],
+    correctedStep: parsed.correctedStep ?? null,
   };
-  const raw = data.choices?.[0]?.message?.content;
-  if (!raw) {
-    throw new Error("OpenAI nije vratio sadržaj odgovora.");
-  }
+}
 
-  let parsed: LlmStepPayload;
-  try {
-    parsed = JSON.parse(raw) as LlmStepPayload;
-  } catch {
-    throw new Error("OpenAI odgovor nije valjani JSON.");
-  }
-
+/**
+ * Dual-model pipeline:
+ * 1) Claude (DIAGNOSTIC_MODEL) proposes the next ASK/TEST/FINISH step.
+ * 2) OpenAI (VERIFIER_MODEL) approves, corrects, or rejects.
+ * 3) On reject without correction, Claude retries once with verifier issues.
+ */
+async function callVerifiedDiagnosticStep(
+  diagnosticCase: DiagnosticCase,
+): Promise<DiagnosticStep> {
   const stepId = `step-${diagnosticCase.steps.length + 1}`;
-  return toDiagnosticStep(parsed, stepId);
+
+  let draft = await draftWithClaude(
+    diagnosticCase,
+    buildDiagnosticUserPrompt(diagnosticCase),
+  );
+
+  let verdict = await verifyWithOpenAi(diagnosticCase, draft);
+
+  if (!verdict.approved && verdict.correctedStep) {
+    draft = verdict.correctedStep;
+  } else if (!verdict.approved) {
+    draft = await draftWithClaude(
+      diagnosticCase,
+      buildDiagnosticRetryPrompt(
+        diagnosticCase,
+        draft,
+        verdict.issues.length
+          ? verdict.issues
+          : ["Draft nije odobren; predloži ispravan jedan korak."],
+      ),
+    );
+    verdict = await verifyWithOpenAi(diagnosticCase, draft);
+    if (!verdict.approved && verdict.correctedStep) {
+      draft = verdict.correctedStep;
+    } else if (!verdict.approved) {
+      throw new Error(
+        `Verifier je odbio korak: ${verdict.issues.join("; ") || "nepoznat razlog"}`,
+      );
+    }
+  }
+
+  return toDiagnosticStep(draft, stepId);
 }
 
 function lightExtract(problemText: string): DiagnosticCase["extracted"] {
@@ -172,7 +196,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       status: "active",
     };
 
-    const nextStep = await callOpenAiForStep(baseCase);
+    const nextStep = await callVerifiedDiagnosticStep(baseCase);
     const isFinish = nextStep.actionType === "FINISH";
 
     const diagnosticCase: DiagnosticCase = {
@@ -185,7 +209,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     return {
       case: diagnosticCase,
       nextStep,
-      message: `AI: ${nextStep.actionType}`,
+      message: `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}): ${nextStep.actionType}`,
     };
   }
 
@@ -234,7 +258,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       observations: [...diagnosticCase.observations, observation],
     };
 
-    const nextStep = await callOpenAiForStep(caseWithObservation);
+    const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);
     const isFinish = nextStep.actionType === "FINISH";
 
     const updated: DiagnosticCase = {
@@ -249,7 +273,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     return {
       case: updated,
       nextStep,
-      message: `AI: ${nextStep.actionType}`,
+      message: `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}): ${nextStep.actionType}`,
     };
   }
 }

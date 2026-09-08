@@ -1,46 +1,68 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type {
-  AiActionType,
   DiagnoseResponse,
   DiagnosticCase,
   DiagnosticStep,
 } from "@/lib/diagnosis";
+import {
+  diagnosticStatusLabel,
+  latestHypotheses,
+  statusProgress,
+} from "@/lib/diagnosis/ui-helpers";
+import AIProcessingState from "@/components/diagnostic/AIProcessingState";
+import AppHeader from "@/components/diagnostic/AppHeader";
+import DiagnosisCard from "@/components/diagnostic/DiagnosisCard";
+import DiagnosticInput from "@/components/diagnostic/DiagnosticInput";
+import DiagnosticTimeline from "@/components/diagnostic/DiagnosticTimeline";
+import HypothesesPanel from "@/components/diagnostic/HypothesesPanel";
+import NewCaseScreen from "@/components/diagnostic/NewCaseScreen";
+import NextStepCard from "@/components/diagnostic/NextStepCard";
+import VehicleCaseCard from "@/components/diagnostic/VehicleCaseCard";
 
 type Phase = "intake" | "active" | "completed";
-
-function actionLabel(actionType: AiActionType): string {
-  switch (actionType) {
-    case "ASK":
-      return "Pitanje";
-    case "TEST":
-      return "Test";
-    case "SEARCH_WEB":
-      return "Pretraga";
-    case "FINISH":
-      return "Zaključak";
-  }
-}
 
 export default function DiagnosticScreen() {
   const [phase, setPhase] = useState<Phase>("intake");
   const [problemText, setProblemText] = useState("");
   const [resultText, setResultText] = useState("");
+  const [inputOpen, setInputOpen] = useState(false);
   const [diagnosticCase, setDiagnosticCase] = useState<DiagnosticCase | null>(
     null,
   );
   const [nextStep, setNextStep] = useState<DiagnosticStep | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const inputAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  const statusLabel = useMemo(
+    () => diagnosticStatusLabel(phase, diagnosticCase, nextStep),
+    [phase, diagnosticCase, nextStep],
+  );
+  const progress = statusProgress(statusLabel);
+  const hypotheses = diagnosticCase ? latestHypotheses(diagnosticCase) : [];
+
+  const finishStep =
+    phase === "completed"
+      ? (nextStep?.actionType === "FINISH"
+          ? nextStep
+          : diagnosticCase?.steps.find((s) => s.actionType === "FINISH") ??
+            diagnosticCase?.steps.at(-1) ??
+            null)
+      : null;
+
+  const showActiveStep =
+    phase === "active" &&
+    nextStep != null &&
+    nextStep.actionType !== "FINISH" &&
+    !loading;
 
   function applyResponse(data: DiagnoseResponse) {
     setDiagnosticCase(data.case);
     setNextStep(data.nextStep);
-    setMessage(data.message ?? null);
     setResultText("");
-
+    setInputOpen(false);
     const finished =
       data.case.status === "completed" ||
       data.nextStep?.actionType === "FINISH";
@@ -51,9 +73,9 @@ export default function DiagnosticScreen() {
     setPhase("intake");
     setProblemText("");
     setResultText("");
+    setInputOpen(false);
     setDiagnosticCase(null);
     setNextStep(null);
-    setMessage(null);
     setError(null);
     setLoading(false);
   }
@@ -64,7 +86,6 @@ export default function DiagnosticScreen() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-
     const data = await response.json();
     if (!response.ok) {
       throw new Error(
@@ -78,11 +99,7 @@ export default function DiagnosticScreen() {
     setError(null);
     setLoading(true);
     try {
-      const data = await callDiagnose({
-        action: "start",
-        problemText,
-      });
-      applyResponse(data);
+      applyResponse(await callDiagnose({ action: "start", problemText }));
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Nije moguće pokrenuti dijagnozu",
@@ -92,233 +109,125 @@ export default function DiagnosticScreen() {
     }
   }
 
-  async function handleContinue() {
+  async function handleContinue(forcedResult?: string) {
     if (!diagnosticCase) return;
+    const text = (forcedResult ?? resultText).trim();
+    if (!text) {
+      setError("Unesi rezultat prije nastavka.");
+      return;
+    }
     setError(null);
     setLoading(true);
     try {
-      const data = await callDiagnose({
-        action: "continue",
-        case: diagnosticCase,
-        observation: { resultText },
-      });
-      applyResponse(data);
+      applyResponse(
+        await callDiagnose({
+          action: "continue",
+          case: diagnosticCase,
+          observation: { resultText: text },
+        }),
+      );
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Nije moguće nastaviti dijagnozu",
+        err instanceof Error ? err.message : "Nije moguće nastaviti dijagnozu",
       );
     } finally {
       setLoading(false);
     }
   }
 
-  const extracted = diagnosticCase?.extracted;
-  const vehicleBits = [
-    extracted?.vehicle?.make,
-    extracted?.vehicle?.model,
-    extracted?.vehicle?.year,
-    extracted?.vehicle?.engine,
-  ].filter(Boolean);
+  function openInput() {
+    setInputOpen(true);
+    setError(null);
+    requestAnimationFrame(() => {
+      inputAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+  }
 
   return (
-    <main className="mx-auto flex w-full max-w-lg flex-1 flex-col gap-6 px-4 py-6 sm:px-6 sm:py-10">
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium tracking-wide text-[var(--accent)]">
-            CarAI
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--foreground)]">
-            Dijagnoza vozila
-          </h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            Opišite vozilo i kvar — sustav vodi jedan korak odjednom.
-          </p>
-        </div>
-        {phase !== "intake" && (
-          <button
-            type="button"
-            onClick={resetCase}
-            className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--foreground)]"
-          >
-            Novi slučaj
-          </button>
-        )}
-      </header>
-
-      {error && (
-        <p
-          role="alert"
-          className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
-        >
-          {error}
-        </p>
-      )}
+    <div className="app-shell flex min-h-full flex-1 flex-col">
+      <AppHeader showNewCase={phase !== "intake"} onNewCase={resetCase} />
 
       {phase === "intake" && (
-        <section className="flex flex-col gap-4">
-          <label className="flex flex-col gap-2">
-            <span className="text-sm font-medium text-[var(--foreground)]">
-              Vozilo i kvar
-            </span>
-            <textarea
-              value={problemText}
-              onChange={(e) => setProblemText(e.target.value)}
-              rows={8}
-              placeholder='npr. Golf 7 GTD 2015, P0299, gubi snagu iznad 3000 o/min. Smoke test napravljen, nema curenja. Turbo aktuator se miče normalno.'
-              className="min-h-40 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-base leading-relaxed text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
-              disabled={loading}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={handleStart}
-            disabled={loading || !problemText.trim()}
-            className="w-full rounded-md bg-[var(--accent)] px-4 py-3 text-base font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading ? "Pokrećem…" : "Pokreni dijagnozu"}
-          </button>
-        </section>
+        <NewCaseScreen
+          value={problemText}
+          onChange={setProblemText}
+          onStart={handleStart}
+          loading={loading}
+          error={error}
+        />
+      )}
+
+      {phase === "intake" && loading && (
+        <div className="mx-auto w-full max-w-[720px] px-4 pb-10 sm:px-6">
+          <AIProcessingState active />
+        </div>
       )}
 
       {phase !== "intake" && diagnosticCase && (
-        <section className="flex flex-col gap-5">
-          <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-              Vozilo / trenutni slučaj
+        <div
+          className={`mx-auto flex w-full max-w-[1100px] flex-1 flex-col gap-5 px-4 py-5 sm:px-6 sm:py-6 ${
+            inputOpen || loading ? "pb-36" : "pb-8"
+          }`}
+        >
+          {error && (
+            <p
+              role="alert"
+              className="rounded-xl border border-[var(--danger-border)] bg-[var(--danger-bg)] px-3 py-2 text-sm text-[var(--danger)]"
+            >
+              {error}
             </p>
-            {vehicleBits.length > 0 && (
-              <p className="mt-1 text-sm font-medium text-[var(--foreground)]">
-                {vehicleBits.join(" · ")}
-              </p>
-            )}
-            <p className="mt-1 text-sm leading-relaxed text-[var(--foreground)]">
-              {diagnosticCase.problemText}
-            </p>
-            {extracted?.dtcs && extracted.dtcs.length > 0 && (
-              <p className="mt-2 text-sm text-[var(--muted)]">
-                DTC: {extracted.dtcs.join(", ")}
-              </p>
-            )}
-          </div>
-
-          {diagnosticCase.observations.length > 0 && (
-            <div className="flex flex-col gap-3">
-              <h2 className="text-sm font-semibold text-[var(--foreground)]">
-                Trenutna evidencija
-              </h2>
-              <ol className="flex flex-col gap-3">
-                {diagnosticCase.observations.map((obs) => {
-                  const step = diagnosticCase.steps.find(
-                    (s) => s.id === obs.stepId,
-                  );
-                  return (
-                    <li
-                      key={`${obs.stepId}-${obs.recordedAt}`}
-                      className="border-l-2 border-[var(--border)] pl-3"
-                    >
-                      <p className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                        {step ? actionLabel(step.actionType) : obs.stepId}
-                      </p>
-                      <p className="mt-1 text-sm font-medium text-[var(--foreground)]">
-                        {step?.content ?? obs.stepId}
-                      </p>
-                      <p className="mt-1 text-sm text-[var(--muted)]">
-                        Rezultat: {obs.resultText}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
           )}
 
-          {phase === "active" && nextStep && nextStep.actionType !== "FINISH" && (
-            <div className="flex flex-col gap-4">
-              <div className="rounded-md border border-[var(--accent)] bg-[var(--accent-soft)] px-4 py-4">
-                <p className="text-xs font-medium uppercase tracking-wide text-[var(--accent)]">
-                  {actionLabel(nextStep.actionType)} · Sljedeći korak
-                </p>
-                <p className="mt-2 text-base font-medium leading-snug text-[var(--foreground)]">
-                  {nextStep.content}
-                </p>
-                <p className="mt-3 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                  Zašto
-                </p>
-                <p className="mt-1 text-sm text-[var(--muted)]">
-                  {nextStep.rationale}
-                </p>
-                {nextStep.expectedResultHint && (
-                  <p className="mt-2 text-sm text-[var(--muted)]">
-                    Zabilježite: {nextStep.expectedResultHint}
-                  </p>
-                )}
-              </div>
+          <VehicleCaseCard
+            diagnosticCase={diagnosticCase}
+            statusLabel={statusLabel}
+            progressIndex={progress.index}
+            progressTotal={progress.total}
+          />
 
-              <label className="flex flex-col gap-2">
-                <span className="text-sm font-medium text-[var(--foreground)]">
-                  {nextStep.actionType === "ASK"
-                    ? "Vaš odgovor"
-                    : "Rezultat testa"}
-                </span>
-                <textarea
-                  value={resultText}
-                  onChange={(e) => setResultText(e.target.value)}
-                  rows={5}
-                  placeholder="Unesite odgovor ili što ste izmjerili…"
-                  className="min-h-28 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-base leading-relaxed text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
-                  disabled={loading}
-                />
-              </label>
-
-              <button
-                type="button"
-                onClick={handleContinue}
-                disabled={loading || !resultText.trim()}
-                className="w-full rounded-md bg-[var(--accent)] px-4 py-3 text-base font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {loading ? "Šaljem…" : "Nastavi"}
-              </button>
-            </div>
+          {/* NEXT STEP first — primary UX question */}
+          {showActiveStep && nextStep && (
+            <NextStepCard
+              step={nextStep}
+              stepNumber={diagnosticCase.steps.length}
+              onEnterResult={openInput}
+              onCantPerform={() =>
+                handleContinue("Ne mogu izvesti ovaj test s dostupnim alatima.")
+              }
+              onSkip={() => handleContinue("Preskočeno za sada.")}
+            />
           )}
 
-          {phase === "completed" && (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-[var(--accent)]">
-                Finish · Dijagnoza
-              </p>
-              <p className="mt-2 text-base font-semibold text-[var(--foreground)]">
-                {diagnosticCase.confirmedFault ??
-                  nextStep?.confirmedFault ??
-                  "Slučaj završen"}
-              </p>
-              {(nextStep?.content || message) && (
-                <p className="mt-2 text-sm text-[var(--muted)]">
-                  {nextStep?.content ?? message}
-                </p>
-              )}
-              {nextStep?.rationale && (
-                <>
-                  <p className="mt-3 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
-                    Zašto
-                  </p>
-                  <p className="mt-1 text-sm text-[var(--muted)]">
-                    {nextStep.rationale}
-                  </p>
-                </>
-              )}
-              <button
-                type="button"
-                onClick={resetCase}
-                className="mt-4 w-full rounded-md bg-[var(--accent)] px-4 py-3 text-base font-semibold text-white"
-              >
-                Novi slučaj
-              </button>
-            </div>
+          <AIProcessingState active={loading} />
+
+          {phase === "completed" && finishStep && (
+            <DiagnosisCard
+              step={finishStep}
+              confirmedFault={diagnosticCase.confirmedFault}
+              onComplete={resetCase}
+            />
           )}
-        </section>
+
+          <HypothesesPanel hypotheses={hypotheses} />
+
+          <DiagnosticTimeline
+            diagnosticCase={diagnosticCase}
+            currentStep={nextStep}
+          />
+
+          <div ref={inputAnchorRef} />
+        </div>
       )}
-    </main>
+
+      {phase === "active" && inputOpen && !loading && (
+        <DiagnosticInput
+          value={resultText}
+          onChange={setResultText}
+          onSubmit={() => handleContinue()}
+          disabled={loading}
+          autoFocus
+        />
+      )}
+    </div>
   );
 }
