@@ -6,6 +6,7 @@ import {
 } from "./spec-guard";
 import { findConfirmationGuardIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
+import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import {
   buildKnownFactsSnapshot,
   findAlreadyKnownInfoIssue,
@@ -555,6 +556,28 @@ U tim slučajevima: approved=false; preferred correctedStep = bolji TEST drugim 
 
 skipped/unavailable NIJE dokaz — ne smije se tretirati kao potvrda/pobijanje.
 
+=== KRITIČNO: INTERNA LOGIČKA I TEHNIČKA KONZISTENTNOST REASONING-A ===
+Provjeri content + rationale + expectedResultHint + evidence/facts/hypotheses kao JEDAN reasoning lanac.
+
+NAJBITNIJE (HARD FAIL #0 — nikad ne odobri):
+Kasnija tvrdnja NE SMIJE proturječiti ranijem dijelu istog reasoning-a ili ranijem AI koraku bez NOVOG dokaza u CASE STATE.
+Ako content kaže X=OK a rationale kasnije X=MISSING/FAIL (ili obrnuto) → FAIL.
+Ako raniji korak tvrdi polarity za subjekt, a novi draft tvrdi suprotno bez novog test rezultata → FAIL.
+
+Također MORAŠ FAIL-ati (approved=false) ako:
+1. Zaključak zahtijeva uvjete koji nisu dokazani rezultatima testa / CASE STATE.
+   Primjer: "za sumnju na signalni krug trebaju power=OK + ground=OK + signal=MISSING", a signal nije provjeren → FAIL.
+2. Iz djelomično potvrđenih uvjeta izvodi PUNI zaključak (npr. 2/3 uvjeta OK → "potvrđen signalni krug").
+3. Isti test u različitim dijelovima drafta daje kontradiktorne kriterije ili zaključke.
+4. Rezultat testa (iz CASE STATE ili naveden u draftu) NE podržava zaključak koji AI iz njega izvodi.
+
+Na FAIL:
+- approved=false
+- issues: 1–2 KRATKA razloga (npr. "REASONING CONTRADICTION: signal polarity flipped without new evidence")
+- correctedStep=null — zatraži regeneraciju (ne "popravljaj" logiku nagađanjem)
+
+Odobri samo ako su svi navedeni preduvjeti zaključka eksplicitno pokriveni CASE STATE / completed test rezultatima, ili ako draft jasno kaže da uvjet još nije dokazan i ne donosi puni zaključak.
+
 Odgovori ISKLJUČIVO JSON:
 {
   "approved": boolean,
@@ -593,7 +616,8 @@ Odgovori ISKLJUČIVO JSON:
 }
 
 Ako draft ima male greške koje možeš pouzdano popraviti, stavi correctedStep.
-Ako je draft loš i ne možeš ga pouzdano popraviti, approved=false, correctedStep=null, i navedi issues.`;
+Ako je draft loš i ne možeš ga pouzdano popraviti, approved=false, correctedStep=null, i navedi issues.
+Za REASONING konzistentnost FAIL: uvijek approved=false, correctedStep=null, kratki issues.`;
 
 export function buildVerifierUserPrompt(
   diagnosticCase: DiagnosticCase,
@@ -629,6 +653,13 @@ export function buildVerifierUserPrompt(
       );
     }
   }
+
+  gateNotes.push(
+    "HARD FAIL #0 REASONING CONTRADICTION: kasnija tvrdnja ne smije proturječiti ranijem dijelu / ranijem koraku bez novog dokaza. Na FAIL: kratki issues + correctedStep=null.",
+  );
+  gateNotes.push(
+    "REASONING CONSISTENCY: FAIL i ako zaključak traži nedokazane uvjete, djelomične uvjete pretvara u puni zaključak, ili rezultat testa ne podržava zaključak.",
+  );
 
   return [
     "CASE STATE:",
@@ -1231,9 +1262,19 @@ export function findDraftQualityIssue(
       requiredSteps?: string[] | null;
       needsVerifiedProcedure?: boolean | null;
     } | null;
+    hypotheses?: Array<{
+      label?: string;
+      cause?: string;
+      status?: string;
+      note?: string | null;
+      confidence?: number | null;
+      supportingEvidence?: string[] | null;
+      contradictingEvidence?: string[] | null;
+    }> | null;
   },
 ): string | null {
   return (
+    findReasoningConsistencyIssue(diagnosticCase, draft) ??
     findAlreadyKnownInfoIssue(diagnosticCase, draft) ??
     findAskDecisionGateIssue(diagnosticCase, draft) ??
     findSafetyAndTechnicalRuleIssue(diagnosticCase, draft) ??

@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react";
 import type { DiagnosticStep } from "@/lib/diagnosis";
 import { actionLabel } from "@/lib/diagnosis/ui-helpers";
+import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
 
 type NextActionCardProps = {
   step: DiagnosticStep;
@@ -13,6 +14,54 @@ type NextActionCardProps = {
   onHowTo: () => void;
 };
 
+function shortTitle(step: DiagnosticStep): string {
+  const named = step.recommendedTest?.name?.trim();
+  if (named) return named.length > 72 ? `${named.slice(0, 69).trimEnd()}…` : named;
+
+  const first =
+    step.content.split(/[.\n!?]/)[0]?.trim() || step.content.trim();
+  if (first.length <= 72) return first;
+  return `${first.slice(0, 69).trimEnd()}…`;
+}
+
+/** 1–2 short sentences of content that do not repeat the title. */
+function shortDescription(step: DiagnosticStep, title: string): string {
+  const raw = step.content.replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+
+  const titleNorm = title.replace(/…$/, "").trim().toLowerCase();
+  let body = raw;
+
+  // Drop a leading sentence that is essentially the title
+  const sentences = raw
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (sentences.length > 1) {
+    const firstNorm = sentences[0]!.replace(/[.!?]+$/, "").trim().toLowerCase();
+    if (
+      firstNorm === titleNorm ||
+      firstNorm.startsWith(titleNorm) ||
+      titleNorm.startsWith(firstNorm)
+    ) {
+      body = sentences.slice(1).join(" ");
+    }
+  } else if (
+    raw.replace(/[.!?]+$/, "").trim().toLowerCase() === titleNorm
+  ) {
+    return "";
+  }
+
+  const kept = body
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 2);
+
+  return kept.join(" ");
+}
+
 export default function NextActionCard({
   step,
   stepNumber,
@@ -22,10 +71,11 @@ export default function NextActionCard({
   onHowTo,
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
-  const title =
-    step.recommendedTest?.name?.trim() ||
-    step.content.split(/[.\n]/)[0]?.trim() ||
-    step.content;
+  const [whyOpen, setWhyOpen] = useState(false);
+  const title = shortTitle(step);
+  const description = shortDescription(step, title);
+  const whyLabel =
+    step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
 
   function submit() {
     const trimmed = result.trim();
@@ -51,18 +101,21 @@ export default function NextActionCard({
         <h2 className="mt-3 text-xl font-semibold leading-snug tracking-tight sm:text-2xl">
           {title}
         </h2>
-        <p className="mt-3 text-base leading-relaxed text-[var(--muted-strong)]">
-          {step.content}
-        </p>
+        {description ? (
+          <p className="mt-2 text-base leading-relaxed text-[var(--muted-strong)]">
+            {description}
+          </p>
+        ) : null}
 
-        <div className="mt-4 rounded-2xl border border-[var(--border)] bg-black/25 p-3 sm:p-4">
-          <p className="text-xs font-medium tracking-wide text-[var(--muted)]">
-            ZAŠTO OVAJ TEST
-          </p>
-          <p className="mt-1.5 text-sm leading-relaxed text-[var(--muted-strong)]">
-            {step.rationale}
-          </p>
-        </div>
+        {step.rationale?.trim() ? (
+          <button
+            type="button"
+            onClick={() => setWhyOpen(true)}
+            className="mt-2 text-sm font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+          >
+            Zašto?
+          </button>
+        ) : null}
 
         {step.expectedResultHint && (
           <p className="mt-3 text-sm text-[var(--warning)]">
@@ -109,6 +162,16 @@ export default function NextActionCard({
           <GhostBtn onClick={onHowTo}>Kako testirati?</GhostBtn>
         </div>
       </div>
+
+      <ResponsiveOverlay
+        open={whyOpen}
+        onClose={() => setWhyOpen(false)}
+        title={whyLabel}
+      >
+        <p className="text-sm leading-relaxed text-[var(--muted-strong)] whitespace-pre-wrap">
+          {step.rationale}
+        </p>
+      </ResponsiveOverlay>
     </section>
   );
 }

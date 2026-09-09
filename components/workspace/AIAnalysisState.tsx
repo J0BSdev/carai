@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 type AIAnalysisStateProps = {
   active: boolean;
   mode?: "init" | "reanalyze";
@@ -9,9 +11,27 @@ export default function AIAnalysisState({
   active,
   mode = "reanalyze",
 }: AIAnalysisStateProps) {
+  const [phase, setPhase] = useState<"analyze" | "next">("analyze");
+
+  useEffect(() => {
+    if (!active) {
+      setPhase("analyze");
+      return;
+    }
+    setPhase("analyze");
+    const id = window.setTimeout(() => setPhase("next"), 1800);
+    return () => window.clearTimeout(id);
+  }, [active, mode]);
+
   if (!active) return null;
 
   const isInit = mode === "init";
+  const statusText =
+    phase === "next"
+      ? "Određujem sljedeći dijagnostički korak…"
+      : isInit
+        ? "Analiziram prijavljeni kvar…"
+        : "Analiziram nove dokaze…";
 
   return (
     <section
@@ -27,11 +47,7 @@ export default function AIAnalysisState({
         </p>
         <div className="mt-4 flex items-center gap-3">
           <span className="anim-pulse h-2.5 w-2.5 rounded-full bg-[var(--accent)] shadow-[0_0_16px_var(--accent-glow)]" />
-          <p className="text-base font-medium">
-            {isInit
-              ? "Šaljem prijavu AI dijagnostičaru i čekam prvi korak…"
-              : "Šaljem nove dokaze AI dijagnostičaru i čekam sljedeći korak…"}
-          </p>
+          <p className="text-base font-medium">{statusText}</p>
         </div>
         <p className="mt-2 text-sm text-[var(--muted)]">
           Podaci slučaja su sačuvani.

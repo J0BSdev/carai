@@ -17,14 +17,14 @@ function certaintyLabel(certainty: DiagnosisCertainty | undefined, insufficient?
     (insufficient === false ? "HIGH_CONFIDENCE" : "LIKELY");
   switch (c) {
     case "CONFIRMED":
-      return { text: "CONFIRMED", tone: "confirmed" };
+      return { text: "POTVRĐENO", tone: "confirmed" };
     case "HIGH_CONFIDENCE":
-      return { text: "HIGH CONFIDENCE", tone: "high" };
+      return { text: "VISOKA POUZDANOST", tone: "high" };
     case "SUSPECTED":
-      return { text: "SUSPECTED", tone: "suspected" };
+      return { text: "SUMNJA", tone: "suspected" };
     case "LIKELY":
     default:
-      return { text: "LIKELY", tone: "likely" };
+      return { text: "VJEROJATNO", tone: "likely" };
   }
 }
 
@@ -78,7 +78,7 @@ export default function DiagnosisCompletion({
       {!confirmed && (
         <p className="mt-2 text-sm text-[var(--warning)]">
           {meta.tone === "high"
-            ? "Visoka pouzdanost prema trenutnim dokazima, ali još nije CONFIRMED — alternative nisu potpuno eliminirane ili nedostaje neovisni potvrđujući dokaz."
+            ? "Visoka pouzdanost prema trenutnim dokazima, ali još nije potvrđeno — alternative nisu potpuno eliminirane ili nedostaje neovisni potvrđujući dokaz."
             : "Potrebna je dodatna potvrda prije zamjene skupih dijelova."}
         </p>
       )}

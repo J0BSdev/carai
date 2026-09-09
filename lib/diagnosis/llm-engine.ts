@@ -22,6 +22,7 @@ import {
 } from "./prompts";
 import { mergeTechnicalSpecClaims } from "./spec-guard";
 import { extractFactsFromText, refreshExtractedFacts } from "./known-facts";
+import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import {
   downgradeUnjustifiedConfirmed,
   findConfirmationGuardIssue,
@@ -171,11 +172,27 @@ async function verifyWithOpenAi(
   });
 
   const parsed = parseJson<VerifierPayload>(raw, "OpenAI verifier odgovor");
-  return {
+  const verdict: VerifierPayload = {
     approved: Boolean(parsed.approved),
     issues: Array.isArray(parsed.issues) ? parsed.issues.map(String) : [],
     correctedStep: parsed.correctedStep ?? null,
   };
+
+  // HARD override: never let contradiction through even if model approved.
+  const contradiction =
+    findReasoningConsistencyIssue(diagnosticCase, draft) ??
+    (verdict.correctedStep
+      ? findReasoningConsistencyIssue(diagnosticCase, verdict.correctedStep)
+      : null);
+  if (contradiction) {
+    return {
+      approved: false,
+      issues: [contradiction, ...verdict.issues].slice(0, 3),
+      correctedStep: null,
+    };
+  }
+
+  return verdict;
 }
 
 async function applyConfirmationPolicy(
@@ -466,6 +483,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const diagnosticCase: DiagnosticCase = {
       ...baseCase,
+      extracted: lightExtract(trimmed),
       steps: [nextStep],
       status: isFinish ? "completed" : "active",
       confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
