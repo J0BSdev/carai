@@ -25,6 +25,20 @@ export type LlmStepPayload = {
       nextAction?: string;
     }> | null;
   } | null;
+  /** Technical claims/specs with mandatory sourceType honesty. */
+  technicalClaims?: Array<{
+    claim?: string | null;
+    valueText?: string | null;
+    sourceType?: string | null;
+    vehicleSpecific?: boolean | null;
+  }> | null;
+  /** Mandatory for safety-critical TESTs (SRS/HV/brakes…). */
+  safetyPreconditions?: {
+    category?: string | null;
+    warnings?: string[] | null;
+    requiredSteps?: string[] | null;
+    needsVerifiedProcedure?: boolean | null;
+  } | null;
   hypotheses?: Array<{
     label?: string;
     cause?: string;

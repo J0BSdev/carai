@@ -9,7 +9,6 @@ import type {
 import {
   diagnosticStatusLabel,
   latestHypotheses,
-  statusProgress,
 } from "@/lib/diagnosis/ui-helpers";
 import AppShell from "@/components/workspace/AppShell";
 import AIAnalysisState from "@/components/workspace/AIAnalysisState";
@@ -62,7 +61,6 @@ export default function DiagnosticScreen() {
     () => diagnosticStatusLabel(phase, diagnosticCase, nextStep),
     [phase, diagnosticCase, nextStep],
   );
-  const progress = statusProgress(statusLabel);
   const hypotheses = diagnosticCase ? latestHypotheses(diagnosticCase) : [];
 
   const finishStep =
@@ -391,10 +389,6 @@ export default function DiagnosticScreen() {
             )}
 
             <EvidenceTimeline diagnosticCase={diagnosticCase} />
-
-            <p className="text-center text-[11px] text-[var(--muted)]">
-              Faza {progress.index}/{progress.total}
-            </p>
           </div>
 
           <CaseIntelligencePanel

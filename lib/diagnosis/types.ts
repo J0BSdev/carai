@@ -104,6 +104,14 @@ export interface Observation {
 
 export type SpecVerificationStatus = "VERIFIED" | "UNVERIFIED";
 
+/** Provenance of a technical claim/spec — required honesty label for AI claims. */
+export type TechnicalSourceType =
+  | "VERIFIED_OEM"
+  | "VERIFIED_TECHNICAL"
+  | "GENERAL_PRINCIPLE"
+  | "MODEL_KNOWLEDGE"
+  | "UNKNOWN";
+
 /** Locked vehicle-specific reference specification claim. */
 export interface TechnicalSpecClaim {
   parameterKey: string;
@@ -114,6 +122,8 @@ export interface TechnicalSpecClaim {
   high: number | null;
   condition: string | null;
   status: SpecVerificationStatus;
+  /** Honesty label; VERIFIED_* only when backed by verifiedTechnicalSpecs. */
+  sourceType?: TechnicalSourceType;
   source?: string;
   vehicleEngineMatch?: string;
 }

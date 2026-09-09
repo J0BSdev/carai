@@ -1,35 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { THINKING_MESSAGES } from "@/lib/diagnosis/ui-helpers";
-
 type AIAnalysisStateProps = {
   active: boolean;
   mode?: "init" | "reanalyze";
 };
 
-const INIT_MESSAGES = [
-  "Identificiram vozilo…",
-  "Strukturiram prijavu…",
-  "Pripremam prvi dijagnostički korak…",
-] as const;
-
 export default function AIAnalysisState({
   active,
   mode = "reanalyze",
 }: AIAnalysisStateProps) {
-  const messages = mode === "init" ? INIT_MESSAGES : THINKING_MESSAGES;
-  const [index, setIndex] = useState(0);
-
-  useEffect(() => {
-    if (!active) return;
-    const id = window.setInterval(() => {
-      setIndex((i) => (i + 1) % messages.length);
-    }, 1600);
-    return () => window.clearInterval(id);
-  }, [active, messages.length]);
-
   if (!active) return null;
+
+  const isInit = mode === "init";
 
   return (
     <section
@@ -39,14 +21,16 @@ export default function AIAnalysisState({
     >
       <div className="relative z-10">
         <p className="text-xs font-semibold tracking-[0.16em] text-[var(--accent)]">
-          {mode === "init"
+          {isInit
             ? "KREIRAM DIJAGNOSTIČKI SLUČAJ"
             : "ANALIZIRAM NOVE DOKAZE"}
         </p>
         <div className="mt-4 flex items-center gap-3">
           <span className="anim-pulse h-2.5 w-2.5 rounded-full bg-[var(--accent)] shadow-[0_0_16px_var(--accent-glow)]" />
           <p className="text-base font-medium">
-            {messages[index % messages.length]}
+            {isInit
+              ? "Šaljem prijavu AI dijagnostičaru i čekam prvi korak…"
+              : "Šaljem nove dokaze AI dijagnostičaru i čekam sljedeći korak…"}
           </p>
         </div>
         <p className="mt-2 text-sm text-[var(--muted)]">

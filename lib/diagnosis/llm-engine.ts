@@ -301,6 +301,10 @@ async function ensureDraftPassesQualityGates(
     extraIssues.some((i) => /ASK REJECT/i.test(i)) ||
     (issue != null && /ASK REJECT/i.test(issue));
 
+  const safetyRejected =
+    extraIssues.some((i) => /SAFETY REJECT/i.test(i)) ||
+    (issue != null && /SAFETY REJECT/i.test(issue));
+
   const firstIssues = [
     ...(issue ? [issue] : []),
     ...extraIssues,
@@ -309,8 +313,11 @@ async function ensureDraftPassesQualityGates(
     askRejected
       ? "ASK je odbijen backend gateom. actionType MORA biti TEST — odmah odaberi najbolji sljedeći dijagnostički test. Ne vraćaj ASK."
       : "Ako ASK nema decision value → TEST. Ako TEST ne razlikuje hipoteze → bolji TEST ili FINISH.",
-    "Skipped test nije dokaz — ne parafraziraj ga.",
-  ];
+    safetyRejected
+      ? "SAFETY REJECT: regeneriraj ISTI tip TEST-a ali s obaveznim safetyPreconditions + upozorenjima u content (SRS: deaktivacija/odspajanje napajanja prije rada na konektorima/modulu; ne izmišljaj wait time — needsVerifiedProcedure)."
+      : "Skipped test nije dokaz — ne parafraziraj ga.",
+    safetyRejected ? "Skipped test nije dokaz — ne parafraziraj ga." : "",
+  ].filter(Boolean);
 
   draft = await draftWithClaude(
     diagnosticCase,
@@ -327,6 +334,22 @@ async function ensureDraftPassesQualityGates(
       buildDiagnosticRetryPrompt(diagnosticCase, draft, [
         askIssue,
         "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
+      ]),
+    );
+  }
+
+  // Safety-critical TEST missing preconditions → force regenerate with safety steps
+  issue = findDraftQualityIssue(diagnosticCase, draft);
+  if (issue && /SAFETY REJECT/i.test(issue) && draft.actionType === "TEST") {
+    draft = await draftWithClaude(
+      diagnosticCase,
+      buildDiagnosticRetryPrompt(diagnosticCase, draft, [
+        issue,
+        "OBAVEZNO: actionType=TEST s safetyPreconditions.",
+        "U content na početku navedi sigurnosne korake.",
+        "SRS/airbag konektor/modul: deaktiviraj sustav / odspoji napajanje PRIJE rada.",
+        "Ne izmišljaj vehicle-specific vrijeme čekanja — needsVerifiedProcedure=true.",
+        "technicalClaims[]: svaka tvrdnja mora imati ispravan sourceType.",
       ]),
     );
   }

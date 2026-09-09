@@ -5,6 +5,7 @@ import {
   getVerifiedTechnicalSpecs,
 } from "./spec-guard";
 import { findConfirmationGuardIssue } from "./confirmation-guard";
+import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import {
   buildKnownFactsSnapshot,
   findAlreadyKnownInfoIssue,
@@ -56,6 +57,22 @@ Ne navodi kontradiktorne raspone unutar istog slučaja.
 
 Ne gradi sljedeći korak na neprovjerenoj vehicle-specific pretpostavci.
 Ako ti takav podatak treba: ASK za verificirani podatak ILI TEST koji ne ovisi o njemu.
+
+=== TEHNIČKE TVRDNJE: sourceType (OBAVEZNO) ===
+Svaka tehnička tvrdnja/spec u JSON-u (polje technicalClaims[]) MORA imati sourceType:
+VERIFIED_OEM | VERIFIED_TECHNICAL | GENERAL_PRINCIPLE | MODEL_KNOWLEDGE | UNKNOWN.
+
+Pravila:
+- Vehicle-specific vrijednost NE smije biti GENERAL_PRINCIPLE.
+- MODEL_KNOWLEDGE i UNKNOWN NIKAD ne tretiraj kao verificirani spec.
+- VERIFIED_OEM / VERIFIED_TECHNICAL samo ako je podatak u CASE STATE.verifiedTechnicalSpecs (AI se ne smije sam verificirati).
+
+=== SAFETY-CRITICAL TEST ===
+Ako TEST dira SRS/airbag, HV/hybrid, kočnice ili slično safety-critical:
+- Backend NE prikazuje TEST bez obaveznih safety preconditions (polje safetyPreconditions + jasni koraci u content).
+- SRS rad na konektorima/modulu: jasno upozori na deaktivaciju sustava / odspajanje napajanja PRIJE rada.
+- Ne izmišljaj vehicle-specific wait time/postupak — označi needsVerifiedProcedure=true i reci da treba verificiranu proceduru.
+Ako preconditions nedostaju → backend odbija TEST i traži regeneraciju sa sigurnosnim koracima.
 
 === PROBLEM: PREVIŠE KORAKA ODJEDNOM ===
 Odgovor smije sadržavati SAMO jedan sljedeći dijagnostički korak.
@@ -220,6 +237,18 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
   "insufficientEvidence": "boolean — true za sve osim CONFIRMED",
   "facts": ["string"] | null,
   "evidence": ["string"] | null,
+  "technicalClaims": [{
+    "claim": "string",
+    "valueText": "string | null",
+    "sourceType": "VERIFIED_OEM" | "VERIFIED_TECHNICAL" | "GENERAL_PRINCIPLE" | "MODEL_KNOWLEDGE" | "UNKNOWN",
+    "vehicleSpecific": boolean
+  }] | null,
+  "safetyPreconditions": {
+    "category": "SRS" | "HV" | "BRAKES" | "OTHER_CRITICAL" | null,
+    "warnings": ["string"],
+    "requiredSteps": ["string"],
+    "needsVerifiedProcedure": boolean
+  } | null,
   "hypotheses": [{
     "label": "string",
     "status": "LIKELY" | "POSSIBLE" | "WEAK" | "RULED_OUT",
@@ -488,6 +517,8 @@ Odobri samo ako draft zadovoljava SVA pravila:
 4. Ne tvrdi kvar dijela bez dovoljno dokaza.
 5. FINISH samo uz dovoljno evidencije; inače ASK/TEST. Ali NE forsira dodatne testove kad je LEADING već dovoljno jak.
 6. Ne izmišlja vehicle-specific brojke/raspove. AI claim ≠ VERIFIED. UNVERIFIED SPEC nije dokaz.
+6b. Svaka tehnička tvrdnja ima sourceType; vehicle-specific ≠ GENERAL_PRINCIPLE; MODEL_KNOWLEDGE/UNKNOWN ≠ verified.
+6c. Safety-critical TEST (SRS/HV/kočnice…) mora imati safety preconditions; SRS konektor/modul → deaktivacija/odspajanje napajanja; ne izmišljati wait time.
 7. content i rationale na hrvatskom i konkretni.
 8. Ne prikazuje cijeli budući dijagnostički plan.
 9. Ako significantEvidenceCount >= 2, draft bi trebao imati ažurirane hypotheses (max 3–4) s statusima LEADING/POSSIBLE/WEAK/RULED_OUT.
@@ -517,6 +548,8 @@ ODBIJ TEST ako:
 - semantički sličan skippedUnavailableTests (samo parafraza nedostupnog testa)
 - ne razlikuje LEADING od najjače alternative (checklista / "još jedan test")
 - nakon jakih dokaza i dalje predlaže sitne dodatne testove umjesto FINISH ili jednog potvrđujućeg testa
+- safety-critical (SRS/HV/kočnice…) bez safetyPreconditions / bez upozorenja za deaktivaciju napajanja kod SRS konektora/modula
+- izmišlja vehicle-specific SRS/HV wait time umjesto needsVerifiedProcedure
 
 U tim slučajevima: approved=false; preferred correctedStep = bolji TEST drugim putem ILI FINISH.
 
@@ -536,6 +569,18 @@ Odgovori ISKLJUČIVO JSON:
     "insufficientEvidence": boolean,
     "facts": ["string"] | null,
     "evidence": ["string"] | null,
+    "technicalClaims": [{
+      "claim": "string",
+      "valueText": "string | null",
+      "sourceType": "VERIFIED_OEM" | "VERIFIED_TECHNICAL" | "GENERAL_PRINCIPLE" | "MODEL_KNOWLEDGE" | "UNKNOWN",
+      "vehicleSpecific": boolean
+    }] | null,
+    "safetyPreconditions": {
+      "category": "SRS" | "HV" | "BRAKES" | "OTHER_CRITICAL" | null,
+      "warnings": ["string"],
+      "requiredSteps": ["string"],
+      "needsVerifiedProcedure": boolean
+    } | null,
     "hypotheses": [{
       "label": "string",
       "status": "LEADING" | "POSSIBLE" | "WEAK" | "RULED_OUT",
@@ -1174,11 +1219,24 @@ export function findDraftQualityIssue(
         nextAction?: string;
       }> | null;
     } | null;
+    technicalClaims?: Array<{
+      claim?: string | null;
+      valueText?: string | null;
+      sourceType?: string | null;
+      vehicleSpecific?: boolean | null;
+    }> | null;
+    safetyPreconditions?: {
+      category?: string | null;
+      warnings?: string[] | null;
+      requiredSteps?: string[] | null;
+      needsVerifiedProcedure?: boolean | null;
+    } | null;
   },
 ): string | null {
   return (
     findAlreadyKnownInfoIssue(diagnosticCase, draft) ??
     findAskDecisionGateIssue(diagnosticCase, draft) ??
+    findSafetyAndTechnicalRuleIssue(diagnosticCase, draft) ??
     findSpecGuardIssue(diagnosticCase, draft) ??
     findConfirmationGuardIssue(diagnosticCase, draft) ??
     findObviousRepetition(diagnosticCase, draft) ??

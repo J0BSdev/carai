@@ -41,7 +41,7 @@ export default function NewCaseExperience({
             onChange={(e) => onChange(e.target.value)}
             rows={5}
             disabled={loading}
-            placeholder="Golf 7 GTD 2015, gubi snagu iznad 3000 o/min, P0299…"
+            placeholder="Opišite problem što detaljnije možete…"
             className="min-h-36 w-full resize-y bg-transparent px-2 py-2 text-base leading-relaxed outline-none placeholder:text-[var(--muted)]"
           />
           <div className="mt-2 flex items-center justify-between gap-2">
@@ -76,9 +76,9 @@ export default function NewCaseExperience({
         </p>
 
         <div className="mt-8 flex flex-wrap gap-2">
-          <FutureChip>Skeniraj VIN</FutureChip>
-          <FutureChip>Unesi VIN</FutureChip>
-          <FutureChip>Spoji OBD</FutureChip>
+          <FutureChip>VIN sken — uskoro</FutureChip>
+          <FutureChip>VIN unos — uskoro</FutureChip>
+          <FutureChip>OBD spoj — uskoro</FutureChip>
         </div>
       </div>
     </section>
