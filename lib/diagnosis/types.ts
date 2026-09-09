@@ -38,6 +38,8 @@ export interface ExtractedCaseFacts {
   symptoms?: string[];
   dtcs?: string[];
   priorTests?: string[];
+  observations?: string[];
+  measurements?: string[];
 }
 
 export interface Hypothesis {

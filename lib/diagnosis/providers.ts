@@ -13,6 +13,18 @@ export type LlmStepPayload = {
   insufficientEvidence?: boolean | null;
   facts?: string[] | null;
   evidence?: string[] | null;
+  /**
+   * Required for ASK: decision-critical justification.
+   * Backend rejects ASK without this (or equivalent branch proof in rationale).
+   */
+  askDecision?: {
+    whyNeeded?: string | null;
+    expectedAnswers?: string[] | null;
+    nextStepByAnswer?: Array<{
+      answer?: string;
+      nextAction?: string;
+    }> | null;
+  } | null;
   hypotheses?: Array<{
     label?: string;
     cause?: string;

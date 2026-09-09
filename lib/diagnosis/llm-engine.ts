@@ -21,6 +21,7 @@ import {
   findDraftQualityIssue,
 } from "./prompts";
 import { mergeTechnicalSpecClaims } from "./spec-guard";
+import { extractFactsFromText, refreshExtractedFacts } from "./known-facts";
 import {
   downgradeUnjustifiedConfirmed,
   findConfirmationGuardIssue,
@@ -295,12 +296,19 @@ async function ensureDraftPassesQualityGates(
   let issue = findDraftQualityIssue(diagnosticCase, draft);
   if (!issue && extraIssues.length === 0) return draft;
 
+  const askRejected =
+    draft.actionType === "ASK" ||
+    extraIssues.some((i) => /ASK REJECT/i.test(i)) ||
+    (issue != null && /ASK REJECT/i.test(issue));
+
   const firstIssues = [
     ...(issue ? [issue] : []),
     ...extraIssues,
     "Predloži DRUGAČIJI sljedeći korak koristeći CASE STATE.",
     "Ne ponavljaj već postavljena pitanja ni završene/semantički slične testove.",
-    "Ako ASK nema decision value → TEST. Ako TEST ne razlikuje hipoteze → bolji TEST ili FINISH.",
+    askRejected
+      ? "ASK je odbijen backend gateom. actionType MORA biti TEST — odmah odaberi najbolji sljedeći dijagnostički test. Ne vraćaj ASK."
+      : "Ako ASK nema decision value → TEST. Ako TEST ne razlikuje hipoteze → bolji TEST ili FINISH.",
     "Skipped test nije dokaz — ne parafraziraj ga.",
   ];
 
@@ -308,6 +316,21 @@ async function ensureDraftPassesQualityGates(
     diagnosticCase,
     buildDiagnosticRetryPrompt(diagnosticCase, draft, firstIssues),
   );
+
+  // If model returned ASK again after rejection, force another TEST-only retry
+  if (draft.actionType === "ASK") {
+    const askIssue =
+      findDraftQualityIssue(diagnosticCase, draft) ??
+      "ASK REJECT: backend ne prikazuje ASK bez decision value — vrati TEST.";
+    draft = await draftWithClaude(
+      diagnosticCase,
+      buildDiagnosticRetryPrompt(diagnosticCase, draft, [
+        askIssue,
+        "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
+      ]),
+    );
+  }
+
   issue = findDraftQualityIssue(diagnosticCase, draft);
   if (!issue) return draft;
 
@@ -388,11 +411,7 @@ async function ensureDraftPassesQualityGates(
 }
 
 function lightExtract(problemText: string): DiagnosticCase["extracted"] {
-  const dtcMatches = problemText.toUpperCase().match(/P[0-9A-F]{4}/g);
-  return {
-    symptoms: [problemText.trim()],
-    dtcs: dtcMatches ? [...new Set(dtcMatches)] : undefined,
-  };
+  return extractFactsFromText(problemText);
 }
 
 export class LlmDiagnosticEngine implements DiagnosticEngine {
@@ -513,6 +532,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         rejectedDiagnoses,
         observations: [...diagnosticCase.observations, rejectionObservation],
       };
+      reopened.extracted = refreshExtractedFacts(reopened, trimmed);
 
       const nextStep = await callVerifiedDiagnosticStep(reopened);
       const isFinish = nextStep.actionType === "FINISH";
@@ -549,6 +569,10 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       ...diagnosticCase,
       observations: [...diagnosticCase.observations, observation],
     };
+    caseWithObservation.extracted = refreshExtractedFacts(
+      caseWithObservation,
+      trimmed,
+    );
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);
     const isFinish = nextStep.actionType === "FINISH";

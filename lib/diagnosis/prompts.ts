@@ -5,6 +5,11 @@ import {
   getVerifiedTechnicalSpecs,
 } from "./spec-guard";
 import { findConfirmationGuardIssue } from "./confirmation-guard";
+import {
+  buildKnownFactsSnapshot,
+  findAlreadyKnownInfoIssue,
+  refreshExtractedFacts,
+} from "./known-facts";
 
 export const DIAGNOSTIC_SYSTEM_PROMPT = `Ti si AI dijagnostički copilot za profesionalne auto-mehaničare.
 
@@ -74,6 +79,19 @@ Nemoj automatski nastaviti "sljedeći test iz liste".
 ASK only when the missing information is decision-critical.
 Do not ask questions merely because additional detail could be useful.
 If multiple possible answers would lead to the same next diagnostic test, skip the question and perform that test.
+
+Svaki ASK JSON MORA uključivati askDecision:
+- whyNeeded: zašto je informacija potrebna za odluku
+- expectedAnswers: najmanje 2 realna moguća odgovora
+- nextStepByAnswer: za svaki odgovor DRUGAČIJI sljedeći dijagnostički korak (obično različiti TEST)
+
+Backend NE prikazuje ASK automatski ako:
+- podatak već postoji u CASE STATE
+- različiti odgovori vode na isti sljedeći korak
+- pitanje samo prikuplja kontekst bez utjecaja na odluku
+- askDecision nedostaje ili je nepotpun
+
+U tom slučaju backend traži regeneraciju kao TEST.
 
 === HIPOTEZE (nakon ≥2 značajna dokaza) ===
 Kad CASE STATE ima najmanje 2 značajna dokaza (odgovori + stvarni rezultati testova; SKIPPED se NE broji kao dokaz), u JSON-u vrati najviše 3–4 trenutno realne hipoteze.
@@ -160,8 +178,15 @@ Information gain:
 Preferiraj TEST nad ASK čim postoji dovoljno za smislen test.
 Maksimalno 1 ASK zaredom osim ako je drugi jasno decision-critical (različite grane u rationale).
 
+=== PROBLEM: PONAVLJANJE POZNATIH PODATAKA ===
+PRIJE ASK/TEST pročitaj CASE STATE.knownFacts i dtcs.
+- Ako je DTC/kod već u knownFacts.knownDtcCodes — NE traži ponovno očitavanje/popis DTC-ova.
+- Smiješ pitati status/opis/freeze-frame poznatog koda SAMO ako ti podaci još nisu u CASE STATE.
+- Ne pitaj ponovno marku/model/godinu koje su već u vehicleInformation.
+- Ne izmišljaj nedostajuće podatke.
+
 === PROBLEM: PONAVLJANJE ===
-PRIJE ASK/TEST pročitaj CASE STATE (completedTests, skippedUnavailableTests, answers, measurements, currentHypotheses).
+PRIJE ASK/TEST pročitaj CASE STATE (completedTests, skippedUnavailableTests, answers, measurements, currentHypotheses, knownFacts).
 - Ne pitaj što je već poznato.
 - Ne traži ponovno isti ili semantički sličan test.
 - Ne traži ponovno mjerenje koje već postoji bez konkretnog razloga u rationale.
@@ -182,6 +207,13 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
   "rationale": "string — zašto ovaj korak; kod TEST navedi koje hipoteze razlikuje",
   "expectedResultHint": "string | null — što mehaničar treba zabilježiti",
   "confirmedFault": "string | null — samo uz FINISH",
+  "askDecision": {
+    "whyNeeded": "string — zašto je informacija decision-critical",
+    "expectedAnswers": ["string", "string"],
+    "nextStepByAnswer": [
+      { "answer": "string", "nextAction": "string — konkretan različiti TEST/FINISH" }
+    ]
+  } | null,
   "diagnosisCertainty": "SUSPECTED" | "LIKELY" | "HIGH_CONFIDENCE" | "CONFIRMED" | null,
   "diagnosisConfidence": "number | null — evidence ranking 0–100; null ako nema dovoljno dokaza",
   "confidence": "low" | "medium" | "high",
@@ -246,6 +278,12 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     result: string | null;
     resultKind: "none" | "answer" | "measurement" | "skipped";
   }> = [];
+
+  const extracted = refreshExtractedFacts(diagnosticCase);
+  const knownFacts = buildKnownFactsSnapshot({
+    ...diagnosticCase,
+    extracted,
+  });
 
   for (const step of diagnosticCase.steps) {
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
@@ -314,9 +352,10 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
 
   return {
     originalComplaint: diagnosticCase.problemText,
-    vehicleInformation: diagnosticCase.extracted?.vehicle ?? null,
-    dtcs: diagnosticCase.extracted?.dtcs ?? [],
-    symptoms: diagnosticCase.extracted?.symptoms ?? [],
+    vehicleInformation: knownFacts.vehicle,
+    dtcs: knownFacts.knownDtcCodes,
+    symptoms: knownFacts.symptoms,
+    knownFacts,
     userObservations: diagnosticCase.observations
       .filter((o) => !isSkippedOrUnavailableResult(o.resultText))
       .map((o) => o.resultText),
@@ -325,7 +364,13 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     completedTests,
     skippedUnavailableTests,
     testResults: completedTests.map((t) => t.result),
-    measurements,
+    measurements: [
+      ...measurements,
+      ...knownFacts.measurements.filter(
+        (m) =>
+          !measurements.some((x) => x.trim().toLowerCase() === m.trim().toLowerCase()),
+      ),
+    ],
     currentHypotheses,
     previousDiagnosticActions,
     diagnosticStepHistory: stepHistory,
@@ -359,7 +404,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
         "Dokazi iz različitih mjerenja/grana — ne broji isti signal više puta.",
     },
     instruction:
-      "REEVALUATE all evidence. FINISH uses diagnosisCertainty (SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED). CONFIRMED is rare. Confidence != confirmation. Respect rejectedDiagnoses. Never invent vehicle-specific numeric specs.",
+      "REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. FINISH uses diagnosisCertainty. CONFIRMED is rare. Respect rejectedDiagnoses.",
   };
 }
 
@@ -392,6 +437,7 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
     "Na temelju CIJELOG CASE STATE odaberi sljedeću JEDNU akciju (ASK, TEST ili FINISH) i vrati JSON.",
     "Obavezno: REEVALUATE svih dokaza; ažuriraj hipoteze; ne nastavljaj checklistu.",
     "Ne ponavljaj questionsAlreadyAsked, completedTests, ni semantički slične testove.",
+    "KNOWN FACTS: koristi knownFacts/dtcs — ne traži ponovno već poznate DTC kodove ni poznate podatke o vozilu. Detalj (status/opis) smiješ pitati samo ako nije poznat.",
     "skippedUnavailableTests nisu dokaz — traži ALTERNATIVNI put, ne parafrazu istog testa.",
     "Ne izmišljaj vehicle-specific tehničke brojke. Ako nisu u verifiedTechnicalSpecs → UNVERIFIED i nisu dokaz.",
     "FINISH: postavi diagnosisCertainty (SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED) + diagnosisConfidence. CONFIRMED samo uz neovisni potvrđujući dokaz.",
@@ -805,25 +851,272 @@ export function findSimilarTestBranchIssue(
 }
 
 /**
- * Programmatic ASK decision gate: after one answered ASK, a second consecutive ASK
- * is rejected unless rationale clearly justifies branching next tests.
+ * Backend ASK gate: every ASK must prove decision value.
+ * Rejects and forces TEST regeneration when:
+ * - info already in case state (also covered by known-facts / repetition)
+ * - missing why / expected answers / branch impact
+ * - different answers lead to the same next step
+ * - question only gathers context
  */
 export function findAskDecisionGateIssue(
   diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string; rationale?: string },
+  draft: {
+    actionType?: string;
+    content?: string;
+    rationale?: string;
+    askDecision?: {
+      whyNeeded?: string | null;
+      expectedAnswers?: string[] | null;
+      nextStepByAnswer?: Array<{
+        answer?: string;
+        nextAction?: string;
+      }> | null;
+    } | null;
+  },
 ): string | null {
   if (draft.actionType !== "ASK") return null;
+  const state = buildCaseState(diagnosticCase);
+  const normalizedQuestion = normalizeForCompare(
+    `${draft.content ?? ""} ${draft.rationale ?? ""}`,
+  );
 
+  const askRejectPrefix =
+    "ASK REJECT: neprikazuje se. Regeneriraj s actionType=TEST (najbolji sljedeći dijagnostički test). ";
+
+  const dtcKnown = Array.isArray(state.dtcs) && state.dtcs.length > 0;
+  const dtcDetailQuestion = isDtcDetailQuestion(normalizedQuestion);
+  if (dtcKnown) {
+    if (asksForDtcInventoryOrRescanLocal(normalizedQuestion)) {
+      return (
+        askRejectPrefix +
+        `DTC je već poznat (${state.dtcs.join(", ")}). Ne traži ponovno DTC, prijeđi na relevantan TEST.`
+      );
+    }
+    if (
+      state.completedTests.length === 0 &&
+      !dtcDetailQuestion &&
+      asksGenericSymptomsOrWarningLight(normalizedQuestion)
+    ) {
+      return (
+        askRejectPrefix +
+        "Kod poznatog DTC-a ne pitaj opće simptome/lampice prije korištenja DTC traga. Odaberi TEST koji razlikuje uzroke tog DTC-a."
+      );
+    }
+    if (!dtcDetailQuestion) {
+      return (
+        askRejectPrefix +
+        "Poznat DTC je dovoljan za smislen prvi test. ASK je dopušten samo za nedostajući DTC detalj (status/opis/subcode) ako je potreban."
+      );
+    }
+    if (hasKnownDtcDetailAlready(state, normalizedQuestion)) {
+      return (
+        askRejectPrefix +
+        "Traženi DTC detalj je već u case stateu. Odaberi sljedeći TEST."
+      );
+    }
+  }
+
+  if (canSelectMeaningfulTestNow(state) && !dtcDetailQuestion) {
+    return (
+      askRejectPrefix +
+      "Već postoji dovoljno podataka za smislen/siguran sljedeći TEST. ASK nije dopušten."
+    );
+  }
+
+  const why =
+    draft.askDecision?.whyNeeded?.trim() ||
+    extractWhyFromRationale(draft.rationale ?? "");
+  const expectedAnswers = (draft.askDecision?.expectedAnswers ?? [])
+    .map((a) => a?.trim())
+    .filter((a): a is string => Boolean(a));
+  const branches = (draft.askDecision?.nextStepByAnswer ?? [])
+    .map((b) => ({
+      answer: b.answer?.trim() ?? "",
+      nextAction: b.nextAction?.trim() ?? "",
+    }))
+    .filter((b) => b.answer && b.nextAction);
+
+  // Structured path preferred
+  if (draft.askDecision) {
+    if (!why) {
+      return (
+        askRejectPrefix +
+        "Nedostaje zašto je informacija potrebna (askDecision.whyNeeded)."
+      );
+    }
+    if (isContextOnlyWhy(why)) {
+      return (
+        askRejectPrefix +
+        "Pitanje samo prikuplja dodatni kontekst bez utjecaja na odluku."
+      );
+    }
+    if (expectedAnswers.length < 2 && branches.length < 2) {
+      return (
+        askRejectPrefix +
+        "ASK mora navesti najmanje 2 očekivana odgovora i kako svaki mijenja sljedeći korak."
+      );
+    }
+    if (branches.length >= 2) {
+      const norms = branches.map((b) => normalizeNextAction(b.nextAction));
+      const allSame = norms.every((n) => n === norms[0]);
+      if (allSame) {
+        return (
+          askRejectPrefix +
+          "Različiti odgovori vode na ISTI sljedeći korak (candidateQuestionChangesNextAction===false). Odaberi taj TEST odmah."
+        );
+      }
+    } else if (!rationaleHasDistinctBranches(draft.rationale ?? "")) {
+      return (
+        askRejectPrefix +
+        "Nedostaje mapiranje odgovor → različiti sljedeći koraci (askDecision.nextStepByAnswer)."
+      );
+    }
+  } else {
+    // No structured askDecision — require explicit branch proof in rationale, else reject
+    if (!why || isContextOnlyWhy(why) || !rationaleHasDistinctBranches(draft.rationale ?? "")) {
+      return (
+        askRejectPrefix +
+        "Svaki ASK mora imati: (1) zašto je informacija potrebna, (2) očekivane odgovore, " +
+        "(3) kako bi svaki odgovor promijenio sljedeći korak. Bez toga vrati TEST."
+      );
+    }
+  }
+
+  // Second consecutive ASK still needs clear branch justification
   const consecutive = countTrailingAnsweredAsks(diagnosticCase);
-  if (consecutive < 1) return null;
+  if (consecutive >= 1 && !rationaleHasDistinctBranches(draft.rationale ?? "") && branches.length < 2) {
+    return (
+      askRejectPrefix +
+      "Drugi uzastopni ASK bez jasnih različitih grana — vrati TEST."
+    );
+  }
 
-  const rationale = draft.rationale?.trim() ?? "";
-  if (rationaleHasBranchJustification(rationale)) return null;
+  return null;
+}
 
+function extractWhyFromRationale(rationale: string): string {
+  const t = rationale.trim();
+  if (!t) return "";
+  // First sentence often carries the "why"
+  return t.split(/[.!\n]/)[0]?.trim() ?? t;
+}
+
+function isContextOnlyWhy(why: string): boolean {
+  const n = normalizeForCompare(why);
+  if (!n) return true;
+  const contextOnly =
+    /(potpunij|vise informac|dodatni kontekst|bolje razumij|opcenit|općenit|za svaki slucaj|za svaki slučaj|zanimljiv|korisno znati|nice to have)/.test(
+      n,
+    );
+  const decisionSignal =
+    /(razlik|odluc|odluč|grana|sljedeci|sljedeći|test|elimin|hipotez|ako\b)/.test(
+      n,
+    );
+  return contextOnly && !decisionSignal;
+}
+
+function normalizeNextAction(text: string): string {
+  return normalizeForCompare(text)
+    .replace(/\b(onda|zatim|sljedeci|sljedeći|korak|test|ask|finish)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function rationaleHasDistinctBranches(rationale: string): boolean {
+  if (!rationaleHasBranchJustification(rationale)) return false;
+  // Require at least two distinct action-ish phrases after ako/inače
+  const r = rationale.toLowerCase();
+  const parts = r.split(/\bako\b|ina[cč]e|u suprotnom|;/);
+  const actions = parts
+    .slice(1)
+    .map((p) =>
+      normalizeNextAction(
+        p.replace(/^(ne\s+)?/, "").split(/[.!\n]/)[0] ?? "",
+      ),
+    )
+    .filter((a) => a.length >= 8);
+  if (actions.length < 2) return rationaleHasBranchJustification(rationale);
+  return actions[0] !== actions[1];
+}
+
+function canSelectMeaningfulTestNow(state: ReturnType<typeof buildCaseState>): boolean {
+  if ((state.dtcs?.length ?? 0) > 0) return true;
+  if (state.completedTests.length > 0) return true;
+  if ((state.measurements?.length ?? 0) > 0) return true;
+  if (state.answersToPreviousQuestions.length >= 1 && (state.symptoms?.length ?? 0) > 0) {
+    return true;
+  }
+  return false;
+}
+
+function asksForDtcInventoryOrRescanLocal(normalized: string): boolean {
+  const asksInventory =
+    /(ocitaj|ocitati|procitaj|skenir|scan|provjeri).{0,40}(dtc|kod|fault|gresk)/.test(
+      normalized,
+    ) ||
+    /(ima li|postoji li|koji su|navedi|popis).{0,40}(dtc|kod|fault|gresk)/.test(
+      normalized,
+    ) ||
+    /(dtc|kodovi|fault codes).{0,40}(ocitaj|ocitati|skenir|scan)/.test(
+      normalized,
+    );
+  if (!asksInventory) return false;
+  const asksDetailOnly =
+    /(status|opis|znacenj|značenj|freeze|pending|confirmed|aktiv|povijest|frame|subcode).{0,40}(dtc|kod|df\d|[pcbu][0-9a-f]{4})/.test(
+      normalized,
+    ) || /(status|opis|subcode).{0,30}(df\d|[pcbu][0-9a-f]{4})/.test(normalized);
+  return !asksDetailOnly;
+}
+
+function isDtcDetailQuestion(normalized: string): boolean {
   return (
-    "Drugi uzastopni ASK bez dovoljne decision value: različiti odgovori moraju voditi u različite TEST-ove " +
-    '(navedi u rationale npr. "ako A → test X; ako B → test Y"). Inače vrati TEST umjesto ASK. ' +
-    "ASK only when decision-critical; if multiple answers lead to the same next test, skip the question."
+    /(dtc|kod|gresk|fault|df\d|[pcbu][0-9a-f]{4})/.test(normalized) &&
+    /(status|opis|znacenj|značenj|subcode|freeze|pending|confirmed|aktivan|memoriran|povijest|frame)/.test(
+      normalized,
+    )
+  );
+}
+
+function hasKnownDtcDetailAlready(
+  state: ReturnType<typeof buildCaseState>,
+  normalizedQuestion: string,
+): boolean {
+  const wantsStatus = /(status|aktivan|memoriran|pending|confirmed|povijest)/.test(
+    normalizedQuestion,
+  );
+  const wantsDescription = /(opis|znacenj|značenj|description)/.test(
+    normalizedQuestion,
+  );
+  const wantsSubcode = /(subcode|podkod|freeze|frame)/.test(normalizedQuestion);
+  if (!wantsStatus && !wantsDescription && !wantsSubcode) return false;
+
+  const corpus = [
+    ...state.answersToPreviousQuestions.map((a) => a.answer),
+    ...state.userObservations,
+    ...state.testResults,
+  ]
+    .map((x) => normalizeForCompare(x))
+    .join(" | ");
+
+  if (!corpus) return false;
+  if (wantsStatus && /(aktivan|memoriran|pending|confirmed|povijest)/.test(corpus)) {
+    return true;
+  }
+  if (wantsDescription && /(opis|znacenj|značenj|znaci|znači)/.test(corpus)) {
+    return true;
+  }
+  if (wantsSubcode && /(subcode|podkod|freeze|frame)/.test(corpus)) {
+    return true;
+  }
+  return false;
+}
+
+function asksGenericSymptomsOrWarningLight(normalized: string): boolean {
+  return (
+    /(simptom|kako se ponasa|kada se javlja|opcenito|općenito|opisi kvar)/.test(
+      normalized,
+    ) ||
+    /(lampic|lampica|warning|mil|check engine|kontrolna)/.test(normalized)
   );
 }
 
@@ -873,14 +1166,23 @@ export function findDraftQualityIssue(
     evidence?: string[] | null;
     insufficientEvidence?: boolean | null;
     confidence?: string | null;
+    askDecision?: {
+      whyNeeded?: string | null;
+      expectedAnswers?: string[] | null;
+      nextStepByAnswer?: Array<{
+        answer?: string;
+        nextAction?: string;
+      }> | null;
+    } | null;
   },
 ): string | null {
   return (
+    findAlreadyKnownInfoIssue(diagnosticCase, draft) ??
+    findAskDecisionGateIssue(diagnosticCase, draft) ??
     findSpecGuardIssue(diagnosticCase, draft) ??
     findConfirmationGuardIssue(diagnosticCase, draft) ??
     findObviousRepetition(diagnosticCase, draft) ??
     findSimilarTestBranchIssue(diagnosticCase, draft) ??
-    findAskDecisionGateIssue(diagnosticCase, draft) ??
     findHypothesisDifferentiationIssue(diagnosticCase, draft)
   );
 }
