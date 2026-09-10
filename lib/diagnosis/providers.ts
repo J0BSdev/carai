@@ -56,13 +56,186 @@ export type VerifierPayload = {
   correctedStep: LlmStepPayload | null;
 };
 
-export async function callAnthropicJson(params: {
+/**
+ * Minimal Anthropic structured-output schema for diagnostic steps.
+ * No null/anyOf unions (Anthropic limit: 16). Optional fields are omitted, not nullable.
+ * Compatible with LlmStepPayload — absent optionals stay undefined.
+ */
+export const DIAGNOSTIC_STEP_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    actionType: { type: "string", enum: ["ASK", "TEST", "FINISH"] },
+    content: { type: "string" },
+    rationale: { type: "string" },
+    expectedResultHint: { type: "string" },
+    confirmedFault: { type: "string" },
+    confidence: { type: "string", enum: ["low", "medium", "high"] },
+    diagnosisConfidence: { type: "number" },
+    diagnosisCertainty: {
+      type: "string",
+      enum: ["SUSPECTED", "LIKELY", "HIGH_CONFIDENCE", "CONFIRMED"],
+    },
+    insufficientEvidence: { type: "boolean" },
+    askDecision: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        whyNeeded: { type: "string" },
+        expectedAnswers: { type: "array", items: { type: "string" } },
+        nextStepByAnswer: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              answer: { type: "string" },
+              nextAction: { type: "string" },
+            },
+            required: ["answer", "nextAction"],
+          },
+        },
+      },
+      required: ["whyNeeded", "expectedAnswers", "nextStepByAnswer"],
+    },
+    technicalClaims: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          claim: { type: "string" },
+          valueText: { type: "string" },
+          sourceType: {
+            type: "string",
+            enum: [
+              "VERIFIED_OEM",
+              "VERIFIED_TECHNICAL",
+              "GENERAL_PRINCIPLE",
+              "MODEL_KNOWLEDGE",
+              "UNKNOWN",
+            ],
+          },
+          vehicleSpecific: { type: "boolean" },
+        },
+        required: ["claim", "sourceType", "vehicleSpecific"],
+      },
+    },
+    safetyPreconditions: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        category: {
+          type: "string",
+          enum: ["SRS", "HV", "BRAKES", "OTHER_CRITICAL"],
+        },
+        warnings: { type: "array", items: { type: "string" } },
+        requiredSteps: { type: "array", items: { type: "string" } },
+        needsVerifiedProcedure: { type: "boolean" },
+      },
+      required: ["warnings", "requiredSteps", "needsVerifiedProcedure"],
+    },
+    hypotheses: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          label: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["LIKELY", "POSSIBLE", "WEAK", "RULED_OUT", "LEADING"],
+          },
+          confidence: { type: "number" },
+          supportingEvidence: { type: "array", items: { type: "string" } },
+          contradictingEvidence: { type: "array", items: { type: "string" } },
+          note: { type: "string" },
+        },
+        required: ["label", "status"],
+      },
+    },
+  },
+  required: ["actionType", "content", "rationale"],
+} as const;
+
+/** Models known to support Anthropic output_config.format json_schema. */
+function modelSupportsStructuredOutputs(model: string): boolean {
+  const m = model.trim().toLowerCase();
+  return (
+    m.includes("claude-sonnet-5") ||
+    m.includes("claude-opus-5") ||
+    m.includes("claude-opus-4-8") ||
+    m.includes("claude-opus-4-7") ||
+    m.includes("claude-opus-4-6") ||
+    m.includes("claude-sonnet-4-6") ||
+    m.includes("claude-sonnet-4-5") ||
+    m.includes("claude-opus-4-5") ||
+    m.includes("claude-haiku-4-5") ||
+    m.includes("claude-fable-5") ||
+    m.includes("claude-mythos")
+  );
+}
+
+function isDev(): boolean {
+  return process.env.NODE_ENV === "development";
+}
+
+function logClaudeRaw(label: string, raw: string): void {
+  if (!isDev()) return;
+  console.error(`[claude-raw:${label}]`, raw.slice(0, 6000));
+}
+
+function looksLikeStructuredOutputUnsupported(errText: string): boolean {
+  const n = errText.toLowerCase();
+  return (
+    n.includes("output_config") ||
+    n.includes("output_format") ||
+    n.includes("json_schema") ||
+    n.includes("structured output") ||
+    n.includes("union types") ||
+    n.includes("too many parameters") ||
+    (n.includes("not support") && n.includes("schema"))
+  );
+}
+
+function tryParseJsonObject(raw: string): string | null {
+  const extracted = extractJsonObject(raw);
+  try {
+    JSON.parse(extracted);
+    return extracted;
+  } catch {
+    return null;
+  }
+}
+
+type AnthropicFetchParams = {
   apiKey: string;
   model: string;
   system: string;
   user: string;
   maxTokens?: number;
-}): Promise<string> {
+  jsonSchema?: Record<string, unknown> | null;
+};
+
+async function fetchAnthropicText(
+  params: AnthropicFetchParams,
+): Promise<string> {
+  const body: Record<string, unknown> = {
+    model: params.model,
+    max_tokens: params.maxTokens ?? 2048,
+    system: params.system,
+    messages: [{ role: "user", content: params.user }],
+  };
+
+  if (params.jsonSchema) {
+    body.output_config = {
+      format: {
+        type: "json_schema",
+        schema: params.jsonSchema,
+      },
+    };
+  }
+
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -70,12 +243,7 @@ export async function callAnthropicJson(params: {
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: params.model,
-      max_tokens: params.maxTokens ?? 2048,
-      system: params.system,
-      messages: [{ role: "user", content: params.user }],
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -92,7 +260,80 @@ export async function callAnthropicJson(params: {
   if (!text) {
     throw new Error("Claude nije vratio tekstualni odgovor.");
   }
-  return extractJsonObject(text);
+  return text;
+}
+
+/**
+ * Claude diagnostic call with:
+ * 1) structured JSON schema when the model supports it
+ * 2) fallback without schema if unsupported
+ * 3) at most one cheap JSON-format repair retry (not diagnostic/verifier retry)
+ */
+export async function callAnthropicJson(params: {
+  apiKey: string;
+  model: string;
+  system: string;
+  user: string;
+  maxTokens?: number;
+}): Promise<string> {
+  const preferStructured = modelSupportsStructuredOutputs(params.model);
+  const schema = DIAGNOSTIC_STEP_JSON_SCHEMA as unknown as Record<
+    string,
+    unknown
+  >;
+  let activeSchema: Record<string, unknown> | null = preferStructured
+    ? schema
+    : null;
+
+  let rawText: string;
+  try {
+    rawText = await fetchAnthropicText({
+      ...params,
+      jsonSchema: activeSchema,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (activeSchema && looksLikeStructuredOutputUnsupported(message)) {
+      activeSchema = null;
+      rawText = await fetchAnthropicText({
+        ...params,
+        jsonSchema: null,
+      });
+    } else {
+      throw err;
+    }
+  }
+
+  logClaudeRaw("primary", rawText);
+  const parsed = tryParseJsonObject(rawText);
+  if (parsed) return parsed;
+
+  // Max 1 JSON-format repair — does not touch verifier / diagnostic retry budget.
+  const repairedText = await fetchAnthropicText({
+    apiKey: params.apiKey,
+    model: params.model,
+    maxTokens: Math.min(params.maxTokens ?? 2048, 2048),
+    jsonSchema: activeSchema,
+    system:
+      "You only repair malformed JSON. Return ONLY a valid JSON object. No markdown, no commentary.",
+    user: [
+      "The previous assistant reply was not valid JSON.",
+      "Repair it into ONE valid JSON object with the diagnostic step fields",
+      "(actionType, content, rationale, and related nullable fields).",
+      "Do not change diagnostic meaning; only fix JSON syntax/structure.",
+      "",
+      "Malformed reply:",
+      rawText.slice(0, 12000),
+    ].join("\n"),
+  });
+
+  logClaudeRaw("json-repair", repairedText);
+  const repaired = tryParseJsonObject(repairedText);
+  if (repaired) return repaired;
+
+  throw new Error(
+    "Claude dijagnostički odgovor nije valjani JSON (ni nakon 1 JSON-format retryja).",
+  );
 }
 
 export async function callOpenAiJson(params: {
