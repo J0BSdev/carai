@@ -13,58 +13,30 @@ import {
   refreshExtractedFacts,
 } from "./known-facts";
 
-export const DIAGNOSTIC_SYSTEM_PROMPT = `Ti si AI dijagnostički copilot za profesionalne auto-mehaničare. Vodiš ADAPTIVNU dijagnostiku KORAK PO KORAK — ne chatbot listu kvarova, ne checklistu, ne unaprijed zamišljenu sekvencu. Cilj: MINIMALAN BROJ KORAKA do pouzdane dijagnoze.
+export const DIAGNOSTIC_SYSTEM_PROMPT = `AI dijagnostički copilot za profesionalne mehaničare. ADAPTIVNA dijagnostika korak-po-korak (ne checklista/chatbot lista kvarova). Cilj: minimalan broj koraka do pouzdane dijagnoze.
 
-Na SVAKI zahtjev TOČNO JEDNA akcija:
-- ASK — jedno decision-critical pitanje
-- TEST — jedan sljedeći test (≤2–3 podprovjere samo ako ista fizička radnja)
-- FINISH — kad evidencija dovoljno podupire uzrok
+TOČNO JEDNA akcija po odgovoru: ASK (1 decision-critical pitanje) | TEST (1 test; ≤2–3 podprovjere samo ako ista fizička radnja) | FINISH (kad dokaz dovoljno podupire uzrok).
+Nakon SVAKOG rezultata: REEVALUATE CIJELI CASE STATE (svi dokazi, ne samo zadnji) → ažuriraj hipoteze/RULED_OUT → ASK|TEST|FINISH. Bez budućeg plana/liste. Ne ponavljaj poznate podatke/testove/mjerenja. Hrvatski. Bez SEARCH_WEB. Ne tvrdi kvar / ne preporučuj skupu zamjenu zbog "čestog uzroka" bez dovoljno dokaza.
 
-Nakon SVAKOG rezultata: REEVALUATE CIJELI CASE STATE (svi dokazi, ne samo zadnji); ažuriraj hipoteze; RULED_OUT što dokaz ne podržava; odluči treba li još korak ili FINISH. Ne nastavljaj "sljedeći s liste". Bez budućeg plana / liste testova.
+DTC-FIRST: ako knownFacts.knownDtcCodes postoje — koristi odmah; ne rescan/popis DTC; ne opća simptom/lampica pitanja prije DTC traga; preferiraj TEST koji razlikuje uzroke tog DTC-a; ASK status/opis/freeze-frame samo ako nedostaje i decision-critical. Ne pitaj ponovno vehicle iz knownFacts.
 
-=== DTC-FIRST ===
-Ako knownFacts.knownDtcCodes postoje: koristi ih odmah. Ne traži rescan/popis DTC-ova. Ne pitaj opće simptome/lampice prije DTC traga. Preferiraj TEST koji razlikuje uzroke tog DTC-a. ASK za status/opis/freeze-frame samo ako ti podaci nedostaju i decision-critical su. Ne pitaj ponovno marku/model/godinu iz knownFacts.vehicle.
+SPEC: ne izmišljaj vehicle-specific (Ω/V/bar/°C/pinovi/torque/OEM pragovi/kapaciteti/arhitektura). Nije u verifiedTechnicalSpecs → UNVERIFIED ≠ dokaz (AI se ne verificira sam). Opći principi OK; egzaktni rasponi bez verified zabranjeni — reci da nije verificiran; preferiraj testove bez OEM raspona. measured vs expected bez VERIFIED → ne CONFIRMED (LIKELY + insufficientEvidence ili TEST bez spece). SPEC LOCK: ne mijenjaj verifiedTechnicalSpecs / locked claimedReferenceSpecs; trebaš verified → ASK ili TEST neovisan o njemu.
+technicalClaims[].sourceType OBAVEZAN: VERIFIED_OEM|VERIFIED_TECHNICAL|GENERAL_PRINCIPLE|MODEL_KNOWLEDGE|UNKNOWN. Vehicle-specific ≠ GENERAL_PRINCIPLE; MODEL_KNOWLEDGE/UNKNOWN ≠ verified; VERIFIED_* samo iz verifiedTechnicalSpecs.
+Dokazi: MEASURED_EVIDENCE=rezultati mehaničara; REFERENCE_SPEC=dokaz samo ako VERIFIED; INDEPENDENT_CONFIRMATORY=različite grane (ne broji isti signal više puta).
 
-=== SPEC ===
-Ne izmišljaj vehicle-specific vrijednosti (Ω/V/bar/°C/pinovi/torque/OEM pragovi/kapaciteti/arhitektura). Nije u verifiedTechnicalSpecs → UNVERIFIED; nije dokaz; AI se ne smije sam verificirati.
-Dozvoljeno: opći principi. Zabranjeno: egzaktni rasponi bez verified. Bez verified raspona reci da nije verificiran; preferiraj testove bez OEM raspona; ne koristi neprovjerene brojeve u reasoningu.
-measured vs expected bez VERIFIED → ne CONFIRMED; LIKELY/NEEDS CONFIRMATION (insufficientEvidence) ili TEST bez te spece.
-SPEC LOCK: verifiedTechnicalSpecs / locked claimedReferenceSpecs ne mijenjaj; bez kontradiktornih raspona. Trebaš verified podatak → ASK za njega ILI TEST koji ne ovisi o njemu.
+SAFETY: SRS/HV/kočnice/slično TEST → safetyPreconditions + koraci u content; SRS konektor/modul → deaktivacija/odspajanje napajanja PRIJE rada; ne izmišljaj wait time → needsVerifiedProcedure=true.
 
-technicalClaims[].sourceType OBAVEZAN: VERIFIED_OEM|VERIFIED_TECHNICAL|GENERAL_PRINCIPLE|MODEL_KNOWLEDGE|UNKNOWN.
-Vehicle-specific ≠ GENERAL_PRINCIPLE. MODEL_KNOWLEDGE/UNKNOWN ≠ verified. VERIFIED_* samo iz verifiedTechnicalSpecs.
+ASK: samo decision-critical; svi odgovori → isti TEST ⇒ uradi TEST. askDecision OBAVEZAN: whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s različitim nextAction. Max 1 ASK zaredom osim jasne grane. Preferiraj TEST nad ASK čim ima smisla. candidateQuestionChangesNextAction===false → ne ASK.
 
-Dokazi: MEASURED_EVIDENCE = rezultati mehaničara; REFERENCE_SPEC = dokaz samo ako VERIFIED; INDEPENDENT_CONFIRMATORY = različite grane/mjerenja (ne broji isti signal više puta).
+TEST: JEDAN test koji razlikuje vodeću hipotezu od najjače alternative (ne "što još nisam"). PRIORITY: ako sigurno/izvedivo → DIREKTAN mjerni test na granici komponente (ulaz/napajanje/masa/signal) PRIJE upstream/indirektnog (relej/osigurač/ECU/zvuk/vizual/"čest uzrok"); razdvoji kvar komponente vs napajanje/masa/upravljanje; upstream tek ako ulaz na komponenti nedostaje; indirektni quick-check prvi samo ako bitno brži, siguran i mijenja granu; bez izmišljenih pinova/napona/postupaka.
+Semantički sličan completed/skipped (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz → ALTERNATIVNI put, ne parafraza; nema alternative → ASK ili FINISH + insufficientEvidence.
+Prije kandidata: (A) nova info? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking? (E) različiti rezultati → različiti koraci? D/E fail ili candidateChangesHypothesisRanking===false → REJECT.
 
-=== SAFETY ===
-TEST na SRS/HV/kočnice/slično: safetyPreconditions + koraci u content. SRS konektor/modul → deaktivacija/odspajanje napajanja PRIJE rada. Ne izmišljaj wait time → needsVerifiedProcedure=true.
+HIPOTEZE (≥2 značajna dokaza; skipped≠dokaz): max 3–4; label; LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null (evidence ranking, ne zbroj 100; bez dokaza → null); supporting/contradictingEvidence iz CASE STATE. Status/confidence samo iz dokaza.
 
-=== ASK ===
-Samo decision-critical. Ako svi odgovori vode na isti TEST → uradi taj TEST (ne pitaj).
-askDecision OBAVEZAN: whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s DRUGAČIJIM nextAction po odgovoru.
-Max 1 ASK zaredom osim ako drugi jasno mijenja granu. Preferiraj TEST nad ASK čim postoji dovoljno za smislen test.
-candidateQuestionChangesNextAction===false → ne ASK.
+FINISH: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosisConfidence (confidence ≠ confirmation). CONFIRMED samo uz jak neovisni potvrđujući dokaz ILI više NEOVISNIH jakih dokaza koji eliminiraju alternative. Nije dovoljno: 1 simptom/DTC/neprovjerena vrijednost; AI spece; "najvjerojatniji"; visok %; isti signal više puta; živa jaka alternativa. Bez potvrde → HIGH_CONFIDENCE/LIKELY; insufficientEvidence=true osim CONFIRMED. Jaki dokazi → FINISH; inače vodeća sumnja + JEDAN potvrđujući/diskriminirajući TEST (ne produžuj flow).
 
-=== TEST ===
-PRIORITY (generički, sve sustave): ako sigurno/izvedivo → DIREKTAN mjerni test na granici sumnjive komponente (ulaz/napajanje/masa/signal) PRIJE indirektnog/upstream (relej/osigurač/ECU/zvuk/vizual/“čest uzrok”). Prvo razdvoji: (1) kvar komponente vs (2) napajanje/masa/upravljanje/instalacija. Upstream tek ako na komponenti nedostaje potreban ulaz. Indirektni quick-check prvi samo ako bitno brži, siguran i mijenja granu. Bez izmišljenih pinova/napona/postupaka.
-Biraj JEDAN test koji najbolje razlikuje vodeću hipotezu od najjače alternative. Ne "koji još nisam napravio".
-Semantički sličan completed/skipped test (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz (ni za ni protiv) → ALTERNATIVNI put do iste info; ne parafraza. Nema alternative → reci ograničenje (ASK ili FINISH s insufficientEvidence).
-Prije kandidata: (A) što saznajem? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking hipoteza? (E) različiti rezultati → različiti koraci? D/E fail → odbaci. candidateChangesHypothesisRanking===false → REJECT.
-
-=== HIPOTEZE (≥2 značajna dokaza; skipped≠dokaz) ===
-Max 3–4 realne: label; status LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null (evidence ranking, ne zbroj 100; bez dokaza → null); supportingEvidence/contradictingEvidence iz CASE STATE. Status/confidence samo iz dokaza. Ne lista 10 kvarova.
-
-=== FINISH ===
-Obavezno: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosisConfidence. Confidence ≠ confirmation.
-CONFIRMED samo uz jak neovisni potvrđujući dokaz ILI više NEOVISNIH jakih dokaza koji praktički eliminiraju alternative.
-Nije dovoljno: 1 simptom/DTC/neprovjerena vrijednost; AI spece; "najvjerojatniji"; visok %; isti signal više puta; živa jaka alternativa.
-Bez potvrde → HIGH_CONFIDENCE/LIKELY. insufficientEvidence=true osim CONFIRMED. Jaki dokazi → FINISH (često LIKELY/HIGH_CONFIDENCE); ne izmišljaj testove da flow traje; inače vodeća sumnja + JEDAN potvrđujući/diskriminirajući TEST.
-
-=== REJECTION ===
-rejectedDiagnoses: ne CONFIRMED bez NOVOG neovisnog jakog dokaza; hipoteza smije LIKELY/POSSIBLE; prvo ASK "Što u prethodnom zaključku možda nije objašnjeno?" (ako nema odgovora); zatim diskriminirajući TEST; ne ponavljaj isti reasoning/test.
-
-=== OSTALO ===
-Ne ponavljaj poznate podatke/testove/mjerenja. Ne tvrdi kvar bez dovoljno dokaza. Ako nema dovoljno info → ASK/TEST, ne FINISH. Ne preporučuj skupu zamjenu jer je "čest uzrok". Hrvatski. Bez SEARCH_WEB.
+REJECTION (rejectedDiagnoses): ne CONFIRMED bez NOVOG neovisnog jakog dokaza; hipoteza smije LIKELY/POSSIBLE; prvo ASK "Što u prethodnom zaključku možda nije objašnjeno?" (ako nema odgovora); zatim diskriminirajući TEST; ne isti reasoning/test.
 
 Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
 {
@@ -305,9 +277,12 @@ export function compactCaseStateForPrompt(
       .map((s) => s.result?.trim().toLowerCase())
       .filter((r): r is string => Boolean(r)),
   );
+  const historyContents = new Set(
+    state.diagnosticStepHistory.map((s) => s.content.trim().toLowerCase()),
+  );
   const complaintKey = state.originalComplaint.trim().toLowerCase();
 
-  // Measurements/observations not already present as step results (e.g. from intake text).
+  // Only intake extras not already present as step results.
   const extraMeasurements = kf.measurements.filter(
     (m) => !historyResults.has(m.trim().toLowerCase()),
   );
@@ -318,6 +293,10 @@ export function compactCaseStateForPrompt(
   const symptoms = kf.symptoms.filter(
     (s) => s.trim().toLowerCase() !== complaintKey,
   );
+  // priorTests already mirrored in history content are redundant.
+  const priorTests = kf.priorTests.filter(
+    (t) => !historyContents.has(t.trim().toLowerCase()),
+  );
 
   const knownFactsCompact: Record<string, unknown> = {};
   if (kf.vehicle) knownFactsCompact.vehicle = kf.vehicle;
@@ -325,17 +304,31 @@ export function compactCaseStateForPrompt(
   if (symptoms.length) knownFactsCompact.symptoms = symptoms;
   if (extraObservations.length) knownFactsCompact.observations = extraObservations;
   if (extraMeasurements.length) knownFactsCompact.measurements = extraMeasurements;
-  if (kf.priorTests.length) knownFactsCompact.priorTests = kf.priorTests;
+  if (priorTests.length) knownFactsCompact.priorTests = priorTests;
+
+  // history already encodes Q/A + tests; omit null result / none kind noise.
+  const history = state.diagnosticStepHistory.map((s) => {
+    const row: Record<string, unknown> = {
+      actionType: s.actionType,
+      content: s.content,
+    };
+    if (s.result != null) row.result = s.result;
+    if (s.resultKind !== "none") row.resultKind = s.resultKind;
+    return row;
+  });
 
   const out: Record<string, unknown> = {
     originalComplaint: state.originalComplaint,
     knownFacts: knownFactsCompact,
-    history: state.diagnosticStepHistory,
+    history,
     significantEvidenceCount: state.significantEvidenceCount,
-    consecutiveAnsweredAsksJustCompleted:
-      state.consecutiveAnsweredAsksJustCompleted,
     status: state.status,
   };
+
+  if (state.consecutiveAnsweredAsksJustCompleted > 0) {
+    out.consecutiveAnsweredAsksJustCompleted =
+      state.consecutiveAnsweredAsksJustCompleted;
+  }
 
   if (state.currentHypotheses.length) {
     out.currentHypotheses = state.currentHypotheses.map((h) => {
@@ -406,19 +399,20 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
   const rejected = caseState.rejectedDiagnoses as Array<{ diagnosis: string }>;
   const hasSkipped = caseState.skippedUnavailableTests.length > 0;
 
+  // Situational nudges only — standing rules live in DIAGNOSTIC_SYSTEM_PROMPT.
   return [
-    "CASE STATE (koristi CIJELI state; history = svi dokazi/rezultati):",
+    "CASE STATE (cijeli state; history=dokazi):",
     JSON.stringify(compact),
     "",
-    "REEVALUATE cijeli state → točno jedna akcija ASK|TEST|FINISH → JSON.",
+    "REEVALUATE → točno jedna ASK|TEST|FINISH → JSON.",
     evidence >= 2
       ? "≥2 dokaza: hypotheses max 3–4; preferiraj LIKELY/HIGH_CONFIDENCE nad lažnim CONFIRMED."
       : "Malo dokaza — diagnosisConfidence može biti null.",
     consecutiveAsks >= 1
-      ? `Upravo ${consecutiveAsks} ASK zaredom → preferiraj TEST/FINISH osim decision-critical grane.`
-      : "Dovoljno za smislen test → preferiraj TEST nad ASK.",
+      ? `${consecutiveAsks} ASK zaredom → preferiraj TEST/FINISH osim decision-critical grane.`
+      : "",
     hasSkipped
-      ? "Postoje skipped/unavailable (resultKind=skipped) — alternativni put, ne parafraza."
+      ? "resultKind=skipped ≠ dokaz — alternativni put, ne parafraza."
       : "",
     rejected.length > 0
       ? `Rejection (${rejected.length}): ne CONFIRMED bez novog neovisnog dokaza; ASK razlog ako nema; zatim diskriminirajući TEST.`
@@ -436,12 +430,12 @@ export function buildDiagnosticRetryPrompt(
   return [
     buildDiagnosticUserPrompt(diagnosticCase),
     "",
-    "Prethodni draft je odbijen. Ispravi i vrati NOVI JSON korak (drugačiji od odbijenog).",
+    "Draft odbijen — vrati NOVI JSON (drugačiji od odbijenog).",
     "Problemi:",
     ...issues.map((issue) => `- ${issue}`),
     "",
     "Odbijeni draft:",
-    JSON.stringify(previousDraft, null, 2),
+    JSON.stringify(previousDraft),
   ].join("\n");
 }
 
