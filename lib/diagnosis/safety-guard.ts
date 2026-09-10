@@ -354,6 +354,20 @@ export function findSafetyCriticalTestIssue(draft: {
   return null;
 }
 
+/** True when TEST text touches SRS/HV/brakes/other safety-critical work (for selective verifier). */
+export function isSafetyCriticalTestDraft(draft: {
+  actionType?: string;
+  content?: string;
+  rationale?: string;
+  expectedResultHint?: string | null;
+  confirmedFault?: string | null;
+  facts?: string[] | null;
+  evidence?: string[] | null;
+}): boolean {
+  if (draft.actionType !== "TEST") return false;
+  return detectSafetyCategory(normalize(draftText(draft))) != null;
+}
+
 /** Combined safety + technical source guard. */
 export function findSafetyAndTechnicalRuleIssue(
   diagnosticCase: DiagnosticCase,

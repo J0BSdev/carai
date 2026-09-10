@@ -46,6 +46,7 @@ Max 1 ASK zaredom osim ako drugi jasno mijenja granu. Preferiraj TEST nad ASK č
 candidateQuestionChangesNextAction===false → ne ASK.
 
 === TEST ===
+PRIORITY (generički, sve sustave): ako sigurno/izvedivo → DIREKTAN mjerni test na granici sumnjive komponente (ulaz/napajanje/masa/signal) PRIJE indirektnog/upstream (relej/osigurač/ECU/zvuk/vizual/“čest uzrok”). Prvo razdvoji: (1) kvar komponente vs (2) napajanje/masa/upravljanje/instalacija. Upstream tek ako na komponenti nedostaje potreban ulaz. Indirektni quick-check prvi samo ako bitno brži, siguran i mijenja granu. Bez izmišljenih pinova/napona/postupaka.
 Biraj JEDAN test koji najbolje razlikuje vodeću hipotezu od najjače alternative. Ne "koji još nisam napravio".
 Semantički sličan completed/skipped test (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz (ni za ni protiv) → ALTERNATIVNI put do iste info; ne parafraza. Nema alternative → reci ograničenje (ASK ili FINISH s insufficientEvidence).
 Prije kandidata: (A) što saznajem? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking hipoteza? (E) različiti rezultati → različiti koraci? D/E fail → odbaci. candidateChangesHypothesisRanking===false → REJECT.
@@ -474,6 +475,8 @@ Provjeri ISKLJUČIVO:
 
 8) ASK — odbij ako info već poznata, ili različiti odgovori ne mijenjaju sljedeći korak, ili consecutiveAnsweredAsksJustCompleted≥1 bez jasnih grana.
 
+9) TEST PRIORITY — odbij (correctedStep=null) ako je očito upstream/indirektan prvi korak (relej/osigurač/ECU/zvuk/vizual/“čest uzrok”) dok direktan mjerni test na granici sumnjive komponente (ulaz/napajanje/masa/signal) još nije napravljen i bio bi jednostavniji, sigurniji i bolje razdvaja hipoteze. Ne predlaži novu granu.
+
 Odgovori ISKLJUČIVO JSON:
 {
   "approved": boolean,
@@ -514,6 +517,12 @@ Odgovori ISKLJUČIVO JSON:
 export function buildVerifierUserPrompt(
   diagnosticCase: DiagnosticCase,
   draft: unknown,
+  options?: {
+    /** Prior primary-verifier / guard issues for strong-tier escalation. */
+    previousIssues?: string[];
+    /** Strong final verdict mode — no new diagnostic branch. */
+    strongFinal?: boolean;
+  },
 ): string {
   const caseState = buildCaseState(diagnosticCase);
   const compact = compactCaseStateForPrompt(caseState);
@@ -531,6 +540,18 @@ export function buildVerifierUserPrompt(
   }
   if ((caseState.rejectedDiagnoses as unknown[]).length > 0) {
     notes.push("rejectedDiagnoses aktivne — CONFIRMED samo uz novi neovisni dokaz.");
+  }
+
+  if (options?.strongFinal) {
+    notes.push(
+      "STRONG FINAL VERDICT: stroži finalni gate. Ne vodi dijagnostiku; ne biraj novu granu/test/dijagnozu. Odobri, odbij, ili mala sigurna korekcija (npr. CONFIRMED→LIKELY).",
+    );
+  }
+  if (options?.previousIssues?.length) {
+    notes.push(
+      "Prethodni verifier/guard issues:",
+      ...options.previousIssues.slice(0, 6).map((i) => `- ${i}`),
+    );
   }
 
   return [
@@ -1101,6 +1122,83 @@ export function findHypothesisDifferentiationIssue(
   );
 }
 
+/**
+ * Prefer direct boundary measurement on the suspect component before upstream/indirect checks.
+ * Generic — no component-specific hardcoding. Conservative: only obvious upstream/indirect-first.
+ */
+export function findTestPriorityIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: { actionType?: string; content?: string; rationale?: string },
+): string | null {
+  if (draft.actionType !== "TEST") return null;
+  const text = normalizeForCompare(
+    `${draft.content ?? ""} ${draft.rationale ?? ""}`,
+  );
+  if (!text) return null;
+
+  // Already measuring at component boundary → OK
+  const isDirectBoundary =
+    /(na (samoj )?komponent|na konektoru|na uticnici|na utikacu|granica komponent)/.test(
+      text,
+    ) ||
+    (/(napajanj|masa|uzemljen|ground|b\+|ulaz|signal)/.test(text) &&
+      /(izmjer|mjeren|napon|otpor|kontinuitet|provjer)/.test(text) &&
+      /(na |konektor|komponent|uticnic|utikac)/.test(text));
+
+  if (isDirectBoundary) return null;
+
+  const isUpstreamFirst =
+    /(relej|relay|osigurac|fuse|ecu naredb|pcm naredb|naredba (ecu|pcm|modula)|upravljacki (signal|dio|modul)|driver circuit|uzvodno|upstream|prije komponente)/.test(
+      text,
+    ) &&
+    !/(na konektoru|napajanj.{0,24}(konektor|komponent)|masa.{0,24}(konektor|komponent)|signal.{0,24}(konektor|komponent))/.test(
+      text,
+    );
+
+  const isWeakIndirect =
+    /(poslusaj|slušaj|zvuk |culi |vizualn|pogledaj je li|izgleda kao|cest uzrok|tipican uzrok|obicno je)/.test(
+      text,
+    ) && !/(izmjer|mjeren|napon|otpor|tlak|kontinuitet|signal)/.test(text);
+
+  if (!isUpstreamFirst && !isWeakIndirect) return null;
+
+  const state = buildCaseState(diagnosticCase);
+  const hasSuspectContext =
+    state.currentHypotheses.length > 0 ||
+    (state.dtcs?.length ?? 0) > 0 ||
+    /(ne radi|ne pali|ne aktiv|neisprav|kvar|ne daje|nema |ne pali se|gubi )/.test(
+      normalizeForCompare(state.originalComplaint),
+    );
+  if (!hasSuspectContext) return null;
+
+  // After a direct boundary check already done, upstream follow-up is allowed.
+  const alreadyDirect = state.completedTests.some((t) => {
+    const n = normalizeForCompare(`${t.test} ${t.result}`);
+    return (
+      /(napajanj|masa|ground|uzemljen|signal|napon|otpor|kontinuitet)/.test(n) &&
+      /(konektor|komponent|uticnic|utikac|na )/.test(n)
+    );
+  });
+  if (alreadyDirect) return null;
+
+  // Quick-check allowed only if rationale claims branch-changing speed tradeoff.
+  if (isWeakIndirect) {
+    const rationale = normalizeForCompare(draft.rationale ?? "");
+    const claimsQuickBranch =
+      /(brz|quick|trenutno|odmah).{0,40}(grana|sljedeci|mijenja|razlik)/.test(
+        rationale,
+      ) ||
+      /(grana|sljedeci|razlik).{0,40}(brz|quick)/.test(rationale);
+    if (claimsQuickBranch) return null;
+  }
+
+  return (
+    "TEST PRIORITY REJECT: postoji očito jednostavniji, sigurniji i direktniji mjerni test na granici sumnjive komponente " +
+    "(ulaz/napajanje/masa/signal) koji bolje razdvaja kvar komponente od napajanja/mase/upravljanja/instalacije. " +
+    "Ne idi prvo na relej/osigurač/ECU/zvuk/vizual dok to nije provjereno. Regeneriraj DIREKTAN boundary TEST (bez izmišljenih pinova/napona)."
+  );
+}
+
 /** Combined draft rejection reasons used before/after verifier. */
 export function findDraftQualityIssue(
   diagnosticCase: DiagnosticCase,
@@ -1154,6 +1252,7 @@ export function findDraftQualityIssue(
     findConfirmationGuardIssue(diagnosticCase, draft) ??
     findObviousRepetition(diagnosticCase, draft) ??
     findSimilarTestBranchIssue(diagnosticCase, draft) ??
+    findTestPriorityIssue(diagnosticCase, draft) ??
     findHypothesisDifferentiationIssue(diagnosticCase, draft)
   );
 }

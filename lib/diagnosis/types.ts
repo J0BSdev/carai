@@ -147,6 +147,8 @@ export interface DiagnosticCase {
   technicalSpecClaims?: TechnicalSpecClaim[];
   /** Diagnoses rejected by the technician ("Dijagnoza ne izgleda točno"). */
   rejectedDiagnoses?: RejectedDiagnosis[];
+  /** Strong verifier may run at most once per case (routing flag). */
+  strongVerifierUsed?: boolean;
 }
 
 /** HTTP API body action (start/continue case), not AI actionType. */

@@ -73,7 +73,6 @@ export async function callAnthropicJson(params: {
     body: JSON.stringify({
       model: params.model,
       max_tokens: params.maxTokens ?? 2048,
-      temperature: 0.3,
       system: params.system,
       messages: [{ role: "user", content: params.user }],
     }),
@@ -110,7 +109,6 @@ export async function callOpenAiJson(params: {
     },
     body: JSON.stringify({
       model: params.model,
-      temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: params.system },

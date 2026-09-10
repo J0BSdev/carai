@@ -2,6 +2,7 @@ import {
   getClaudeApiKey,
   getDiagnosticModel,
   getOpenAiApiKey,
+  getStrongVerifierModel,
   getVerifierModel,
 } from "./config";
 import type { DiagnosticEngine } from "./engine";
@@ -20,9 +21,13 @@ import {
   buildVerifierUserPrompt,
   findDraftQualityIssue,
 } from "./prompts";
-import { mergeTechnicalSpecClaims } from "./spec-guard";
+import {
+  extractReferenceSpecClaims,
+  mergeTechnicalSpecClaims,
+} from "./spec-guard";
 import { extractFactsFromText, refreshExtractedFacts } from "./known-facts";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
+import { isSafetyCriticalTestDraft } from "./safety-guard";
 import {
   downgradeUnjustifiedConfirmed,
   findConfirmationGuardIssue,
@@ -42,7 +47,161 @@ import type {
   RejectedDiagnosis,
 } from "./types";
 
+/** Max Claude regenerations after the initial draft, per user step. */
+const MAX_DIAGNOSTIC_RETRIES = 2;
+
+type RetryBudget = { used: number };
+
 const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
+
+function draftBlob(draft: LlmStepPayload): string {
+  return [
+    draft.content,
+    draft.rationale,
+    draft.expectedResultHint,
+    draft.confirmedFault,
+    ...(draft.facts ?? []),
+    ...(draft.evidence ?? []),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function hasTechnicalClaimsOrSpecs(draft: LlmStepPayload): boolean {
+  const claims = Array.isArray(draft.technicalClaims) ? draft.technicalClaims : [];
+  for (const c of claims) {
+    const st = (c.sourceType ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+    // GENERAL_PRINCIPLE fluff on ordinary ASK/TEST must not force verifier.
+    if (c.vehicleSpecific === true) return true;
+    if (st === "VERIFIED_OEM" || st === "VERIFIED_TECHNICAL") return true;
+    if (
+      (st === "MODEL_KNOWLEDGE" || st === "UNKNOWN") &&
+      /\d/.test(`${c.valueText ?? ""} ${c.claim ?? ""}`)
+    ) {
+      return true;
+    }
+  }
+  return extractReferenceSpecClaims(draftBlob(draft)).length > 0;
+}
+
+function hasHighConfidence(draft: LlmStepPayload): boolean {
+  // Do NOT treat confidence:"high" alone — Claude often sets it on ordinary ASK/TEST.
+  if (
+    typeof draft.diagnosisConfidence === "number" &&
+    draft.diagnosisConfidence >= 80
+  ) {
+    return true;
+  }
+  const certainty = (draft.diagnosisCertainty ?? "").toUpperCase();
+  if (certainty === "CONFIRMED" || certainty === "HIGH_CONFIDENCE") return true;
+  return false;
+}
+
+function looksExpensiveOrRiskyRecommendation(draft: LlmStepPayload): boolean {
+  const n = draftBlob(draft)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return /(zamijeni|zamjeni|zamena|zamjena|replace\b|kupi nov|treba nov|ugradi nov|nova turbina|novi (ecu|pcm|modul|injektor|mjenjac|motor|katalizator)|skupa (popravka|zamjena|dijagnostik)|skupo |overhaul|komplet (turbine|mjenjaca|injektora))/.test(
+    n,
+  );
+}
+
+function hasContradictoryStrongEvidence(draft: LlmStepPayload): boolean {
+  const hyps = draft.hypotheses ?? [];
+  const active = hyps.filter((h) => {
+    const st = (h.status ?? "").toUpperCase();
+    return (
+      st === "LIKELY" ||
+      st === "LEADING" ||
+      st === "POSSIBLE" ||
+      st === "SUPPORTED" ||
+      (typeof h.confidence === "number" && h.confidence >= 40)
+    );
+  });
+  if (active.length < 2) {
+    return active.some(
+      (h) =>
+        (h.supportingEvidence?.length ?? 0) > 0 &&
+        (h.contradictingEvidence?.length ?? 0) > 0,
+    );
+  }
+  const withSupport = active.filter(
+    (h) => (h.supportingEvidence?.length ?? 0) > 0,
+  );
+  const withContra = active.filter(
+    (h) => (h.contradictingEvidence?.length ?? 0) > 0,
+  );
+  return (
+    withSupport.length >= 2 ||
+    (withSupport.length >= 1 && withContra.length >= 1)
+  );
+}
+
+/**
+ * OpenAI verifier only for high-risk drafts.
+ * Ordinary ASK/TEST that pass backend guards go straight to UI (including first step).
+ */
+export function shouldCallVerifier(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): boolean {
+  if (draft.actionType === "FINISH") return true;
+  if ((diagnosticCase.rejectedDiagnoses?.length ?? 0) > 0) return true;
+  if (findReasoningConsistencyIssue(diagnosticCase, draft)) return true;
+  if (hasTechnicalClaimsOrSpecs(draft)) return true;
+
+  // Ordinary ASK (incl. first step): never call OpenAI after guards.
+  if (draft.actionType === "ASK") return false;
+
+  if (draft.actionType === "TEST") {
+    if (isSafetyCriticalTestDraft(draft)) return true;
+    if (looksExpensiveOrRiskyRecommendation(draft)) return true;
+    if (hasHighConfidence(draft)) return true;
+    return false;
+  }
+
+  return false;
+}
+
+/**
+ * Strong verifier only when the case is truly stuck after primary+retry.
+ * Never on normal ASK; never on ordinary TEST without stuck signals.
+ * Max 1× per case (enforced via strongVerifierUsed).
+ */
+export function shouldEscalateToStrongVerifier(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+  previousIssues: string[],
+): boolean {
+  if (diagnosticCase.strongVerifierUsed) return false;
+  if (!getStrongVerifierModel()) return false;
+  if (draft.actionType === "ASK") return false;
+  if (previousIssues.length === 0) return false;
+
+  const reasoningStillBroken = Boolean(
+    findReasoningConsistencyIssue(diagnosticCase, draft),
+  );
+  const safetyOrExpensiveUnclear =
+    isSafetyCriticalTestDraft(draft) ||
+    looksExpensiveOrRiskyRecommendation(draft);
+  const contradictory = hasContradictoryStrongEvidence(draft);
+
+  if (draft.actionType === "FINISH") {
+    // Primary already failed on a FINISH — escalate once if strong available.
+    return true;
+  }
+
+  if (draft.actionType === "TEST") {
+    return (
+      reasoningStillBroken ||
+      safetyOrExpensiveUnclear ||
+      contradictory
+    );
+  }
+
+  return false;
+}
 
 function parseHypotheses(
   value: LlmStepPayload["hypotheses"],
@@ -101,7 +260,6 @@ function toDiagnosticStep(
 
   if (actionType === "FINISH") {
     diagnosisCertainty = resolveDiagnosisCertainty(payload);
-    // CONFIRMED is the only status that clears insufficientEvidence
     insufficientEvidence = diagnosisCertainty !== "CONFIRMED";
     if (
       diagnosisConfidence === undefined &&
@@ -155,20 +313,47 @@ async function draftWithClaude(
   return parseJson<LlmStepPayload>(raw, "Claude dijagnostički odgovor");
 }
 
+async function regenerateWithClaude(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+  issues: string[],
+  budget: RetryBudget,
+): Promise<LlmStepPayload> {
+  if (budget.used >= MAX_DIAGNOSTIC_RETRIES) {
+    throw new Error(
+      `Dosegnut MAX_DIAGNOSTIC_RETRIES=${MAX_DIAGNOSTIC_RETRIES}; nema dodatnih Claude retryjeva.`,
+    );
+  }
+  budget.used += 1;
+  return draftWithClaude(
+    diagnosticCase,
+    buildDiagnosticRetryPrompt(diagnosticCase, draft, issues),
+  );
+}
+
 async function verifyWithOpenAi(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
+  options?: {
+    model?: string;
+    previousIssues?: string[];
+    strongFinal?: boolean;
+  },
 ): Promise<VerifierPayload> {
   const apiKey = getOpenAiApiKey();
   if (!apiKey) {
     throw new Error("Nedostaje OPENAI_API_KEY. Postavi ga u .env.");
   }
 
+  const model = options?.model ?? getVerifierModel();
   const raw = await callOpenAiJson({
     apiKey,
-    model: getVerifierModel(),
+    model,
     system: VERIFIER_SYSTEM_PROMPT,
-    user: buildVerifierUserPrompt(diagnosticCase, draft),
+    user: buildVerifierUserPrompt(diagnosticCase, draft, {
+      previousIssues: options?.previousIssues,
+      strongFinal: options?.strongFinal,
+    }),
   });
 
   const parsed = parseJson<VerifierPayload>(raw, "OpenAI verifier odgovor");
@@ -178,7 +363,6 @@ async function verifyWithOpenAi(
     correctedStep: parsed.correctedStep ?? null,
   };
 
-  // HARD override: never let contradiction through even if model approved.
   const contradiction =
     findReasoningConsistencyIssue(diagnosticCase, draft) ??
     (verdict.correctedStep
@@ -202,7 +386,6 @@ async function applyConfirmationPolicy(
   if (draft.actionType !== "FINISH") return draft;
   const issue = findConfirmationGuardIssue(diagnosticCase, draft);
   if (!issue) {
-    // Normalize certainty fields even when allowed
     const certainty = resolveDiagnosisCertainty(draft);
     return {
       ...draft,
@@ -217,85 +400,270 @@ async function applyConfirmationPolicy(
 }
 
 /**
- * Dual-model pipeline:
- * 1) Claude (DIAGNOSTIC_MODEL) proposes the next ASK/TEST/FINISH step.
- * 2) Programmatic guard rejects repeats, similar-test branches, low-value ASKs.
- * 3) OpenAI (VERIFIER_MODEL) approves, corrects, or rejects.
- * 4) On reject without correction, Claude retries with verifier issues.
+ * Safe backend fallback after strong reject / terminal verifier failure.
+ * Never CONFIRMED. No further AI escalation.
+ */
+function buildSafeVerifierFallback(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+  issues: string[],
+): LlmStepPayload {
+  const issueSummary =
+    issues.filter(Boolean).slice(0, 2).join("; ") ||
+    "nedovoljno pouzdanih dokaza";
+
+  if (draft.actionType === "FINISH") {
+    let next: LlmStepPayload = {
+      ...draft,
+      actionType: "FINISH",
+      diagnosisCertainty: "LIKELY",
+      insufficientEvidence: true,
+      confidence: "medium",
+    };
+    const confIssue = findConfirmationGuardIssue(diagnosticCase, next);
+    if (confIssue) {
+      next = {
+        ...downgradeUnjustifiedConfirmed(next, confIssue),
+        actionType: "FINISH",
+      } as LlmStepPayload;
+    }
+    if ((next.diagnosisCertainty ?? "").toUpperCase() === "CONFIRMED") {
+      next = {
+        ...next,
+        diagnosisCertainty: "LIKELY",
+        insufficientEvidence: true,
+      };
+    }
+    const certainty = resolveDiagnosisCertainty(next);
+    const supportedLikely =
+      certainty === "LIKELY" || certainty === "HIGH_CONFIDENCE";
+    return {
+      ...next,
+      diagnosisCertainty: supportedLikely ? certainty : "SUSPECTED",
+      insufficientEvidence: true,
+      confirmedFault:
+        next.confirmedFault?.trim() ||
+        "Vodeća sumnja (nije CONFIRMED — potreban dodatni dokaz)",
+      content:
+        `${supportedLikely ? "LIKELY" : "SUSPECTED"} / NEEDS CONFIRMATION: ` +
+        `${(next.content || next.confirmedFault || "vodeća sumnja").trim()}. ` +
+        `Verifier nije odobrio potvrdu. Potreban dodatni dokaz (${issueSummary}).`,
+      rationale: `Siguran fallback nakon verifier eskalacije — nema CONFIRMED bez dovoljnog dokaza. ${issueSummary}`,
+    };
+  }
+
+  return {
+    actionType: "ASK",
+    content:
+      "Prije sigurnog nastavka potreban je dodatni konkretan dokaz. Koje mjerenje ili opažanje možeš sada dodati?",
+    rationale: `Siguran fallback: verifier nije odobrio korak (${issueSummary}). Nema daljnje AI eskalacije.`,
+    expectedResultHint: "Konkretan rezultat mjerenja ili opažanja",
+    confirmedFault: null,
+    confidence: "low",
+    insufficientEvidence: true,
+    askDecision: {
+      whyNeeded:
+        "Bez dodatnog dokaza nije sigurno nastaviti nakon verifier odbijanja",
+      expectedAnswers: [
+        "Imam novo mjerenje/opažanje",
+        "Nemam dodatni dokaz sada",
+      ],
+      nextStepByAnswer: [
+        {
+          answer: "Imam novo mjerenje/opažanje",
+          nextAction: "TEST ili reevaluate prema novom dokazu",
+        },
+        {
+          answer: "Nemam dodatni dokaz sada",
+          nextAction: "FINISH LIKELY/SUSPECTED s insufficientEvidence",
+        },
+      ],
+    },
+    facts: draft.facts ?? null,
+    evidence: draft.evidence ?? null,
+    hypotheses: draft.hypotheses ?? null,
+  };
+}
+
+function buildGuardRetryIssues(
+  draft: LlmStepPayload,
+  issue: string | null,
+  extraIssues: string[],
+): string[] {
+  const askRejected =
+    draft.actionType === "ASK" ||
+    extraIssues.some((i) => /ASK REJECT/i.test(i)) ||
+    (issue != null && /ASK REJECT/i.test(issue));
+
+  const safetyRejected =
+    extraIssues.some((i) => /SAFETY REJECT/i.test(i)) ||
+    (issue != null && /SAFETY REJECT/i.test(issue));
+
+  return [
+    ...(issue ? [issue] : []),
+    ...extraIssues,
+    "Predloži DRUGAČIJI sljedeći korak koristeći CASE STATE.",
+    "Ne ponavljaj već postavljena pitanja ni završene/semantički slične testove.",
+    askRejected
+      ? "ASK je odbijen backend gateom. actionType MORA biti TEST — odmah odaberi najbolji sljedeći dijagnostički test. Ne vraćaj ASK."
+      : "Ako ASK nema decision value → TEST. Ako TEST ne razlikuje hipoteze → bolji TEST ili FINISH.",
+    safetyRejected
+      ? "SAFETY REJECT: regeneriraj ISTI tip TEST-a ali s obaveznim safetyPreconditions + upozorenjima u content (SRS: deaktivacija/odspajanje napajanja prije rada na konektorima/modulu; ne izmišljaj wait time — needsVerifiedProcedure)."
+      : "Skipped test nije dokaz — ne parafraziraj ga.",
+    safetyRejected ? "Skipped test nije dokaz — ne parafraziraj ga." : "",
+  ].filter(Boolean);
+}
+
+/**
+ * 3-tier pipeline:
+ * 1) Claude proposes ASK/TEST/FINISH.
+ * 2) Programmatic guards (bounded Claude retries).
+ * 3) Primary verifier only when selective conditions match.
+ * 4) Strong verifier at most once per case when still stuck; else safe fallback.
  */
 async function callVerifiedDiagnosticStep(
   diagnosticCase: DiagnosticCase,
 ): Promise<DiagnosticStep> {
   const stepId = `step-${diagnosticCase.steps.length + 1}`;
+  const budget: RetryBudget = { used: 0 };
 
   let draft = await draftWithClaude(
     diagnosticCase,
     buildDiagnosticUserPrompt(diagnosticCase),
   );
 
-  draft = await ensureDraftPassesQualityGates(diagnosticCase, draft);
+  draft = await ensureDraftPassesQualityGates(diagnosticCase, draft, budget);
   draft = await applyConfirmationPolicy(diagnosticCase, draft);
 
-  let verdict = await verifyWithOpenAi(diagnosticCase, draft);
-
-  if (!verdict.approved && verdict.correctedStep) {
-    const correctedIssue = findDraftQualityIssue(
-      diagnosticCase,
-      verdict.correctedStep,
-    );
-    if (correctedIssue) {
-      draft = await ensureDraftPassesQualityGates(
-        diagnosticCase,
-        verdict.correctedStep,
-        [
-          correctedIssue,
-          "Predloži drugačiji korak bez ponavljanja iste dijagnostičke grane.",
-        ],
-      );
-    } else {
-      draft = verdict.correctedStep;
-    }
-  } else if (!verdict.approved) {
-    draft = await draftWithClaude(
-      diagnosticCase,
-      buildDiagnosticRetryPrompt(
-        diagnosticCase,
-        draft,
-        verdict.issues.length
-          ? verdict.issues
-          : ["Draft nije odobren; predloži ispravan jedan korak."],
-      ),
-    );
-    draft = await ensureDraftPassesQualityGates(diagnosticCase, draft);
-    verdict = await verifyWithOpenAi(diagnosticCase, draft);
-    if (!verdict.approved && verdict.correctedStep) {
-      const correctedIssue = findDraftQualityIssue(
-        diagnosticCase,
-        verdict.correctedStep,
-      );
-      if (correctedIssue) {
-        draft = await ensureDraftPassesQualityGates(
-          diagnosticCase,
-          verdict.correctedStep,
-          [correctedIssue],
-        );
-      } else {
-        draft = verdict.correctedStep;
-      }
-    } else if (!verdict.approved) {
-      throw new Error(
-        `Verifier je odbio korak: ${verdict.issues.join("; ") || "nepoznat razlog"}`,
-      );
-    }
+  if (shouldCallVerifier(diagnosticCase, draft)) {
+    draft = await runSelectiveVerifier(diagnosticCase, draft, budget);
   }
 
   draft = await applyConfirmationPolicy(diagnosticCase, draft);
   return toDiagnosticStep(draft, stepId);
 }
 
+async function applyVerifierCorrection(
+  diagnosticCase: DiagnosticCase,
+  corrected: LlmStepPayload,
+  budget: RetryBudget,
+): Promise<LlmStepPayload> {
+  const correctedIssue = findDraftQualityIssue(diagnosticCase, corrected);
+  if (!correctedIssue) return corrected;
+  return ensureDraftPassesQualityGates(diagnosticCase, corrected, budget, [
+    correctedIssue,
+    "Predloži drugačiji korak bez ponavljanja iste dijagnostičke grane.",
+  ]);
+}
+
+async function runSelectiveVerifier(
+  diagnosticCase: DiagnosticCase,
+  initialDraft: LlmStepPayload,
+  budget: RetryBudget,
+): Promise<LlmStepPayload> {
+  let draft = initialDraft;
+  const collectedIssues: string[] = [];
+
+  let verdict = await verifyWithOpenAi(diagnosticCase, draft);
+  if (verdict.approved) return draft;
+
+  if (verdict.correctedStep) {
+    return applyVerifierCorrection(
+      diagnosticCase,
+      verdict.correctedStep,
+      budget,
+    );
+  }
+
+  collectedIssues.push(
+    ...(verdict.issues.length
+      ? verdict.issues
+      : ["Primary verifier odbio draft"]),
+  );
+
+  if (budget.used < MAX_DIAGNOSTIC_RETRIES) {
+    draft = await regenerateWithClaude(
+      diagnosticCase,
+      draft,
+      collectedIssues,
+      budget,
+    );
+    draft = await ensureDraftPassesQualityGates(diagnosticCase, draft, budget);
+
+    if (!shouldCallVerifier(diagnosticCase, draft)) {
+      return draft;
+    }
+
+    verdict = await verifyWithOpenAi(diagnosticCase, draft);
+    if (verdict.approved) return draft;
+    if (verdict.correctedStep) {
+      return applyVerifierCorrection(
+        diagnosticCase,
+        verdict.correctedStep,
+        budget,
+      );
+    }
+    collectedIssues.push(
+      ...(verdict.issues.length
+        ? verdict.issues
+        : ["Primary verifier odbio i nakon retryja"]),
+    );
+  }
+
+  if (shouldEscalateToStrongVerifier(diagnosticCase, draft, collectedIssues)) {
+    return runStrongVerifierOnce(diagnosticCase, draft, collectedIssues);
+  }
+
+  return buildSafeVerifierFallback(diagnosticCase, draft, collectedIssues);
+}
+
+async function runStrongVerifierOnce(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+  previousIssues: string[],
+): Promise<LlmStepPayload> {
+  const strongModel = getStrongVerifierModel();
+  if (!strongModel) {
+    return buildSafeVerifierFallback(diagnosticCase, draft, previousIssues);
+  }
+
+  diagnosticCase.strongVerifierUsed = true;
+
+  const verdict = await verifyWithOpenAi(diagnosticCase, draft, {
+    model: strongModel,
+    previousIssues,
+    strongFinal: true,
+  });
+
+  if (verdict.approved) {
+    return draft;
+  }
+
+  if (verdict.correctedStep) {
+    const correctedIssue = findDraftQualityIssue(
+      diagnosticCase,
+      verdict.correctedStep,
+    );
+    if (!correctedIssue) {
+      return applyConfirmationPolicy(diagnosticCase, verdict.correctedStep);
+    }
+    return buildSafeVerifierFallback(diagnosticCase, draft, [
+      ...previousIssues,
+      ...verdict.issues,
+      correctedIssue,
+    ]);
+  }
+
+  return buildSafeVerifierFallback(diagnosticCase, draft, [
+    ...previousIssues,
+    ...verdict.issues,
+  ]);
+}
+
 async function ensureDraftPassesQualityGates(
   diagnosticCase: DiagnosticCase,
   initialDraft: LlmStepPayload,
+  budget: RetryBudget,
   extraIssues: string[] = [],
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
@@ -311,104 +679,98 @@ async function ensureDraftPassesQualityGates(
   }
 
   let issue = findDraftQualityIssue(diagnosticCase, draft);
-  if (!issue && extraIssues.length === 0) return draft;
+  let pendingExtra = [...extraIssues];
+  if (!issue && pendingExtra.length === 0) return draft;
 
-  const askRejected =
-    draft.actionType === "ASK" ||
-    extraIssues.some((i) => /ASK REJECT/i.test(i)) ||
-    (issue != null && /ASK REJECT/i.test(issue));
-
-  const safetyRejected =
-    extraIssues.some((i) => /SAFETY REJECT/i.test(i)) ||
-    (issue != null && /SAFETY REJECT/i.test(issue));
-
-  const firstIssues = [
-    ...(issue ? [issue] : []),
-    ...extraIssues,
-    "Predloži DRUGAČIJI sljedeći korak koristeći CASE STATE.",
-    "Ne ponavljaj već postavljena pitanja ni završene/semantički slične testove.",
-    askRejected
-      ? "ASK je odbijen backend gateom. actionType MORA biti TEST — odmah odaberi najbolji sljedeći dijagnostički test. Ne vraćaj ASK."
-      : "Ako ASK nema decision value → TEST. Ako TEST ne razlikuje hipoteze → bolji TEST ili FINISH.",
-    safetyRejected
-      ? "SAFETY REJECT: regeneriraj ISTI tip TEST-a ali s obaveznim safetyPreconditions + upozorenjima u content (SRS: deaktivacija/odspajanje napajanja prije rada na konektorima/modulu; ne izmišljaj wait time — needsVerifiedProcedure)."
-      : "Skipped test nije dokaz — ne parafraziraj ga.",
-    safetyRejected ? "Skipped test nije dokaz — ne parafraziraj ga." : "",
-  ].filter(Boolean);
-
-  draft = await draftWithClaude(
-    diagnosticCase,
-    buildDiagnosticRetryPrompt(diagnosticCase, draft, firstIssues),
-  );
-
-  // If model returned ASK again after rejection, force another TEST-only retry
-  if (draft.actionType === "ASK") {
-    const askIssue =
-      findDraftQualityIssue(diagnosticCase, draft) ??
-      "ASK REJECT: backend ne prikazuje ASK bez decision value — vrati TEST.";
-    draft = await draftWithClaude(
-      diagnosticCase,
-      buildDiagnosticRetryPrompt(diagnosticCase, draft, [
-        askIssue,
-        "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
-      ]),
-    );
+  if (budget.used >= MAX_DIAGNOSTIC_RETRIES) {
+    return finalizeAfterRetryLimit(diagnosticCase, draft, issue);
   }
 
-  // Safety-critical TEST missing preconditions → force regenerate with safety steps
+  draft = await regenerateWithClaude(
+    diagnosticCase,
+    draft,
+    buildGuardRetryIssues(draft, issue, pendingExtra),
+    budget,
+  );
+  pendingExtra = [];
   issue = findDraftQualityIssue(diagnosticCase, draft);
-  if (issue && /SAFETY REJECT/i.test(issue) && draft.actionType === "TEST") {
-    draft = await draftWithClaude(
+
+  if (
+    draft.actionType === "ASK" &&
+    issue &&
+    budget.used < MAX_DIAGNOSTIC_RETRIES
+  ) {
+    draft = await regenerateWithClaude(
       diagnosticCase,
-      buildDiagnosticRetryPrompt(diagnosticCase, draft, [
+      draft,
+      [
+        issue,
+        "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
+      ],
+      budget,
+    );
+    issue = findDraftQualityIssue(diagnosticCase, draft);
+  }
+
+  if (
+    issue &&
+    /SAFETY REJECT/i.test(issue) &&
+    draft.actionType === "TEST" &&
+    budget.used < MAX_DIAGNOSTIC_RETRIES
+  ) {
+    draft = await regenerateWithClaude(
+      diagnosticCase,
+      draft,
+      [
         issue,
         "OBAVEZNO: actionType=TEST s safetyPreconditions.",
         "U content na početku navedi sigurnosne korake.",
         "SRS/airbag konektor/modul: deaktiviraj sustav / odspoji napajanje PRIJE rada.",
         "Ne izmišljaj vehicle-specific vrijeme čekanja — needsVerifiedProcedure=true.",
         "technicalClaims[]: svaka tvrdnja mora imati ispravan sourceType.",
-      ]),
+      ],
+      budget,
     );
+    issue = findDraftQualityIssue(diagnosticCase, draft);
   }
 
-  issue = findDraftQualityIssue(diagnosticCase, draft);
   if (!issue) return draft;
 
-  draft = await draftWithClaude(
-    diagnosticCase,
-    buildDiagnosticRetryPrompt(diagnosticCase, draft, [
-      issue,
-      "OBAVEZNO: vrati akciju iz DRUGE dijagnostičke grane ILI FINISH.",
-      "Zabranjeno: isti dio + ista vrsta mjerenja kao completedTests/skippedUnavailableTests.",
-      "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
-      "Inače: jedan TEST koji razlikuje LEADING od najjače alternative (druga metoda/točka/sustav).",
-      "U rationale navedi koje hipoteze razlikuješ.",
-    ]),
-  );
-  issue = findDraftQualityIssue(diagnosticCase, draft);
-  if (!issue) return draft;
+  if (budget.used < MAX_DIAGNOSTIC_RETRIES) {
+    draft = await regenerateWithClaude(
+      diagnosticCase,
+      draft,
+      [
+        issue,
+        "OBAVEZNO: vrati akciju iz DRUGE dijagnostičke grane ILI FINISH.",
+        "Zabranjeno: isti dio + ista vrsta mjerenja kao completedTests/skippedUnavailableTests.",
+        "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
+        "Inače: jedan TEST koji razlikuje LEADING od najjače alternative (druga metoda/točka/sustav).",
+        "U rationale navedi koje hipoteze razlikuješ.",
+        "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…) bez verifiedTechnicalSpecs.",
+        "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
+      ],
+      budget,
+    );
+    issue = findDraftQualityIssue(diagnosticCase, draft);
+    if (!issue) return draft;
+  }
 
-  // Spec / FINISH recovery: no invented OEM numbers; LIKELY without verified comparison.
-  draft = await draftWithClaude(
-    diagnosticCase,
-    buildDiagnosticRetryPrompt(diagnosticCase, draft, [
-      issue,
-      "ZADNJI POKUŠAJ ZA SPEC/FINISH PRAVILA:",
-      "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…).",
-      "Ako actionType=FINISH: insufficientEvidence=true, oznaci kao LIKELY / NEEDS CONFIRMATION.",
-      "Usporedi samo MEASURED_EVIDENCE i kvalitativne principe — bez expectedSpecification brojki.",
-      "Ili vrati TEST koji ne zahtijeva nepoznatu specifikaciju (npr. kontinuirana promjena signala).",
-      "Reci eksplicitno ako referentni raspon nije verificiran.",
-    ]),
-  );
+  return finalizeAfterRetryLimit(diagnosticCase, draft, issue);
+}
 
-  issue = findDraftQualityIssue(diagnosticCase, draft);
+function finalizeAfterRetryLimit(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+  issue: string | null,
+): LlmStepPayload {
   if (!issue) return draft;
 
   const isSpecIssue = /UNVERIFIED SPEC|FINISH GUARD|CONSISTENCY:/i.test(issue);
 
+  let next: LlmStepPayload = draft;
   if (draft.actionType !== "FINISH") {
-    draft = {
+    next = {
       ...draft,
       actionType: "FINISH",
       content: isSpecIssue
@@ -429,29 +791,40 @@ async function ensureDraftPassesQualityGates(
     };
   }
 
-  issue = findDraftQualityIssue(diagnosticCase, draft);
-  if (issue) {
-    if (draft.actionType === "FINISH") {
-      return {
-        ...draft,
-        content:
-          "LIKELY / NEEDS CONFIRMATION: dijagnoza se temelji na izmjerenim rezultatima i općim dijagnostičkim principima. Točan referentni raspon za ovo vozilo nije verificiran (specStatus=UNVERIFIED), stoga se ne potvrđuje usporedba measured vs expected OEM vrijednosti.",
-        rationale:
-          "Programski FINISH guard: odbijene neprovjerene/kontradiktorne specifikacije. UNVERIFIED SPEC nije dokaz.",
-        insufficientEvidence: true,
-        confidence: "medium",
-        confirmedFault:
-          "Vodeća sumnja (nije CONFIRMED — nedostaje verified specifikacija)",
-        expectedResultHint: null,
-      };
-    }
-    throw new Error(`AI draft odbijen: ${issue}. Pokušaj ponovno.`);
+  const still = findDraftQualityIssue(diagnosticCase, next);
+  if (!still) return next;
+
+  if (next.actionType === "FINISH") {
+    return {
+      ...next,
+      content:
+        "LIKELY / NEEDS CONFIRMATION: dijagnoza se temelji na izmjerenim rezultatima i općim dijagnostičkim principima. Točan referentni raspon za ovo vozilo nije verificiran (specStatus=UNVERIFIED), stoga se ne potvrđuje usporedba measured vs expected OEM vrijednosti.",
+      rationale:
+        "Programski FINISH guard: odbijene neprovjerene/kontradiktorne specifikacije. UNVERIFIED SPEC nije dokaz.",
+      insufficientEvidence: true,
+      confidence: "medium",
+      confirmedFault:
+        "Vodeća sumnja (nije CONFIRMED — nedostaje verified specifikacija)",
+      expectedResultHint: null,
+    };
   }
-  return draft;
+
+  throw new Error(`AI draft odbijen: ${still}. Pokušaj ponovno.`);
 }
 
 function lightExtract(problemText: string): DiagnosticCase["extracted"] {
   return extractFactsFromText(problemText);
+}
+
+function formatStepMessage(
+  actionType: string,
+  diagnosticCase: DiagnosticCase,
+  suffix = "",
+): string {
+  const strong = diagnosticCase.strongVerifierUsed
+    ? ` + strong ${getStrongVerifierModel()}`
+    : "";
+  return `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}${strong}): ${actionType}${suffix}`;
 }
 
 export class LlmDiagnosticEngine implements DiagnosticEngine {
@@ -488,12 +861,13 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       status: isFinish ? "completed" : "active",
       confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
       technicalSpecClaims: mergeTechnicalSpecClaims(baseCase, draftText),
+      strongVerifierUsed: baseCase.strongVerifierUsed,
     };
 
     return {
       case: diagnosticCase,
       nextStep,
-      message: `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}): ${nextStep.actionType}`,
+      message: formatStepMessage(nextStep.actionType, diagnosticCase),
     };
   }
 
@@ -591,12 +965,17 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         status: isFinish ? "completed" : "active",
         confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
         technicalSpecClaims: mergeTechnicalSpecClaims(reopened, draftText),
+        strongVerifierUsed: reopened.strongVerifierUsed,
       };
 
       return {
         case: updated,
         nextStep,
-        message: `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}): ${nextStep.actionType} (reevaluate after ${isTechnicianRejection(trimmed) ? "rejection" : "continue"})`,
+        message: formatStepMessage(
+          nextStep.actionType,
+          updated,
+          ` (reevaluate after ${isTechnicianRejection(trimmed) ? "rejection" : "continue"})`,
+        ),
       };
     }
 
@@ -636,12 +1015,13 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         caseWithObservation,
         draftText,
       ),
+      strongVerifierUsed: caseWithObservation.strongVerifierUsed,
     };
 
     return {
       case: updated,
       nextStep,
-      message: `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}): ${nextStep.actionType}`,
+      message: formatStepMessage(nextStep.actionType, updated),
     };
   }
 }

@@ -39,11 +39,12 @@ export {
   getDiagnosticModel,
   getOpenAiApiKey,
   getVerifierModel,
+  getStrongVerifierModel,
   hasLlmConfigured,
 } from "./config";
 
 /**
- * Dual LLM when both CLAUDE_API_KEY and OPENAI_API_KEY are set; otherwise mock.
+ * 3-tier LLM when both CLAUDE_API_KEY and OPENAI_API_KEY are set; otherwise mock.
  */
 export function getDiagnosticEngine(): DiagnosticEngine {
   if (hasLlmConfigured()) {
