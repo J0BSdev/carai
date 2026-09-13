@@ -31,6 +31,16 @@ const NEG_STEMS = [
   "open",
 ] as const;
 
+/** Nouns that mean "a problem" — "nema/bez X" of these is PASS. */
+const PROBLEM_STEMS = [
+  "problem",
+  "gresk",
+  "smetnj",
+  "issue",
+  "mana",
+  "kvar",
+] as const;
+
 function normalizeResultText(text: string): string {
   return text
     .toLowerCase()
@@ -146,26 +156,53 @@ function tokenHasStem(token: string, stems: readonly string[]): boolean {
   return stems.some((s) => token === s || token.startsWith(s));
 }
 
+/**
+ * Polarity with scoped negation:
+ * - "ne radi" / "nije ispravno" / "nema napona" → FAIL
+ * - "nije loš" / "ne prekida" / "nema problema" → PASS
+ * Bare "ne/nije/nema/bez" alone does not auto-FAIL without reading the predicate.
+ */
 function detectPolarity(normalized: string): "pass" | "fail" | null {
   if (!normalized) return null;
 
-  // Structural negation before a predicate → FAIL
-  // e.g. "ne radi", "nije uredno", "nema napajanja", "bez kontinuiteta"
-  if (/\b(ne|nije|nema|bez|ni)\b/.test(normalized)) {
-    return "fail";
+  const neg = normalized.match(/\b(ne|nije|nema|bez|ni)\s+(\S+)/);
+  if (neg) {
+    const particle = neg[1];
+    const predicate = neg[2] ?? "";
+
+    // Negation of a bad/problem predicate → PASS
+    if (
+      tokenHasStem(predicate, NEG_STEMS) ||
+      tokenHasStem(predicate, PROBLEM_STEMS)
+    ) {
+      return "pass";
+    }
+
+    // "nema/bez <desired thing>" → FAIL (absence), except problem-nouns above
+    if (particle === "nema" || particle === "bez") {
+      return "fail";
+    }
+
+    // "ne/nije <good predicate>" → FAIL
+    if (tokenHasStem(predicate, POS_STEMS)) {
+      return "fail";
+    }
+
+    // Unknown predicate after negation → ambiguous (do not auto-FAIL)
+    return null;
   }
 
   const tokens = normalized.split(" ").filter(Boolean);
   let pos = 0;
-  let neg = 0;
+  let negCount = 0;
   for (const t of tokens) {
-    if (tokenHasStem(t, NEG_STEMS)) neg += 1;
+    if (tokenHasStem(t, NEG_STEMS)) negCount += 1;
     if (tokenHasStem(t, POS_STEMS)) pos += 1;
   }
 
-  if (neg > 0 && pos === 0) return "fail";
-  if (pos > 0 && neg === 0) return "pass";
-  if (pos > 0 && neg > 0) return null;
+  if (negCount > 0 && pos === 0) return "fail";
+  if (pos > 0 && negCount === 0) return "pass";
+  if (pos > 0 && negCount > 0) return null;
   return null;
 }
 

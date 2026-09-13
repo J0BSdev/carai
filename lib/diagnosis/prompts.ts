@@ -13,7 +13,9 @@ import {
   refreshExtractedFacts,
 } from "./known-facts";
 import {
+  legacyLexicalSameBranch,
   metaFromDraft,
+  metaKeysEqual,
   testsAreSameDiagnosticBranch,
 } from "./diagnostic-meta";
 
@@ -485,10 +487,18 @@ export function buildDiagnosticRetryPrompt(
   previousDraft: unknown,
   issues: string[],
 ): string {
+  const forceNewGoal = issues.some((i) =>
+    /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS|DRUGAČIJI diagnosticGoal|goal eksplicitno odbijen|Guard odbija trenutni diagnosticGoal/i.test(
+      i,
+    ),
+  );
+
   return [
     buildDiagnosticUserPrompt(diagnosticCase),
     "",
-    "Draft odbijen — vrati NOVI JSON (drugačiji od odbijenog).",
+    forceNewGoal
+      ? "Draft odbijen zbog ponavljanja grane — vrati NOVI JSON s DRUGAČIJIM diagnosticGoal."
+      : "Draft odbijen zbog quality/format issuea — vrati ispravljeni JSON. Zadrži isti diagnosticTarget i diagnosticGoal; popravi samo navedene probleme (ne biraj novu granu).",
     "Problemi:",
     ...issues.map((issue) => `- ${issue}`),
     "",
@@ -702,8 +712,9 @@ export function findObviousRepetition(
 }
 
 /**
- * Reject TEST that repeats a completed/skipped diagnostic branch.
- * Uses diagnosticGoal/target metadata; rationale alone cannot escape.
+ * Reject TEST that repeats a completed diagnostic goal, or a skipped test
+ * with the same goal AND same method.
+ * Skipped + same goal + different testMethod = allowed alternative path.
  */
 export function findSimilarTestBranchIssue(
   diagnosticCase: DiagnosticCase,
@@ -730,6 +741,7 @@ export function findSimilarTestBranchIssue(
       diagnosticGoal: t.diagnosticGoal,
       testMethod: t.testMethod,
     };
+    // Completed + same diagnosticGoal (or legacy same branch) = repeat.
     if (!testsAreSameDiagnosticBranch(draftMeta, priorMeta)) continue;
     if (isSkippedOrUnavailableResult(t.result)) continue;
 
@@ -737,8 +749,7 @@ export function findSimilarTestBranchIssue(
       `Semantički sličan već završenom testu iste dijagnostičke grane` +
       `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}" ` +
       `(rezultat: "${t.result.slice(0, 80)}"). Rezultat već daje traženu informaciju — ` +
-      "ne ponavljaj isti diagnosticGoal drugim wordingom/metodom. " +
-      "Odaberi NEOVISNU granu (drugi diagnosticGoal) ili FINISH ako je dokaz dovoljan."
+      "ne ponavljaj isti diagnosticGoal. Odaberi NEOVISNU granu (drugi diagnosticGoal) ili FINISH."
     );
   }
 
@@ -749,13 +760,40 @@ export function findSimilarTestBranchIssue(
       diagnosticGoal: t.diagnosticGoal,
       testMethod: t.testMethod,
     };
-    if (!testsAreSameDiagnosticBranch(draftMeta, priorMeta)) continue;
-    return (
-      `Semantički sličan skipped/unavailable testu` +
-      `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
-      "To nije dokaz — nemoj preformulirati isti test. Predloži ALTERNATIVNI put (druga metoda) " +
-      "do iste info ili novi diagnosticGoal; inače objasni ograničenje."
-    );
+
+    const sameGoal =
+      (draftMeta.diagnosticGoal &&
+        t.diagnosticGoal &&
+        metaKeysEqual(draftMeta.diagnosticGoal, t.diagnosticGoal)) ||
+      ((!draftMeta.diagnosticGoal || !t.diagnosticGoal) &&
+        testsAreSameDiagnosticBranch(draftMeta, priorMeta));
+
+    if (!sameGoal) continue;
+
+    const bothMethods =
+      Boolean(draftMeta.testMethod?.trim()) && Boolean(t.testMethod?.trim());
+    if (bothMethods) {
+      if (!metaKeysEqual(draftMeta.testMethod, t.testMethod)) {
+        // Same goal, different method → allowed alternative after skip.
+        continue;
+      }
+      return (
+        `Semantički sličan skipped/unavailable testu s istim testMethod` +
+        `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
+        "To nije dokaz — nemoj ponavljati istu method. Predloži DRUGAČIJI testMethod za isti diagnosticGoal " +
+        "ili novi diagnosticGoal."
+      );
+    }
+
+    // Missing method meta: only reject clear lexical paraphrase of the skipped test.
+    if (legacyLexicalSameBranch(content, t.test)) {
+      return (
+        `Semantički sličan skipped/unavailable testu` +
+        `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
+        "To nije dokaz — nemoj preformulirati isti test. Predloži ALTERNATIVNI testMethod za isti goal " +
+        "ili novi diagnosticGoal."
+      );
+    }
   }
 
   return null;

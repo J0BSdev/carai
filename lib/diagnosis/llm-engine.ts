@@ -564,44 +564,56 @@ function buildGuardRetryIssues(
     extraIssues.some((i) => /SAFETY REJECT/i.test(i)) ||
     (issue != null && /SAFETY REJECT/i.test(issue));
 
-  const similarBranchRejected =
+  const goalRejected =
     (issue != null &&
-      /Semantički sličan|Ponavljanje iste dijagnostičke grane|Ponavljanje testa/i.test(
+      /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS/i.test(
         issue,
       )) ||
     extraIssues.some((i) =>
-      /Semantički sličan|Ponavljanje iste dijagnostičke grane/i.test(i),
+      /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Odaberi NEOVIS/i.test(
+        i,
+      ),
     );
 
-  const missingMeta =
-    issue != null && /TEST metadata nedostaje/i.test(issue);
+  const skippedMethodRepeat =
+    (issue != null &&
+      /skipped\/unavailable.*ist(a|om) (test)?method|ista method|isti testMethod/i.test(
+        issue,
+      )) ||
+    extraIssues.some((i) =>
+      /skipped\/unavailable.*method|isti testMethod/i.test(i),
+    );
 
   const goal = draft.diagnosticGoal?.trim();
+  const target = draft.diagnosticTarget?.trim();
 
   return [
     ...(issue ? [issue] : []),
     ...extraIssues,
-    "Predloži DRUGAČIJI sljedeći korak koristeći CASE STATE.",
-    "Ne ponavljaj već postavljena pitanja ni završene/semantički slične testove.",
     askRejected
       ? "ASK je odbijen backend gateom. actionType MORA biti TEST — odmah odaberi najbolji sljedeći dijagnostički test. Ne vraćaj ASK."
-      : "Ako ASK nema decision value → TEST. Ako TEST ne razlikuje hipoteze → bolji TEST ili FINISH.",
+      : "",
+    goalRejected
+      ? "Guard odbija trenutni diagnosticGoal — odaberi DRUGAČIJI diagnosticGoal (neovisna grana). Ne ponavljaj isti goal."
+      : "",
+    skippedMethodRepeat
+      ? "Skipped test s istim testMethod — predloži DRUGAČIJI testMethod za isti diagnosticGoal, ili novi goal."
+      : "",
     safetyRejected
-      ? "SAFETY REJECT: regeneriraj ISTI tip TEST-a ali s obaveznim safetyPreconditions + upozorenjima u content (SRS: deaktivacija/odspajanje napajanja prije rada na konektorima/modulu; ne izmišljaj wait time — needsVerifiedProcedure)."
-      : "Skipped test nije dokaz — ne parafraziraj ga.",
-    safetyRejected ? "Skipped test nije dokaz — ne parafraziraj ga." : "",
-    similarBranchRejected
-      ? "Odaberi DRUGAČIJI diagnosticGoal (neovisna grana). Ne ponavljaj isti diagnosticTarget+diagnosticGoal drugom metodom."
+      ? "SAFETY REJECT: regeneriraj isti TEST (isti diagnosticTarget + diagnosticGoal) s obaveznim safetyPreconditions + upozorenjima u content (SRS: deaktivacija/odspajanje napajanja prije rada; ne izmišljaj wait time — needsVerifiedProcedure)."
       : "",
-    safetyRejected && goal
-      ? `Ostani na istom diagnosticGoal="${goal}"; popravi samo safety/metodu (testMethod), ne mijenjaj granu.`
-      : "",
-    !similarBranchRejected &&
+    !goalRejected &&
       !askRejected &&
       draft.actionType === "TEST" &&
-      goal &&
-      !missingMeta
-      ? `Zadrži diagnosticGoal="${goal}" osim ako je problem kriva dijagnostička grana.`
+      target &&
+      goal
+      ? `Quality/format fix: zadrži diagnosticTarget="${target}" i diagnosticGoal="${goal}"; popravi samo navedeni issue (content/safety/meta/format). Ne mijenjaj granu.`
+      : "",
+    !goalRejected &&
+      !askRejected &&
+      draft.actionType === "TEST" &&
+      (!target || !goal)
+      ? "Popravi issue; ako su diagnosticTarget/diagnosticGoal poznati, zadrži ih. Novu granu biraj samo ako je goal eksplicitno odbijen."
       : "",
     draft.actionType === "TEST" || askRejected
       ? "Za TEST uvijek vrati diagnosticTarget, diagnosticGoal, testMethod."
@@ -658,7 +670,6 @@ async function applyVerifierCorrection(
   if (!correctedIssue) return corrected;
   return ensureDraftPassesQualityGates(diagnosticCase, corrected, budget, [
     correctedIssue,
-    "Predloži drugačiji korak bez ponavljanja iste dijagnostičke grane.",
   ]);
 }
 
@@ -855,16 +866,13 @@ async function ensureDraftPassesQualityGates(
     draft = await regenerateWithClaude(
       diagnosticCase,
       draft,
-      [
-        issue,
-        "OBAVEZNO: vrati akciju iz DRUGE dijagnostičke grane ILI FINISH.",
-        "Zabranjeno: isti dio + ista vrsta mjerenja kao completedTests/skippedUnavailableTests.",
+      buildGuardRetryIssues(draft, issue, [
         "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
-        "Inače: jedan TEST koji razlikuje LEADING od najjače alternative (druga metoda/točka/sustav).",
+        "Inače: jedan TEST koji razlikuje LEADING od najjače alternative.",
         "U rationale navedi koje hipoteze razlikuješ.",
         "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…) bez verifiedTechnicalSpecs.",
         "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
-      ],
+      ]),
       budget,
     );
     issue = findDraftQualityIssue(diagnosticCase, draft);
