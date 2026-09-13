@@ -1,4 +1,11 @@
 import type { DiagnosticStep } from "./types";
+import {
+  describeJsonParseFailure,
+  logJsonParseFail,
+  recordAiCall,
+  type AiCallMeta,
+  type AiTokenUsage,
+} from "./ai-telemetry";
 
 export type LlmStepPayload = {
   actionType: string;
@@ -56,147 +63,17 @@ export type VerifierPayload = {
   correctedStep: LlmStepPayload | null;
 };
 
-/**
- * Minimal Anthropic structured-output schema for diagnostic steps.
- * No null/anyOf unions (Anthropic limit: 16). Optional fields are omitted, not nullable.
- * Compatible with LlmStepPayload — absent optionals stay undefined.
- */
-export const DIAGNOSTIC_STEP_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    actionType: { type: "string", enum: ["ASK", "TEST", "FINISH"] },
-    content: { type: "string" },
-    rationale: { type: "string" },
-    expectedResultHint: { type: "string" },
-    confirmedFault: { type: "string" },
-    confidence: { type: "string", enum: ["low", "medium", "high"] },
-    diagnosisConfidence: { type: "number" },
-    diagnosisCertainty: {
-      type: "string",
-      enum: ["SUSPECTED", "LIKELY", "HIGH_CONFIDENCE", "CONFIRMED"],
-    },
-    insufficientEvidence: { type: "boolean" },
-    askDecision: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        whyNeeded: { type: "string" },
-        expectedAnswers: { type: "array", items: { type: "string" } },
-        nextStepByAnswer: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              answer: { type: "string" },
-              nextAction: { type: "string" },
-            },
-            required: ["answer", "nextAction"],
-          },
-        },
-      },
-      required: ["whyNeeded", "expectedAnswers", "nextStepByAnswer"],
-    },
-    technicalClaims: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          claim: { type: "string" },
-          valueText: { type: "string" },
-          sourceType: {
-            type: "string",
-            enum: [
-              "VERIFIED_OEM",
-              "VERIFIED_TECHNICAL",
-              "GENERAL_PRINCIPLE",
-              "MODEL_KNOWLEDGE",
-              "UNKNOWN",
-            ],
-          },
-          vehicleSpecific: { type: "boolean" },
-        },
-        required: ["claim", "sourceType", "vehicleSpecific"],
-      },
-    },
-    safetyPreconditions: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        category: {
-          type: "string",
-          enum: ["SRS", "HV", "BRAKES", "OTHER_CRITICAL"],
-        },
-        warnings: { type: "array", items: { type: "string" } },
-        requiredSteps: { type: "array", items: { type: "string" } },
-        needsVerifiedProcedure: { type: "boolean" },
-      },
-      required: ["warnings", "requiredSteps", "needsVerifiedProcedure"],
-    },
-    hypotheses: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          label: { type: "string" },
-          status: {
-            type: "string",
-            enum: ["LIKELY", "POSSIBLE", "WEAK", "RULED_OUT", "LEADING"],
-          },
-          confidence: { type: "number" },
-          supportingEvidence: { type: "array", items: { type: "string" } },
-          contradictingEvidence: { type: "array", items: { type: "string" } },
-          note: { type: "string" },
-        },
-        required: ["label", "status"],
-      },
-    },
-  },
-  required: ["actionType", "content", "rationale"],
-} as const;
+type AnthropicResult = {
+  text: string;
+  usage: AiTokenUsage;
+  latencyMs: number;
+};
 
-/** Models known to support Anthropic output_config.format json_schema. */
-function modelSupportsStructuredOutputs(model: string): boolean {
-  const m = model.trim().toLowerCase();
-  return (
-    m.includes("claude-sonnet-5") ||
-    m.includes("claude-opus-5") ||
-    m.includes("claude-opus-4-8") ||
-    m.includes("claude-opus-4-7") ||
-    m.includes("claude-opus-4-6") ||
-    m.includes("claude-sonnet-4-6") ||
-    m.includes("claude-sonnet-4-5") ||
-    m.includes("claude-opus-4-5") ||
-    m.includes("claude-haiku-4-5") ||
-    m.includes("claude-fable-5") ||
-    m.includes("claude-mythos")
-  );
-}
-
-function isDev(): boolean {
-  return process.env.NODE_ENV === "development";
-}
-
-function logClaudeRaw(label: string, raw: string): void {
-  if (!isDev()) return;
-  console.error(`[claude-raw:${label}]`, raw.slice(0, 6000));
-}
-
-function looksLikeStructuredOutputUnsupported(errText: string): boolean {
-  const n = errText.toLowerCase();
-  return (
-    n.includes("output_config") ||
-    n.includes("output_format") ||
-    n.includes("json_schema") ||
-    n.includes("structured output") ||
-    n.includes("union types") ||
-    n.includes("too many parameters") ||
-    (n.includes("not support") && n.includes("schema"))
-  );
-}
+type OpenAiResult = {
+  text: string;
+  usage: AiTokenUsage;
+  latencyMs: number;
+};
 
 function tryParseJsonObject(raw: string): string | null {
   const extracted = extractJsonObject(raw);
@@ -208,34 +85,15 @@ function tryParseJsonObject(raw: string): string | null {
   }
 }
 
-type AnthropicFetchParams = {
+/** Plain Claude Messages call: model + max_tokens + system + messages (no temperature). */
+async function fetchAnthropicText(params: {
   apiKey: string;
   model: string;
   system: string;
   user: string;
   maxTokens?: number;
-  jsonSchema?: Record<string, unknown> | null;
-};
-
-async function fetchAnthropicText(
-  params: AnthropicFetchParams,
-): Promise<string> {
-  const body: Record<string, unknown> = {
-    model: params.model,
-    max_tokens: params.maxTokens ?? 2048,
-    system: params.system,
-    messages: [{ role: "user", content: params.user }],
-  };
-
-  if (params.jsonSchema) {
-    body.output_config = {
-      format: {
-        type: "json_schema",
-        schema: params.jsonSchema,
-      },
-    };
-  }
-
+}): Promise<AnthropicResult> {
+  const started = Date.now();
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -243,7 +101,12 @@ async function fetchAnthropicText(
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      model: params.model,
+      max_tokens: params.maxTokens ?? 2048,
+      system: params.system,
+      messages: [{ role: "user", content: params.user }],
+    }),
   });
 
   if (!response.ok) {
@@ -255,19 +118,67 @@ async function fetchAnthropicText(
 
   const data = (await response.json()) as {
     content?: Array<{ type: string; text?: string }>;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+    };
   };
+  const latencyMs = Date.now() - started;
   const text = data.content?.find((c) => c.type === "text")?.text;
   if (!text) {
     throw new Error("Claude nije vratio tekstualni odgovor.");
   }
-  return text;
+
+  const inputTokens =
+    typeof data.usage?.input_tokens === "number"
+      ? data.usage.input_tokens
+      : null;
+  const outputTokens =
+    typeof data.usage?.output_tokens === "number"
+      ? data.usage.output_tokens
+      : null;
+  const usage: AiTokenUsage = {
+    inputTokens,
+    outputTokens,
+    totalTokens:
+      inputTokens != null && outputTokens != null
+        ? inputTokens + outputTokens
+        : null,
+  };
+
+  return { text, usage, latencyMs };
+}
+
+function emitCall(
+  meta: AiCallMeta | undefined,
+  provider: "anthropic" | "openai",
+  model: string,
+  usage: AiTokenUsage,
+  latencyMs: number,
+  roleOverride?: AiCallMeta["role"],
+  reasonOverride?: string,
+): void {
+  if (!meta) return;
+  recordAiCall({
+    caseId: meta.caseId,
+    stepId: meta.stepId,
+    stepNumber: meta.stepNumber,
+    provider,
+    role: roleOverride ?? meta.role,
+    model,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    latencyMs,
+    retryNumber: meta.retryNumber,
+    reasonCalled: reasonOverride ?? meta.reasonCalled,
+  });
 }
 
 /**
- * Claude diagnostic call with:
- * 1) structured JSON schema when the model supports it
- * 2) fallback without schema if unsupported
- * 3) at most one cheap JSON-format repair retry (not diagnostic/verifier retry)
+ * Claude diagnostic call (plain text JSON).
+ * If the reply is not valid JSON: at most one format-repair call.
+ * Repair does not consume diagnostic retry budget and does not call the verifier.
  */
 export async function callAnthropicJson(params: {
   apiKey: string;
@@ -275,45 +186,32 @@ export async function callAnthropicJson(params: {
   system: string;
   user: string;
   maxTokens?: number;
+  telemetry?: AiCallMeta;
 }): Promise<string> {
-  const preferStructured = modelSupportsStructuredOutputs(params.model);
-  const schema = DIAGNOSTIC_STEP_JSON_SCHEMA as unknown as Record<
-    string,
-    unknown
-  >;
-  let activeSchema: Record<string, unknown> | null = preferStructured
-    ? schema
-    : null;
+  const primary = await fetchAnthropicText(params);
+  emitCall(
+    params.telemetry,
+    "anthropic",
+    params.model,
+    primary.usage,
+    primary.latencyMs,
+  );
 
-  let rawText: string;
-  try {
-    rawText = await fetchAnthropicText({
-      ...params,
-      jsonSchema: activeSchema,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (activeSchema && looksLikeStructuredOutputUnsupported(message)) {
-      activeSchema = null;
-      rawText = await fetchAnthropicText({
-        ...params,
-        jsonSchema: null,
-      });
-    } else {
-      throw err;
-    }
-  }
-
-  logClaudeRaw("primary", rawText);
-  const parsed = tryParseJsonObject(rawText);
+  const parsed = tryParseJsonObject(primary.text);
   if (parsed) return parsed;
 
-  // Max 1 JSON-format repair — does not touch verifier / diagnostic retry budget.
-  const repairedText = await fetchAnthropicText({
+  const parseReason = describeJsonParseFailure(primary.text);
+  if (params.telemetry) {
+    logJsonParseFail({
+      stepNumber: params.telemetry.stepNumber,
+      reason: parseReason,
+    });
+  }
+
+  const repaired = await fetchAnthropicText({
     apiKey: params.apiKey,
     model: params.model,
     maxTokens: Math.min(params.maxTokens ?? 2048, 2048),
-    jsonSchema: activeSchema,
     system:
       "You only repair malformed JSON. Return ONLY a valid JSON object. No markdown, no commentary.",
     user: [
@@ -323,13 +221,22 @@ export async function callAnthropicJson(params: {
       "Do not change diagnostic meaning; only fix JSON syntax/structure.",
       "",
       "Malformed reply:",
-      rawText.slice(0, 12000),
+      primary.text.slice(0, 12000),
     ].join("\n"),
   });
 
-  logClaudeRaw("json-repair", repairedText);
-  const repaired = tryParseJsonObject(repairedText);
-  if (repaired) return repaired;
+  emitCall(
+    params.telemetry,
+    "anthropic",
+    params.model,
+    repaired.usage,
+    repaired.latencyMs,
+    "json_repair",
+    "malformed_json",
+  );
+
+  const repairedParsed = tryParseJsonObject(repaired.text);
+  if (repairedParsed) return repairedParsed;
 
   throw new Error(
     "Claude dijagnostički odgovor nije valjani JSON (ni nakon 1 JSON-format retryja).",
@@ -341,7 +248,9 @@ export async function callOpenAiJson(params: {
   model: string;
   system: string;
   user: string;
+  telemetry?: AiCallMeta;
 }): Promise<string> {
+  const started = Date.now();
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -367,11 +276,41 @@ export async function callOpenAiJson(params: {
 
   const data = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+    };
   };
+  const latencyMs = Date.now() - started;
   const raw = data.choices?.[0]?.message?.content;
   if (!raw) {
     throw new Error("OpenAI nije vratio sadržaj odgovora.");
   }
+
+  const inputTokens =
+    typeof data.usage?.prompt_tokens === "number"
+      ? data.usage.prompt_tokens
+      : null;
+  const outputTokens =
+    typeof data.usage?.completion_tokens === "number"
+      ? data.usage.completion_tokens
+      : null;
+  const totalTokens =
+    typeof data.usage?.total_tokens === "number"
+      ? data.usage.total_tokens
+      : inputTokens != null && outputTokens != null
+        ? inputTokens + outputTokens
+        : null;
+
+  emitCall(
+    params.telemetry,
+    "openai",
+    params.model,
+    { inputTokens, outputTokens, totalTokens },
+    latencyMs,
+  );
+
   return extractJsonObject(raw);
 }
 

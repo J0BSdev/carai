@@ -7,6 +7,12 @@ import {
 } from "./config";
 import type { DiagnosticEngine } from "./engine";
 import {
+  classifyGuardName,
+  getActiveAiStep,
+  logGuardRetry,
+  runAiStep,
+} from "./ai-telemetry";
+import {
   callAnthropicJson,
   callOpenAiJson,
   parseJson,
@@ -297,17 +303,33 @@ function toDiagnosticStep(
 async function draftWithClaude(
   diagnosticCase: DiagnosticCase,
   userPrompt: string,
+  callMeta?: {
+    role: "diagnostic" | "diagnostic_retry";
+    reasonCalled: string;
+    retryNumber: number;
+  },
 ): Promise<LlmStepPayload> {
   const apiKey = getClaudeApiKey();
   if (!apiKey) {
     throw new Error("Nedostaje CLAUDE_API_KEY. Postavi ga u .env.");
   }
 
+  const step = getActiveAiStep();
   const raw = await callAnthropicJson({
     apiKey,
     model: getDiagnosticModel(),
     system: DIAGNOSTIC_SYSTEM_PROMPT,
     user: userPrompt,
+    telemetry: step
+      ? {
+          caseId: step.caseId,
+          stepId: step.stepId,
+          stepNumber: step.stepNumber,
+          role: callMeta?.role ?? "diagnostic",
+          reasonCalled: callMeta?.reasonCalled ?? "initial",
+          retryNumber: callMeta?.retryNumber ?? 0,
+        }
+      : undefined,
   });
 
   return parseJson<LlmStepPayload>(raw, "Claude dijagnostički odgovor");
@@ -318,6 +340,7 @@ async function regenerateWithClaude(
   draft: LlmStepPayload,
   issues: string[],
   budget: RetryBudget,
+  reasonCalled: string = "quality_gate",
 ): Promise<LlmStepPayload> {
   if (budget.used >= MAX_DIAGNOSTIC_RETRIES) {
     throw new Error(
@@ -325,9 +348,24 @@ async function regenerateWithClaude(
     );
   }
   budget.used += 1;
+
+  const step = getActiveAiStep();
+  const primaryIssue = issues[0] ?? reasonCalled;
+  logGuardRetry({
+    stepNumber: step?.stepNumber ?? diagnosticCase.steps.length + 1,
+    guard: classifyGuardName(primaryIssue),
+    retryNumber: budget.used,
+    issueSummary: primaryIssue,
+  });
+
   return draftWithClaude(
     diagnosticCase,
     buildDiagnosticRetryPrompt(diagnosticCase, draft, issues),
+    {
+      role: "diagnostic_retry",
+      reasonCalled,
+      retryNumber: budget.used,
+    },
   );
 }
 
@@ -338,6 +376,8 @@ async function verifyWithOpenAi(
     model?: string;
     previousIssues?: string[];
     strongFinal?: boolean;
+    retryNumber?: number;
+    reasonCalled?: string;
   },
 ): Promise<VerifierPayload> {
   const apiKey = getOpenAiApiKey();
@@ -346,6 +386,7 @@ async function verifyWithOpenAi(
   }
 
   const model = options?.model ?? getVerifierModel();
+  const step = getActiveAiStep();
   const raw = await callOpenAiJson({
     apiKey,
     model,
@@ -354,6 +395,18 @@ async function verifyWithOpenAi(
       previousIssues: options?.previousIssues,
       strongFinal: options?.strongFinal,
     }),
+    telemetry: step
+      ? {
+          caseId: step.caseId,
+          stepId: step.stepId,
+          stepNumber: step.stepNumber,
+          role: options?.strongFinal ? "strong_verifier" : "verifier",
+          reasonCalled:
+            options?.reasonCalled ??
+            (options?.strongFinal ? "strong_escalate" : "verifier_required"),
+          retryNumber: options?.retryNumber ?? 0,
+        }
+      : undefined,
   });
 
   const parsed = parseJson<VerifierPayload>(raw, "OpenAI verifier odgovor");
@@ -524,23 +577,34 @@ function buildGuardRetryIssues(
 async function callVerifiedDiagnosticStep(
   diagnosticCase: DiagnosticCase,
 ): Promise<DiagnosticStep> {
-  const stepId = `step-${diagnosticCase.steps.length + 1}`;
+  const stepNumber = diagnosticCase.steps.length + 1;
+  const stepId = `step-${stepNumber}`;
   const budget: RetryBudget = { used: 0 };
 
-  let draft = await draftWithClaude(
-    diagnosticCase,
-    buildDiagnosticUserPrompt(diagnosticCase),
+  return runAiStep(
+    {
+      caseId: diagnosticCase.id,
+      stepId,
+      stepNumber,
+    },
+    async () => {
+      let draft = await draftWithClaude(
+        diagnosticCase,
+        buildDiagnosticUserPrompt(diagnosticCase),
+        { role: "diagnostic", reasonCalled: "initial", retryNumber: 0 },
+      );
+
+      draft = await ensureDraftPassesQualityGates(diagnosticCase, draft, budget);
+      draft = await applyConfirmationPolicy(diagnosticCase, draft);
+
+      if (shouldCallVerifier(diagnosticCase, draft)) {
+        draft = await runSelectiveVerifier(diagnosticCase, draft, budget);
+      }
+
+      draft = await applyConfirmationPolicy(diagnosticCase, draft);
+      return toDiagnosticStep(draft, stepId);
+    },
   );
-
-  draft = await ensureDraftPassesQualityGates(diagnosticCase, draft, budget);
-  draft = await applyConfirmationPolicy(diagnosticCase, draft);
-
-  if (shouldCallVerifier(diagnosticCase, draft)) {
-    draft = await runSelectiveVerifier(diagnosticCase, draft, budget);
-  }
-
-  draft = await applyConfirmationPolicy(diagnosticCase, draft);
-  return toDiagnosticStep(draft, stepId);
 }
 
 async function applyVerifierCorrection(
@@ -564,7 +628,10 @@ async function runSelectiveVerifier(
   let draft = initialDraft;
   const collectedIssues: string[] = [];
 
-  let verdict = await verifyWithOpenAi(diagnosticCase, draft);
+  let verdict = await verifyWithOpenAi(diagnosticCase, draft, {
+    retryNumber: 0,
+    reasonCalled: "verifier_required",
+  });
   if (verdict.approved) return draft;
 
   if (verdict.correctedStep) {
@@ -587,6 +654,7 @@ async function runSelectiveVerifier(
       draft,
       collectedIssues,
       budget,
+      "verifier_rejected",
     );
     draft = await ensureDraftPassesQualityGates(diagnosticCase, draft, budget);
 
@@ -594,7 +662,10 @@ async function runSelectiveVerifier(
       return draft;
     }
 
-    verdict = await verifyWithOpenAi(diagnosticCase, draft);
+    verdict = await verifyWithOpenAi(diagnosticCase, draft, {
+      retryNumber: 1,
+      reasonCalled: "verifier_required",
+    });
     if (verdict.approved) return draft;
     if (verdict.correctedStep) {
       return applyVerifierCorrection(
@@ -633,6 +704,8 @@ async function runStrongVerifierOnce(
     model: strongModel,
     previousIssues,
     strongFinal: true,
+    retryNumber: 0,
+    reasonCalled: "strong_escalate",
   });
 
   if (verdict.approved) {
