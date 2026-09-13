@@ -5,6 +5,7 @@ import type {
   Hypothesis,
   HypothesisStatus,
 } from "./types";
+import { testRequiresNumericValue } from "./test-result";
 
 export type DiagnosticPhaseUi =
   | "POČETNE PROVJERE"
@@ -198,15 +199,20 @@ export function needsDualMeasurement(step: DiagnosticStep): boolean {
   );
 }
 
+/**
+ * Quality gate: require a numeric entry UI only when the active TEST
+ * diagnostically depends on a concrete value.
+ */
 export function looksNumericTest(step: DiagnosticStep): boolean {
-  if (step.actionType !== "TEST") return false;
-  if (inferUnit(step)) return true;
-  if (needsDualMeasurement(step)) return true;
-  const blob = `${step.content} ${step.expectedResultHint ?? ""}`;
-  return /\d|izmjer|napon|struja|otpor|tlak|mA|\bV\b|measure|voltage|current/i.test(
-    blob,
-  );
+  return testRequiresNumericValue(step);
 }
+
+export {
+  interpretTestResult,
+  testRequiresNumericValue,
+  testAllowsQualitativeResult,
+  type TestResultInterpretation,
+} from "./test-result";
 
 export const THINKING_MESSAGES = [
   "Analiziram dokaze…",
