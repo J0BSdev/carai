@@ -588,8 +588,68 @@ const MEASUREMENT_FAMILIES: string[][] = [
   ["tlak", "bar", "kpa"],
   ["temperatura", "temp"],
   ["skenir", "dtc", "kodove", "dijagnostick"],
-  ["vizual", "pregled", "fizick", "stanje"],
+  ["vizual", "pregled", "fizick", "stanje", "suha", "vlazna", "vlažna", "mokar", "wet", "dry"],
+  ["iskra", "spark", "paljenje"],
 ];
+
+/**
+ * Same physical action / work site. Re-testing the same site is the same
+ * diagnostic branch even when the wording or rationale changes
+ * (e.g. spark-at-plug vs dry/wet plug inspection).
+ */
+const PHYSICAL_ACTION_SITES: string[][] = [
+  [
+    "svjecic",
+    "svjecica",
+    "iskra",
+    "spark",
+    "spark plug",
+    "bobin",
+    "coil",
+    "kabel svjec",
+    "paljenje na svjec",
+  ],
+  [
+    "brizgalj",
+    "injektor",
+    "injector",
+    "ubrizgav",
+    "pulse width",
+    "upravljanje brizgalj",
+    "upravljanje injektor",
+  ],
+  [
+    "tlak goriva",
+    "fuel pressure",
+    "rail pressure",
+    "pumpa goriv",
+    "dovod goriv",
+    "fuel rail",
+    "gorivo u rail",
+  ],
+  ["kompresij", "compression", "cilindar pritis"],
+  ["turbo", "aktuator", "wastegate", "boost"],
+  ["maf", "map senzor", "map sensor", "maseni protok", "protok zraka"],
+];
+
+/** Components where a second TEST on the same part is almost always a repeat. */
+const STRONG_COMPONENT_HINTS = new Set(
+  [
+    "svjecic",
+    "svjecica",
+    "brizgalj",
+    "injektor",
+    "injector",
+    "bobin",
+    "coil",
+    "pumpa",
+    "turbo",
+    "aktuator",
+    "kataliz",
+    "osigurac",
+    "relej",
+  ].map((h) => normalizeForCompare(h)),
+);
 
 const COMPONENT_HINTS = [
   "davac",
@@ -615,7 +675,13 @@ const COMPONENT_HINTS = [
   "tank",
   "pumpa",
   "brizgalj",
+  "injektor",
+  "injector",
   "svjecic",
+  "svjecica",
+  "iskra",
+  "bobin",
+  "coil",
   "kataliz",
   "turbo",
   "ventil",
@@ -638,11 +704,30 @@ const COMPONENT_HINTS = [
 function measurementFamiliesPresent(normalized: string): Set<number> {
   const found = new Set<number>();
   MEASUREMENT_FAMILIES.forEach((family, idx) => {
-    if (family.some((token) => normalized.includes(token))) {
+    if (family.some((token) => normalized.includes(normalizeForCompare(token)))) {
       found.add(idx);
     }
   });
   return found;
+}
+
+function physicalSitesPresent(normalized: string): Set<number> {
+  const found = new Set<number>();
+  PHYSICAL_ACTION_SITES.forEach((site, idx) => {
+    if (site.some((token) => normalized.includes(normalizeForCompare(token)))) {
+      found.add(idx);
+    }
+  });
+  return found;
+}
+
+function sharedPhysicalSite(a: string, b: string): boolean {
+  const sa = physicalSitesPresent(a);
+  const sb = physicalSitesPresent(b);
+  for (const id of sa) {
+    if (sb.has(id)) return true;
+  }
+  return false;
 }
 
 function componentHintsPresent(normalized: string): Set<string> {
@@ -652,6 +737,15 @@ function componentHintsPresent(normalized: string): Set<string> {
     if (nh && normalized.includes(nh)) found.add(nh);
   }
   return found;
+}
+
+function sharedStrongComponent(a: string, b: string): string | null {
+  const ca = componentHintsPresent(a);
+  const cb = componentHintsPresent(b);
+  for (const c of ca) {
+    if (cb.has(c) && STRONG_COMPONENT_HINTS.has(c)) return c;
+  }
+  return null;
 }
 
 function tokenOverlapRatio(a: string, b: string): { ratio: number; inter: number } {
@@ -666,8 +760,9 @@ function tokenOverlapRatio(a: string, b: string): { ratio: number; inter: number
 }
 
 /**
- * Same diagnostic branch: shared measurement family + shared component hint,
- * or high lexical overlap on test instructions.
+ * Same diagnostic branch: shared physical action/site, strong component,
+ * shared measurement family + component, or high lexical overlap.
+ * Rationale must NOT be used to escape this check.
  */
 export function testsAreSameDiagnosticBranch(
   candidate: string,
@@ -677,6 +772,13 @@ export function testsAreSameDiagnosticBranch(
   const b = normalizeForCompare(previous);
   if (!a || !b) return false;
   if (a === b || a.includes(b) || b.includes(a)) return true;
+
+  // Same physical work site (svjećica/iskra, brizgaljka, tlak goriva, …)
+  // ⇒ same branch even if the proposed angle/rationale differs.
+  if (sharedPhysicalSite(a, b)) return true;
+
+  // Strong shared component (e.g. svjećica) ⇒ do not re-test that part.
+  if (sharedStrongComponent(a, b)) return true;
 
   const famA = measurementFamiliesPresent(a);
   const famB = measurementFamiliesPresent(b);
@@ -689,13 +791,14 @@ export function testsAreSameDiagnosticBranch(
     }
   }
 
-  // Explicit different measurement types ⇒ different diagnostic branch.
+  // Explicit different measurement types ⇒ different diagnostic branch
+  // only when there is no shared physical site/strong component (already handled).
   if (bothHaveMeasurement && !sharedFamily) return false;
 
   const meaningfulA = stripGenericTestTokens(a);
   const meaningfulB = stripGenericTestTokens(b);
   const { ratio, inter } = tokenOverlapRatio(meaningfulA, meaningfulB);
-  if (ratio >= 0.6 && inter >= 3) return true;
+  if (ratio >= 0.55 && inter >= 2) return true;
 
   const compA = componentHintsPresent(a);
   const compB = componentHintsPresent(b);
@@ -708,7 +811,8 @@ export function testsAreSameDiagnosticBranch(
   }
 
   if (sharedFamily && sharedComponent) return true;
-  if (sharedFamily && ratio >= 0.4 && inter >= 2) return true;
+  if (sharedFamily && ratio >= 0.35 && inter >= 2) return true;
+  if (sharedComponent && ratio >= 0.45 && inter >= 2) return true;
 
   return false;
 }
@@ -780,6 +884,16 @@ export function findObviousRepetition(
       if (normalizedNew === nt || containsAsCore(normalizedNew, nt)) {
         return `Ponavljanje već završenog testa: "${t.test.slice(0, 120)}" (rezultat: ${t.result.slice(0, 80)})`;
       }
+      // Same physical site/component with an informative prior result ⇒ repeat.
+      if (
+        priorTestAlreadyYieldedSiteInfo(content, t.test, t.result) ||
+        testsAreSameDiagnosticBranch(content, t.test)
+      ) {
+        return (
+          `Ponavljanje testa na istoj fizičkoj radnji/komponenti: "${t.test.slice(0, 100)}" ` +
+          `(rezultat već daje info: "${t.result.slice(0, 80)}"). Prijeđi na neovisnu sljedeću granu.`
+        );
+      }
     }
   }
 
@@ -787,7 +901,44 @@ export function findObviousRepetition(
 }
 
 /**
+ * True when a completed TEST on the same physical site/component already
+ * produced usable information (result is not empty/skipped).
+ */
+function priorTestAlreadyYieldedSiteInfo(
+  candidate: string,
+  priorTest: string,
+  priorResult: string,
+): boolean {
+  const result = priorResult?.trim() ?? "";
+  if (result.length < 4) return false;
+  if (isSkippedOrUnavailableResult(result)) return false;
+
+  const cand = normalizeForCompare(candidate);
+  const prior = normalizeForCompare(priorTest);
+  const priorPlusResult = normalizeForCompare(`${priorTest} ${result}`);
+  if (!cand || !prior) return false;
+
+  if (sharedPhysicalSite(cand, prior) || sharedPhysicalSite(cand, priorPlusResult)) {
+    return true;
+  }
+  if (sharedStrongComponent(cand, prior) || sharedStrongComponent(cand, priorPlusResult)) {
+    return true;
+  }
+  // Candidate seeks info already stated in the prior result for the same site.
+  if (
+    sharedPhysicalSite(cand, normalizeForCompare(result)) &&
+    tokenOverlapRatio(stripGenericTestTokens(cand), stripGenericTestTokens(normalizeForCompare(result)))
+      .inter >= 1
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Reject TEST that is only a semantic twin of a completed or skipped test.
+ * Different rationale does NOT make it a new branch — same physical action /
+ * component with known result must be rejected.
  */
 export function findSimilarTestBranchIssue(
   diagnosticCase: DiagnosticCase,
@@ -797,14 +948,22 @@ export function findSimilarTestBranchIssue(
   const content = draft.content?.trim();
   if (!content) return null;
 
+  // Intentionally ignore rationale — a reworded "why" is not a new test branch.
   const state = buildCaseState(diagnosticCase);
 
   for (const t of state.completedTests) {
-    if (testsAreSameDiagnosticBranch(content, t.test)) {
+    const sameBranch =
+      testsAreSameDiagnosticBranch(content, t.test) ||
+      testsAreSameDiagnosticBranch(content, `${t.test} ${t.result}`) ||
+      priorTestAlreadyYieldedSiteInfo(content, t.test, t.result);
+
+    if (sameBranch) {
       return (
-        `Semantički sličan već završenom testu iste dijagnostičke grane: "${t.test.slice(0, 100)}" ` +
-        `(rezultat: "${t.result.slice(0, 60)}"). Ne nastavljaj checklistu na istom dijelu/mjerenju. ` +
-        "Odaberi test koji RAZLIKUJE preostale hipoteze drugim putem, ili FINISH ako je dokaz dovoljan."
+        `Semantički sličan već završenom testu iste fizičke radnje/komponente: "${t.test.slice(0, 100)}" ` +
+        `(rezultat: "${t.result.slice(0, 80)}"). Rezultat već daje traženu informaciju — ` +
+        "ne ponavljaj isti dio (npr. svjećica/iskra) s drugim rationaleom. " +
+        "Odaberi NEOVISNU sljedeću granu (npr. dovod/tlak goriva ili upravljanje injektorima) " +
+        "ili FINISH ako je dokaz dovoljan."
       );
     }
   }
