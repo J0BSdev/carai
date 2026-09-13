@@ -94,6 +94,13 @@ export interface DiagnosticStep {
   insufficientEvidence?: boolean;
   /** What the mechanic should record when answering. */
   expectedResultHint?: string;
+  /**
+   * TEST metadata from the diagnostic model (branch identity).
+   * Optional for backward compatibility with older saved cases.
+   */
+  diagnosticTarget?: string;
+  diagnosticGoal?: string;
+  testMethod?: string;
 }
 
 export interface Observation {

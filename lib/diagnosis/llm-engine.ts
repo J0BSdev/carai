@@ -297,6 +297,18 @@ function toDiagnosticStep(
     facts: payload.facts ?? undefined,
     evidence: payload.evidence ?? undefined,
     hypotheses: parseHypotheses(payload.hypotheses),
+    diagnosticTarget:
+      actionType === "TEST"
+        ? payload.diagnosticTarget?.trim() || undefined
+        : undefined,
+    diagnosticGoal:
+      actionType === "TEST"
+        ? payload.diagnosticGoal?.trim() || undefined
+        : undefined,
+    testMethod:
+      actionType === "TEST"
+        ? payload.testMethod?.trim() || undefined
+        : undefined,
   };
 }
 
@@ -552,6 +564,20 @@ function buildGuardRetryIssues(
     extraIssues.some((i) => /SAFETY REJECT/i.test(i)) ||
     (issue != null && /SAFETY REJECT/i.test(issue));
 
+  const similarBranchRejected =
+    (issue != null &&
+      /Semantički sličan|Ponavljanje iste dijagnostičke grane|Ponavljanje testa/i.test(
+        issue,
+      )) ||
+    extraIssues.some((i) =>
+      /Semantički sličan|Ponavljanje iste dijagnostičke grane/i.test(i),
+    );
+
+  const missingMeta =
+    issue != null && /TEST metadata nedostaje/i.test(issue);
+
+  const goal = draft.diagnosticGoal?.trim();
+
   return [
     ...(issue ? [issue] : []),
     ...extraIssues,
@@ -564,6 +590,22 @@ function buildGuardRetryIssues(
       ? "SAFETY REJECT: regeneriraj ISTI tip TEST-a ali s obaveznim safetyPreconditions + upozorenjima u content (SRS: deaktivacija/odspajanje napajanja prije rada na konektorima/modulu; ne izmišljaj wait time — needsVerifiedProcedure)."
       : "Skipped test nije dokaz — ne parafraziraj ga.",
     safetyRejected ? "Skipped test nije dokaz — ne parafraziraj ga." : "",
+    similarBranchRejected
+      ? "Odaberi DRUGAČIJI diagnosticGoal (neovisna grana). Ne ponavljaj isti diagnosticTarget+diagnosticGoal drugom metodom."
+      : "",
+    safetyRejected && goal
+      ? `Ostani na istom diagnosticGoal="${goal}"; popravi samo safety/metodu (testMethod), ne mijenjaj granu.`
+      : "",
+    !similarBranchRejected &&
+      !askRejected &&
+      draft.actionType === "TEST" &&
+      goal &&
+      !missingMeta
+      ? `Zadrži diagnosticGoal="${goal}" osim ako je problem kriva dijagnostička grana.`
+      : "",
+    draft.actionType === "TEST" || askRejected
+      ? "Za TEST uvijek vrati diagnosticTarget, diagnosticGoal, testMethod."
+      : "",
   ].filter(Boolean);
 }
 

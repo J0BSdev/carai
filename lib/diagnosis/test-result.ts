@@ -46,6 +46,9 @@ function stepContextBlob(step: DiagnosticStep): string {
   return [
     step.content,
     step.expectedResultHint,
+    step.diagnosticTarget,
+    step.diagnosticGoal,
+    step.testMethod,
     step.recommendedTest?.name,
     step.recommendedTest?.whatToRecord,
     step.recommendedTest?.specs?.value,
@@ -56,10 +59,33 @@ function stepContextBlob(step: DiagnosticStep): string {
 
 /**
  * True when the active TEST diagnostically depends on a concrete numeric reading.
- * Presence/correctness checks do not qualify.
+ * Uses diagnosticGoal/testMethod when present; otherwise instruction text.
  */
 export function testRequiresNumericValue(step: DiagnosticStep): boolean {
   if (step.actionType !== "TEST") return false;
+
+  const goal = normalizeResultText(step.diagnosticGoal ?? "");
+  const method = normalizeResultText(step.testMethod ?? "");
+  const meta = `${goal} ${method}`.trim();
+
+  // Goal/method explicitly about a quantitative reading.
+  if (
+    meta &&
+    /(vrijednost|value|broj|numeric|raspon|range|kvantit|mjerenje vrijed|measure value|ocitan|ocitaj)/.test(
+      meta,
+    )
+  ) {
+    return true;
+  }
+  // Goal about presence/correctness → qualitative OK.
+  if (
+    meta &&
+    /(prisut|isprav|pass|fail|potvrd|kontinuitet|uredn|kvalitat|ima\/nema|da\/ne)/.test(
+      meta,
+    )
+  ) {
+    return false;
+  }
 
   const raw = stepContextBlob(step);
   const n = normalizeResultText(raw);

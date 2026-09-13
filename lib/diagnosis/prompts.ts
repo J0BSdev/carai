@@ -12,6 +12,12 @@ import {
   findAlreadyKnownInfoIssue,
   refreshExtractedFacts,
 } from "./known-facts";
+import {
+  metaFromDraft,
+  testsAreSameDiagnosticBranch,
+} from "./diagnostic-meta";
+
+export { testsAreSameDiagnosticBranch } from "./diagnostic-meta";
 
 export const DIAGNOSTIC_SYSTEM_PROMPT = `AI dijagnostički copilot za profesionalne mehaničare. ADAPTIVNA dijagnostika korak-po-korak (ne checklista/chatbot lista kvarova). Cilj: minimalan broj koraka do pouzdane dijagnoze.
 
@@ -44,6 +50,9 @@ OUTPUT COMPACT (ASK/TEST posebno — ne troši tokene):
 - Ne generiraj redundantne facts/evidence (obično izostavi).
 - hypotheses: max 3, kratki label; supporting/contradictingEvidence kratko ili izostavi.
 - technicalClaims samo uz stvarnu tvrdnju/spec; safetyPreconditions samo za safety-critical TEST.
+- Za TEST OBAVEZNO 3 kratka metadata polja (2–6 riječi, stabilan label):
+  diagnosticTarget = što se testira; diagnosticGoal = koju informaciju tražiš; testMethod = kako.
+  Ista dijagnostička grana = isti diagnosticGoal (ne ponavljaj ga drugim wordingom).
 - content konkretan, bez eseja. JSON bez markdowna.
 
 Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
@@ -53,6 +62,9 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
   "rationale": "string — max 1–2 rečenice; kod TEST koje hipoteze razlikuje",
   "expectedResultHint": "string | null — što mehaničar treba zabilježiti",
   "confirmedFault": "string | null — samo uz FINISH",
+  "diagnosticTarget": "string | null — OBAVEZNO za TEST: što se testira",
+  "diagnosticGoal": "string | null — OBAVEZNO za TEST: koju dijagnostičku info tražiš",
+  "testMethod": "string | null — OBAVEZNO za TEST: metoda (mjerenje/vizual/…)",
   "askDecision": {
     "whyNeeded": "string — zašto je informacija decision-critical",
     "expectedAnswers": ["string", "string"],
@@ -121,8 +133,20 @@ function latestHypothesesFromCase(
 /** Explicit session case state sent on every model call. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
   const questionsAsked: string[] = [];
-  const completedTests: Array<{ test: string; result: string }> = [];
-  const skippedUnavailableTests: Array<{ test: string; reason: string }> = [];
+  const completedTests: Array<{
+    test: string;
+    result: string;
+    diagnosticTarget?: string;
+    diagnosticGoal?: string;
+    testMethod?: string;
+  }> = [];
+  const skippedUnavailableTests: Array<{
+    test: string;
+    reason: string;
+    diagnosticTarget?: string;
+    diagnosticGoal?: string;
+    testMethod?: string;
+  }> = [];
   const answers: Array<{ question: string; answer: string }> = [];
   const measurements: string[] = [];
   const previousDiagnosticActions: Array<{
@@ -135,6 +159,9 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     content: string;
     result: string | null;
     resultKind: "none" | "answer" | "measurement" | "skipped";
+    diagnosticTarget?: string;
+    diagnosticGoal?: string;
+    testMethod?: string;
   }> = [];
 
   const extracted = refreshExtractedFacts(diagnosticCase);
@@ -165,6 +192,11 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       content: stepLabel,
       result,
       resultKind,
+      ...(step.diagnosticTarget
+        ? { diagnosticTarget: step.diagnosticTarget }
+        : {}),
+      ...(step.diagnosticGoal ? { diagnosticGoal: step.diagnosticGoal } : {}),
+      ...(step.testMethod ? { testMethod: step.testMethod } : {}),
     });
 
     previousDiagnosticActions.push({
@@ -188,10 +220,23 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
 
     if (step.actionType === "TEST") {
       if (result) {
+        const meta = {
+          ...(step.diagnosticTarget
+            ? { diagnosticTarget: step.diagnosticTarget }
+            : {}),
+          ...(step.diagnosticGoal
+            ? { diagnosticGoal: step.diagnosticGoal }
+            : {}),
+          ...(step.testMethod ? { testMethod: step.testMethod } : {}),
+        };
         if (skipped) {
-          skippedUnavailableTests.push({ test: stepLabel, reason: result });
+          skippedUnavailableTests.push({
+            test: stepLabel,
+            reason: result,
+            ...meta,
+          });
         } else {
-          completedTests.push({ test: stepLabel, result });
+          completedTests.push({ test: stepLabel, result, ...meta });
           measurements.push(result);
         }
       }
@@ -322,6 +367,9 @@ export function compactCaseStateForPrompt(
     };
     if (s.result != null) row.result = s.result;
     if (s.resultKind !== "none") row.resultKind = s.resultKind;
+    if (s.diagnosticTarget) row.diagnosticTarget = s.diagnosticTarget;
+    if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
+    if (s.testMethod) row.testMethod = s.testMethod;
     return row;
   });
 
@@ -414,6 +462,7 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
     "",
     "REEVALUATE → točno jedna ASK|TEST|FINISH → kratki JSON.",
     "OUTPUT: rationale≤2 rečenice; bez redundant facts/evidence; hypotheses≤3 kratke; technicalClaims/safetyPreconditions samo ako treba; omit null polja.",
+    "TEST: obavezno diagnosticTarget + diagnosticGoal + testMethod (kratko). Ne ponavljaj isti diagnosticGoal.",
     evidence >= 2
       ? "≥2 dokaza: hypotheses max 3; preferiraj LIKELY/HIGH_CONFIDENCE nad lažnim CONFIRMED."
       : "Malo dokaza — diagnosisConfidence može biti null.",
@@ -490,6 +539,9 @@ Odgovori ISKLJUČIVO JSON:
     "rationale": "string",
     "expectedResultHint": "string | null",
     "confirmedFault": "string | null",
+    "diagnosticTarget": "string | null",
+    "diagnosticGoal": "string | null",
+    "testMethod": "string | null",
     "confidence": "low" | "medium" | "high",
     "insufficientEvidence": boolean,
     "facts": ["string"] | null,
@@ -580,278 +632,19 @@ export function normalizeForCompare(text: string): string {
     .trim();
 }
 
-const MEASUREMENT_FAMILIES: string[][] = [
-  ["otpor", "ohm", "omski", "rezistan"],
-  ["napon", "volt", "vdc", "signal"],
-  ["kontinuitet", "prekid", "kratki spoj", "masa", "ground", "uzemljen"],
-  ["struja", "amper", "miliamper"],
-  ["tlak", "bar", "kpa"],
-  ["temperatura", "temp"],
-  ["skenir", "dtc", "kodove", "dijagnostick"],
-  ["vizual", "pregled", "fizick", "stanje", "suha", "vlazna", "vlažna", "mokar", "wet", "dry"],
-  ["iskra", "spark", "paljenje"],
-];
-
-/**
- * Same physical action / work site. Re-testing the same site is the same
- * diagnostic branch even when the wording or rationale changes
- * (e.g. spark-at-plug vs dry/wet plug inspection).
- */
-const PHYSICAL_ACTION_SITES: string[][] = [
-  [
-    "svjecic",
-    "svjecica",
-    "iskra",
-    "spark",
-    "spark plug",
-    "bobin",
-    "coil",
-    "kabel svjec",
-    "paljenje na svjec",
-  ],
-  [
-    "brizgalj",
-    "injektor",
-    "injector",
-    "ubrizgav",
-    "pulse width",
-    "upravljanje brizgalj",
-    "upravljanje injektor",
-  ],
-  [
-    "tlak goriva",
-    "fuel pressure",
-    "rail pressure",
-    "pumpa goriv",
-    "dovod goriv",
-    "fuel rail",
-    "gorivo u rail",
-  ],
-  ["kompresij", "compression", "cilindar pritis"],
-  ["turbo", "aktuator", "wastegate", "boost"],
-  ["maf", "map senzor", "map sensor", "maseni protok", "protok zraka"],
-];
-
-/** Components where a second TEST on the same part is almost always a repeat. */
-const STRONG_COMPONENT_HINTS = new Set(
-  [
-    "svjecic",
-    "svjecica",
-    "brizgalj",
-    "injektor",
-    "injector",
-    "bobin",
-    "coil",
-    "pumpa",
-    "turbo",
-    "aktuator",
-    "kataliz",
-    "osigurac",
-    "relej",
-  ].map((h) => normalizeForCompare(h)),
-);
-
-const COMPONENT_HINTS = [
-  "davac",
-  "davač",
-  "senzor",
-  "plovak",
-  "sender",
-  "sensor",
-  "konektor",
-  "connector",
-  "uticnica",
-  "utikač",
-  "instrument",
-  "kazaljk",
-  "pokazivac",
-  "cluster",
-  "osigurac",
-  "relej",
-  "ecu",
-  "pcm",
-  "modul",
-  "rezervoar",
-  "tank",
-  "pumpa",
-  "brizgalj",
-  "injektor",
-  "injector",
-  "svjecic",
-  "svjecica",
-  "iskra",
-  "bobin",
-  "coil",
-  "kataliz",
-  "turbo",
-  "ventil",
-  "aktuator",
-  "snop",
-  "vodic",
-  "zica",
-  "bus",
-  "can",
-  "lin",
-  "abs",
-  "klima",
-  "kompresor",
-  "mjenjac",
-  "kvacilo",
-  "ovjes",
-  "lezaj",
-];
-
-function measurementFamiliesPresent(normalized: string): Set<number> {
-  const found = new Set<number>();
-  MEASUREMENT_FAMILIES.forEach((family, idx) => {
-    if (family.some((token) => normalized.includes(normalizeForCompare(token)))) {
-      found.add(idx);
-    }
-  });
-  return found;
-}
-
-function physicalSitesPresent(normalized: string): Set<number> {
-  const found = new Set<number>();
-  PHYSICAL_ACTION_SITES.forEach((site, idx) => {
-    if (site.some((token) => normalized.includes(normalizeForCompare(token)))) {
-      found.add(idx);
-    }
-  });
-  return found;
-}
-
-function sharedPhysicalSite(a: string, b: string): boolean {
-  const sa = physicalSitesPresent(a);
-  const sb = physicalSitesPresent(b);
-  for (const id of sa) {
-    if (sb.has(id)) return true;
-  }
-  return false;
-}
-
-function componentHintsPresent(normalized: string): Set<string> {
-  const found = new Set<string>();
-  for (const hint of COMPONENT_HINTS) {
-    const nh = normalizeForCompare(hint);
-    if (nh && normalized.includes(nh)) found.add(nh);
-  }
-  return found;
-}
-
-function sharedStrongComponent(a: string, b: string): string | null {
-  const ca = componentHintsPresent(a);
-  const cb = componentHintsPresent(b);
-  for (const c of ca) {
-    if (cb.has(c) && STRONG_COMPONENT_HINTS.has(c)) return c;
-  }
-  return null;
-}
-
-function tokenOverlapRatio(a: string, b: string): { ratio: number; inter: number } {
-  const ta = new Set(a.split(" ").filter((w) => w.length > 3));
-  const tb = new Set(b.split(" ").filter((w) => w.length > 3));
-  if (ta.size === 0 || tb.size === 0) return { ratio: 0, inter: 0 };
-  let inter = 0;
-  for (const w of ta) {
-    if (tb.has(w)) inter += 1;
-  }
-  return { ratio: inter / Math.min(ta.size, tb.size), inter };
-}
-
-/**
- * Same diagnostic branch: shared physical action/site, strong component,
- * shared measurement family + component, or high lexical overlap.
- * Rationale must NOT be used to escape this check.
- */
-export function testsAreSameDiagnosticBranch(
-  candidate: string,
-  previous: string,
-): boolean {
-  const a = normalizeForCompare(candidate);
-  const b = normalizeForCompare(previous);
-  if (!a || !b) return false;
-  if (a === b || a.includes(b) || b.includes(a)) return true;
-
-  // Same physical work site (svjećica/iskra, brizgaljka, tlak goriva, …)
-  // ⇒ same branch even if the proposed angle/rationale differs.
-  if (sharedPhysicalSite(a, b)) return true;
-
-  // Strong shared component (e.g. svjećica) ⇒ do not re-test that part.
-  if (sharedStrongComponent(a, b)) return true;
-
-  const famA = measurementFamiliesPresent(a);
-  const famB = measurementFamiliesPresent(b);
-  const bothHaveMeasurement = famA.size > 0 && famB.size > 0;
-  let sharedFamily = false;
-  for (const f of famA) {
-    if (famB.has(f)) {
-      sharedFamily = true;
-      break;
-    }
-  }
-
-  // Explicit different measurement types ⇒ different diagnostic branch
-  // only when there is no shared physical site/strong component (already handled).
-  if (bothHaveMeasurement && !sharedFamily) return false;
-
-  const meaningfulA = stripGenericTestTokens(a);
-  const meaningfulB = stripGenericTestTokens(b);
-  const { ratio, inter } = tokenOverlapRatio(meaningfulA, meaningfulB);
-  if (ratio >= 0.55 && inter >= 2) return true;
-
-  const compA = componentHintsPresent(a);
-  const compB = componentHintsPresent(b);
-  let sharedComponent = false;
-  for (const c of compA) {
-    if (compB.has(c)) {
-      sharedComponent = true;
-      break;
-    }
-  }
-
-  if (sharedFamily && sharedComponent) return true;
-  if (sharedFamily && ratio >= 0.35 && inter >= 2) return true;
-  if (sharedComponent && ratio >= 0.45 && inter >= 2) return true;
-
-  return false;
-}
-
-const GENERIC_TEST_TOKENS = new Set([
-  "izmjeriti",
-  "izmjeri",
-  "mjerenje",
-  "izmjer",
-  "provjeriti",
-  "provjeri",
-  "provjera",
-  "testirati",
-  "test",
-  "ocitati",
-  "ocitaj",
-  "vrijednost",
-  "rezultat",
-  "ponovno",
-  "ponovo",
-  "zatim",
-  "paljenje",
-  "vozilo",
-]);
-
-function stripGenericTestTokens(normalized: string): string {
-  return normalized
-    .split(" ")
-    .filter((w) => w.length > 3 && !GENERIC_TEST_TOKENS.has(w))
-    .join(" ");
-}
-
 /**
  * Detect obvious repeat of an already-asked question or completed test.
- * Conservative: only flags strong overlap, not soft similarity.
+ * TEST repeats use diagnosticGoal/target metadata when present.
  */
 export function findObviousRepetition(
   diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string },
+  draft: {
+    actionType?: string;
+    content?: string;
+    diagnosticTarget?: string | null;
+    diagnosticGoal?: string | null;
+    testMethod?: string | null;
+  },
 ): string | null {
   const content = draft.content?.trim();
   if (!content || draft.actionType === "FINISH") return null;
@@ -878,20 +671,28 @@ export function findObviousRepetition(
   }
 
   if (draft.actionType === "TEST") {
+    const draftMeta = metaFromDraft(draft);
     for (const t of state.completedTests) {
       const nt = normalizeForCompare(t.test);
       if (!nt) continue;
       if (normalizedNew === nt || containsAsCore(normalizedNew, nt)) {
         return `Ponavljanje već završenog testa: "${t.test.slice(0, 120)}" (rezultat: ${t.result.slice(0, 80)})`;
       }
-      // Same physical site/component with an informative prior result ⇒ repeat.
+      const priorMeta = {
+        content: t.test,
+        diagnosticTarget: t.diagnosticTarget,
+        diagnosticGoal: t.diagnosticGoal,
+        testMethod: t.testMethod,
+      };
       if (
-        priorTestAlreadyYieldedSiteInfo(content, t.test, t.result) ||
-        testsAreSameDiagnosticBranch(content, t.test)
+        testsAreSameDiagnosticBranch(draftMeta, priorMeta) &&
+        t.result.trim().length >= 4 &&
+        !isSkippedOrUnavailableResult(t.result)
       ) {
         return (
-          `Ponavljanje testa na istoj fizičkoj radnji/komponenti: "${t.test.slice(0, 100)}" ` +
-          `(rezultat već daje info: "${t.result.slice(0, 80)}"). Prijeđi na neovisnu sljedeću granu.`
+          `Ponavljanje iste dijagnostičke grane (goal/target): "${t.test.slice(0, 100)}" ` +
+          `(rezultat već daje info: "${t.result.slice(0, 80)}"). ` +
+          "Odaberi NEOVISAN diagnosticGoal / drugu granu."
         );
       }
     }
@@ -901,94 +702,65 @@ export function findObviousRepetition(
 }
 
 /**
- * True when a completed TEST on the same physical site/component already
- * produced usable information (result is not empty/skipped).
- */
-function priorTestAlreadyYieldedSiteInfo(
-  candidate: string,
-  priorTest: string,
-  priorResult: string,
-): boolean {
-  const result = priorResult?.trim() ?? "";
-  if (result.length < 4) return false;
-  if (isSkippedOrUnavailableResult(result)) return false;
-
-  const cand = normalizeForCompare(candidate);
-  const prior = normalizeForCompare(priorTest);
-  const priorPlusResult = normalizeForCompare(`${priorTest} ${result}`);
-  if (!cand || !prior) return false;
-
-  if (sharedPhysicalSite(cand, prior) || sharedPhysicalSite(cand, priorPlusResult)) {
-    return true;
-  }
-  if (sharedStrongComponent(cand, prior) || sharedStrongComponent(cand, priorPlusResult)) {
-    return true;
-  }
-  // Candidate seeks info already stated in the prior result for the same site.
-  if (
-    sharedPhysicalSite(cand, normalizeForCompare(result)) &&
-    tokenOverlapRatio(stripGenericTestTokens(cand), stripGenericTestTokens(normalizeForCompare(result)))
-      .inter >= 1
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Reject TEST that is only a semantic twin of a completed or skipped test.
- * Different rationale does NOT make it a new branch — same physical action /
- * component with known result must be rejected.
+ * Reject TEST that repeats a completed/skipped diagnostic branch.
+ * Uses diagnosticGoal/target metadata; rationale alone cannot escape.
  */
 export function findSimilarTestBranchIssue(
   diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string; rationale?: string },
+  draft: {
+    actionType?: string;
+    content?: string;
+    rationale?: string;
+    diagnosticTarget?: string | null;
+    diagnosticGoal?: string | null;
+    testMethod?: string | null;
+  },
 ): string | null {
   if (draft.actionType !== "TEST") return null;
   const content = draft.content?.trim();
   if (!content) return null;
 
-  // Intentionally ignore rationale — a reworded "why" is not a new test branch.
+  const draftMeta = metaFromDraft(draft);
   const state = buildCaseState(diagnosticCase);
 
   for (const t of state.completedTests) {
-    const sameBranch =
-      testsAreSameDiagnosticBranch(content, t.test) ||
-      testsAreSameDiagnosticBranch(content, `${t.test} ${t.result}`) ||
-      priorTestAlreadyYieldedSiteInfo(content, t.test, t.result);
+    const priorMeta = {
+      content: t.test,
+      diagnosticTarget: t.diagnosticTarget,
+      diagnosticGoal: t.diagnosticGoal,
+      testMethod: t.testMethod,
+    };
+    if (!testsAreSameDiagnosticBranch(draftMeta, priorMeta)) continue;
+    if (isSkippedOrUnavailableResult(t.result)) continue;
 
-    if (sameBranch) {
-      return (
-        `Semantički sličan već završenom testu iste fizičke radnje/komponente: "${t.test.slice(0, 100)}" ` +
-        `(rezultat: "${t.result.slice(0, 80)}"). Rezultat već daje traženu informaciju — ` +
-        "ne ponavljaj isti dio (npr. svjećica/iskra) s drugim rationaleom. " +
-        "Odaberi NEOVISNU sljedeću granu (npr. dovod/tlak goriva ili upravljanje injektorima) " +
-        "ili FINISH ako je dokaz dovoljan."
-      );
-    }
+    return (
+      `Semantički sličan već završenom testu iste dijagnostičke grane` +
+      `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}" ` +
+      `(rezultat: "${t.result.slice(0, 80)}"). Rezultat već daje traženu informaciju — ` +
+      "ne ponavljaj isti diagnosticGoal drugim wordingom/metodom. " +
+      "Odaberi NEOVISNU granu (drugi diagnosticGoal) ili FINISH ako je dokaz dovoljan."
+    );
   }
 
   for (const t of state.skippedUnavailableTests) {
-    if (testsAreSameDiagnosticBranch(content, t.test)) {
-      return (
-        `Semantički sličan skipped/unavailable testu: "${t.test.slice(0, 100)}". ` +
-        "To nije dokaz — nemoj preformulirati isti test. Predloži ALTERNATIVNI put do iste informacije " +
-        "ili objasni da bez tog testa hipoteza nije pouzdano potvrdiva."
-      );
-    }
+    const priorMeta = {
+      content: t.test,
+      diagnosticTarget: t.diagnosticTarget,
+      diagnosticGoal: t.diagnosticGoal,
+      testMethod: t.testMethod,
+    };
+    if (!testsAreSameDiagnosticBranch(draftMeta, priorMeta)) continue;
+    return (
+      `Semantički sličan skipped/unavailable testu` +
+      `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
+      "To nije dokaz — nemoj preformulirati isti test. Predloži ALTERNATIVNI put (druga metoda) " +
+      "do iste info ili novi diagnosticGoal; inače objasni ograničenje."
+    );
   }
 
   return null;
 }
 
-/**
- * Backend ASK gate: every ASK must prove decision value.
- * Rejects and forces TEST regeneration when:
- * - info already in case state (also covered by known-facts / repetition)
- * - missing why / expected answers / branch impact
- * - different answers lead to the same next step
- * - question only gathers context
- */
 export function findAskDecisionGateIssue(
   diagnosticCase: DiagnosticCase,
   draft: {
@@ -1374,6 +1146,9 @@ export function findDraftQualityIssue(
     evidence?: string[] | null;
     insufficientEvidence?: boolean | null;
     confidence?: string | null;
+    diagnosticTarget?: string | null;
+    diagnosticGoal?: string | null;
+    testMethod?: string | null;
     askDecision?: {
       whyNeeded?: string | null;
       expectedAnswers?: string[] | null;
@@ -1415,7 +1190,27 @@ export function findDraftQualityIssue(
     findObviousRepetition(diagnosticCase, draft) ??
     findSimilarTestBranchIssue(diagnosticCase, draft) ??
     findTestPriorityIssue(diagnosticCase, draft) ??
-    findHypothesisDifferentiationIssue(diagnosticCase, draft)
+    findHypothesisDifferentiationIssue(diagnosticCase, draft) ??
+    findMissingTestMetaIssue(draft)
+  );
+}
+
+/** Soft require TEST metadata on new drafts (legacy cases without meta still OK via fallback). */
+export function findMissingTestMetaIssue(draft: {
+  actionType?: string;
+  diagnosticTarget?: string | null;
+  diagnosticGoal?: string | null;
+  testMethod?: string | null;
+}): string | null {
+  if (draft.actionType !== "TEST") return null;
+  const missing: string[] = [];
+  if (!draft.diagnosticTarget?.trim()) missing.push("diagnosticTarget");
+  if (!draft.diagnosticGoal?.trim()) missing.push("diagnosticGoal");
+  if (!draft.testMethod?.trim()) missing.push("testMethod");
+  if (missing.length === 0) return null;
+  return (
+    `TEST metadata nedostaje (${missing.join(", ")}). ` +
+    "Dodaj kratka polja diagnosticTarget, diagnosticGoal, testMethod."
   );
 }
 
@@ -1447,6 +1242,13 @@ function rationaleHasBranchJustification(rationale: string): boolean {
 function containsAsCore(a: string, b: string): boolean {
   if (a.length < 16 || b.length < 16) return false;
   if (a.includes(b) || b.includes(a)) return true;
-  const { ratio, inter } = tokenOverlapRatio(a, b);
+  const ta = new Set(a.split(" ").filter((w) => w.length > 3));
+  const tb = new Set(b.split(" ").filter((w) => w.length > 3));
+  if (ta.size === 0 || tb.size === 0) return false;
+  let inter = 0;
+  for (const w of ta) {
+    if (tb.has(w)) inter += 1;
+  }
+  const ratio = inter / Math.min(ta.size, tb.size);
   return ratio >= 0.75 && inter >= 4;
 }

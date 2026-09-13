@@ -4,6 +4,7 @@ import type {
   Hypothesis,
 } from "./types";
 import { getVerifiedTechnicalSpecs } from "./spec-guard";
+import { diagnosticEvidenceFamilyKey } from "./diagnostic-meta";
 
 function normalizeForCompare(text: string): string {
   return text
@@ -178,14 +179,7 @@ function countCompletedTestFamilies(diagnosticCase: DiagnosticCase): number {
     if (step.actionType !== "TEST") continue;
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
     if (!obs?.resultText) continue;
-    const n = normalizeForCompare(`${step.content} ${obs.resultText}`);
-    if (/otpor|ohm/.test(n)) families.add("resistance");
-    else if (/napon|volt/.test(n)) families.add("voltage");
-    else if (/kontinuitet|masa|ground/.test(n)) families.add("continuity");
-    else if (/skenir|dtc|kod/.test(n)) families.add("scan");
-    else if (/vizual|pregled/.test(n)) families.add("visual");
-    else if (/tlak|bar|kpa/.test(n)) families.add("pressure");
-    else families.add(`other:${n.slice(0, 24)}`);
+    families.add(diagnosticEvidenceFamilyKey(step));
   }
   return families.size;
 }

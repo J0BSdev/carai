@@ -49,6 +49,10 @@ export type LlmStepPayload = {
     supportingEvidence?: string[] | null;
     contradictingEvidence?: string[] | null;
   }> | null;
+  /** TEST branch metadata — required for new TEST drafts. */
+  diagnosticTarget?: string | null;
+  diagnosticGoal?: string | null;
+  testMethod?: string | null;
 };
 
 export type VerifierPayload = {
