@@ -9,8 +9,7 @@ export type AiCallRole =
   | "diagnostic"
   | "diagnostic_retry"
   | "verifier"
-  | "strong_verifier"
-  | "json_repair";
+  | "strong_verifier";
 
 export type AiProvider = "anthropic" | "openai";
 
@@ -35,6 +34,8 @@ export type AiCallRecord = {
   retryNumber: number;
   estimatedCost: number | null;
   reasonCalled: string;
+  /** Provider stop/finish reason when available (e.g. max_tokens). */
+  finishReason?: string | null;
 };
 
 export type AiCallMeta = {
@@ -222,6 +223,9 @@ function logAiCall(record: AiCallRecord): void {
   if (record.retryNumber > 0) {
     parts.push(`retry=${record.retryNumber}`);
   }
+  if (record.finishReason === "max_tokens") {
+    parts.push(`finishReason=max_tokens`);
+  }
   logLine(parts.join(" "));
 }
 
@@ -237,16 +241,6 @@ export function logGuardRetry(params: {
     : "";
   logLine(
     `[AI] step=${params.stepNumber} guard_retry guard=${params.guard} retry=${params.retryNumber}${summary}`,
-  );
-}
-
-/** Log JSON parse failure reason without raw response body. */
-export function logJsonParseFail(params: {
-  stepNumber: number;
-  reason: string;
-}): void {
-  logLine(
-    `[AI] step=${params.stepNumber} role=json_repair parse_fail reason=${truncate(params.reason, 120)}`,
   );
 }
 
@@ -322,27 +316,4 @@ function shortId(id: string): string {
 function truncate(text: string, max: number): string {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
-}
-
-export function describeJsonParseFailure(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return "empty_response";
-  if (trimmed.startsWith("```")) return "markdown_fenced_not_plain_json";
-  if (!trimmed.includes("{")) return "no_json_object_found";
-  try {
-    JSON.parse(
-      trimmed.startsWith("{") ? trimmed : extractLikelyObject(trimmed),
-    );
-    return "unknown_parse_failure";
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return `json_parse_error: ${msg}`;
-  }
-}
-
-function extractLikelyObject(text: string): string {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) return text.slice(start, end + 1);
-  return text;
 }

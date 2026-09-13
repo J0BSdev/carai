@@ -1,11 +1,5 @@
 import type { DiagnosticStep } from "./types";
-import {
-  describeJsonParseFailure,
-  logJsonParseFail,
-  recordAiCall,
-  type AiCallMeta,
-  type AiTokenUsage,
-} from "./ai-telemetry";
+import { recordAiCall, type AiCallMeta, type AiTokenUsage } from "./ai-telemetry";
 
 export type LlmStepPayload = {
   actionType: string;
@@ -67,12 +61,7 @@ type AnthropicResult = {
   text: string;
   usage: AiTokenUsage;
   latencyMs: number;
-};
-
-type OpenAiResult = {
-  text: string;
-  usage: AiTokenUsage;
-  latencyMs: number;
+  stopReason: string | null;
 };
 
 function tryParseJsonObject(raw: string): string | null {
@@ -118,6 +107,7 @@ async function fetchAnthropicText(params: {
 
   const data = (await response.json()) as {
     content?: Array<{ type: string; text?: string }>;
+    stop_reason?: string | null;
     usage?: {
       input_tokens?: number;
       output_tokens?: number;
@@ -146,7 +136,12 @@ async function fetchAnthropicText(params: {
         : null,
   };
 
-  return { text, usage, latencyMs };
+  return {
+    text,
+    usage,
+    latencyMs,
+    stopReason: data.stop_reason ?? null,
+  };
 }
 
 function emitCall(
@@ -155,8 +150,7 @@ function emitCall(
   model: string,
   usage: AiTokenUsage,
   latencyMs: number,
-  roleOverride?: AiCallMeta["role"],
-  reasonOverride?: string,
+  finishReason?: string | null,
 ): void {
   if (!meta) return;
   recordAiCall({
@@ -164,22 +158,19 @@ function emitCall(
     stepId: meta.stepId,
     stepNumber: meta.stepNumber,
     provider,
-    role: roleOverride ?? meta.role,
+    role: meta.role,
     model,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     totalTokens: usage.totalTokens,
     latencyMs,
     retryNumber: meta.retryNumber,
-    reasonCalled: reasonOverride ?? meta.reasonCalled,
+    reasonCalled: meta.reasonCalled,
+    finishReason: finishReason ?? null,
   });
 }
 
-/**
- * Claude diagnostic call (plain text JSON).
- * If the reply is not valid JSON: at most one format-repair call.
- * Repair does not consume diagnostic retry budget and does not call the verifier.
- */
+/** Claude diagnostic call (plain text JSON). No format-repair retries. */
 export async function callAnthropicJson(params: {
   apiKey: string;
   model: string;
@@ -195,52 +186,19 @@ export async function callAnthropicJson(params: {
     params.model,
     primary.usage,
     primary.latencyMs,
+    primary.stopReason,
   );
+
+  if (primary.stopReason === "max_tokens") {
+    throw new Error(
+      "Claude odgovor prekinut (finishReason=max_tokens); JSON je vjerojatno nepotpun.",
+    );
+  }
 
   const parsed = tryParseJsonObject(primary.text);
   if (parsed) return parsed;
 
-  const parseReason = describeJsonParseFailure(primary.text);
-  if (params.telemetry) {
-    logJsonParseFail({
-      stepNumber: params.telemetry.stepNumber,
-      reason: parseReason,
-    });
-  }
-
-  const repaired = await fetchAnthropicText({
-    apiKey: params.apiKey,
-    model: params.model,
-    maxTokens: Math.min(params.maxTokens ?? 2048, 2048),
-    system:
-      "You only repair malformed JSON. Return ONLY a valid JSON object. No markdown, no commentary.",
-    user: [
-      "The previous assistant reply was not valid JSON.",
-      "Repair it into ONE valid JSON object with the diagnostic step fields",
-      "(actionType, content, rationale, and related nullable fields).",
-      "Do not change diagnostic meaning; only fix JSON syntax/structure.",
-      "",
-      "Malformed reply:",
-      primary.text.slice(0, 12000),
-    ].join("\n"),
-  });
-
-  emitCall(
-    params.telemetry,
-    "anthropic",
-    params.model,
-    repaired.usage,
-    repaired.latencyMs,
-    "json_repair",
-    "malformed_json",
-  );
-
-  const repairedParsed = tryParseJsonObject(repaired.text);
-  if (repairedParsed) return repairedParsed;
-
-  throw new Error(
-    "Claude dijagnostički odgovor nije valjani JSON (ni nakon 1 JSON-format retryja).",
-  );
+  throw new Error("Claude dijagnostički odgovor nije valjani JSON.");
 }
 
 export async function callOpenAiJson(params: {
@@ -275,7 +233,10 @@ export async function callOpenAiJson(params: {
   }
 
   const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      message?: { content?: string };
+      finish_reason?: string | null;
+    }>;
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
@@ -283,7 +244,8 @@ export async function callOpenAiJson(params: {
     };
   };
   const latencyMs = Date.now() - started;
-  const raw = data.choices?.[0]?.message?.content;
+  const choice = data.choices?.[0];
+  const raw = choice?.message?.content;
   if (!raw) {
     throw new Error("OpenAI nije vratio sadržaj odgovora.");
   }
@@ -303,12 +265,16 @@ export async function callOpenAiJson(params: {
         ? inputTokens + outputTokens
         : null;
 
+  const finishReasonRaw = choice?.finish_reason ?? null;
+  const finishReason =
+    finishReasonRaw === "length" ? "max_tokens" : finishReasonRaw;
   emitCall(
     params.telemetry,
     "openai",
     params.model,
     { inputTokens, outputTokens, totalTokens },
     latencyMs,
+    finishReason,
   );
 
   return extractJsonObject(raw);

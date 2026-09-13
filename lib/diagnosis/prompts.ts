@@ -32,17 +32,25 @@ TEST: JEDAN test koji razlikuje vodeću hipotezu od najjače alternative (ne "š
 Semantički sličan completed/skipped (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz → ALTERNATIVNI put, ne parafraza; nema alternative → ASK ili FINISH + insufficientEvidence.
 Prije kandidata: (A) nova info? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking? (E) različiti rezultati → različiti koraci? D/E fail ili candidateChangesHypothesisRanking===false → REJECT.
 
-HIPOTEZE (≥2 značajna dokaza; skipped≠dokaz): max 3–4; label; LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null (evidence ranking, ne zbroj 100; bez dokaza → null); supporting/contradictingEvidence iz CASE STATE. Status/confidence samo iz dokaza.
+HIPOTEZE (≥2 značajna dokaza; skipped≠dokaz): max 3; label; LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null (evidence ranking, ne zbroj 100; bez dokaza → null); supporting/contradictingEvidence kratko ili izostavi. Status/confidence samo iz dokaza.
 
 FINISH: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosisConfidence (confidence ≠ confirmation). CONFIRMED samo uz jak neovisni potvrđujući dokaz ILI više NEOVISNIH jakih dokaza koji eliminiraju alternative. Nije dovoljno: 1 simptom/DTC/neprovjerena vrijednost; AI spece; "najvjerojatniji"; visok %; isti signal više puta; živa jaka alternativa. Bez potvrde → HIGH_CONFIDENCE/LIKELY; insufficientEvidence=true osim CONFIRMED. Jaki dokazi → FINISH; inače vodeća sumnja + JEDAN potvrđujući/diskriminirajući TEST (ne produžuj flow).
 
 REJECTION (rejectedDiagnoses): ne CONFIRMED bez NOVOG neovisnog jakog dokaza; hipoteza smije LIKELY/POSSIBLE; prvo ASK "Što u prethodnom zaključku možda nije objašnjeno?" (ako nema odgovora); zatim diskriminirajući TEST; ne isti reasoning/test.
 
+OUTPUT COMPACT (ASK/TEST posebno — ne troši tokene):
+- Vrati samo polja potrebna za ovaj korak; null/prazna polja izostavi.
+- rationale: max 1–2 kratke rečenice (kod TEST: koje 2 hipoteze razlikuje).
+- Ne generiraj redundantne facts/evidence (obično izostavi).
+- hypotheses: max 3, kratki label; supporting/contradictingEvidence kratko ili izostavi.
+- technicalClaims samo uz stvarnu tvrdnju/spec; safetyPreconditions samo za safety-critical TEST.
+- content konkretan, bez eseja. JSON bez markdowna.
+
 Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
 {
   "actionType": "ASK" | "TEST" | "FINISH",
   "content": "string — pitanje, uputa za test, ili zaključak",
-  "rationale": "string — zašto ovaj korak; kod TEST navedi koje hipoteze razlikuje",
+  "rationale": "string — max 1–2 rečenice; kod TEST koje hipoteze razlikuje",
   "expectedResultHint": "string | null — što mehaničar treba zabilježiti",
   "confirmedFault": "string | null — samo uz FINISH",
   "askDecision": {
@@ -404,9 +412,10 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
     "CASE STATE (cijeli state; history=dokazi):",
     JSON.stringify(compact),
     "",
-    "REEVALUATE → točno jedna ASK|TEST|FINISH → JSON.",
+    "REEVALUATE → točno jedna ASK|TEST|FINISH → kratki JSON.",
+    "OUTPUT: rationale≤2 rečenice; bez redundant facts/evidence; hypotheses≤3 kratke; technicalClaims/safetyPreconditions samo ako treba; omit null polja.",
     evidence >= 2
-      ? "≥2 dokaza: hypotheses max 3–4; preferiraj LIKELY/HIGH_CONFIDENCE nad lažnim CONFIRMED."
+      ? "≥2 dokaza: hypotheses max 3; preferiraj LIKELY/HIGH_CONFIDENCE nad lažnim CONFIRMED."
       : "Malo dokaza — diagnosisConfidence može biti null.",
     consecutiveAsks >= 1
       ? `${consecutiveAsks} ASK zaredom → preferiraj TEST/FINISH osim decision-critical grane.`
