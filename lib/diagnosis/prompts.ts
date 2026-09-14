@@ -9,9 +9,9 @@ import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import {
   buildKnownFactsSnapshot,
-  findAlreadyKnownInfoIssue,
   refreshExtractedFacts,
 } from "./known-facts";
+import { findAlreadyKnownInfoIssue } from "./known-facts-guard";
 import {
   legacyLexicalSameBranch,
   metaFromDraft,
@@ -344,34 +344,22 @@ export function compactCaseStateForPrompt(
       .map((s) => s.result?.trim().toLowerCase())
       .filter((r): r is string => Boolean(r)),
   );
-  const historyContents = new Set(
-    state.diagnosticStepHistory.map((s) => s.content.trim().toLowerCase()),
-  );
   const complaintKey = state.originalComplaint.trim().toLowerCase();
 
   // Only intake extras not already present as step results.
   const extraMeasurements = kf.measurements.filter(
     (m) => !historyResults.has(m.trim().toLowerCase()),
   );
-  const extraObservations = kf.observations.filter(
-    (o) => !historyResults.has(o.trim().toLowerCase()),
-  );
   // Symptoms that merely restate originalComplaint are redundant.
   const symptoms = kf.symptoms.filter(
     (s) => s.trim().toLowerCase() !== complaintKey,
-  );
-  // priorTests already mirrored in history content are redundant.
-  const priorTests = kf.priorTests.filter(
-    (t) => !historyContents.has(t.trim().toLowerCase()),
   );
 
   const knownFactsCompact: Record<string, unknown> = {};
   if (kf.vehicle) knownFactsCompact.vehicle = kf.vehicle;
   if (kf.knownDtcCodes.length) knownFactsCompact.knownDtcCodes = kf.knownDtcCodes;
   if (symptoms.length) knownFactsCompact.symptoms = symptoms;
-  if (extraObservations.length) knownFactsCompact.observations = extraObservations;
   if (extraMeasurements.length) knownFactsCompact.measurements = extraMeasurements;
-  if (priorTests.length) knownFactsCompact.priorTests = priorTests;
 
   // history already encodes Q/A + tests; omit null result / none kind noise.
   const history = state.diagnosticStepHistory.map((s) => {
