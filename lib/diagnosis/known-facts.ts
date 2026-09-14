@@ -82,7 +82,10 @@ export function extractFactsFromText(text: string): ExtractedCaseFacts {
 }
 
 /**
- * Refresh only deterministic bags (DTCs, measurements) from complaint + observations.
+ * Refresh deterministic bags. DTCs may surface at any point, so complaint plus every
+ * observation is scanned. Measurements come only from the intake complaint — a TEST
+ * result becomes a measurement only when interpretTestResult() reports VALUE, which
+ * the case-state layer decides.
  * Leaves vehicle/symptoms (and any legacy priorTests/observations bags) untouched.
  */
 export function refreshExtractedFacts(
@@ -92,24 +95,21 @@ export function refreshExtractedFacts(
   const prior = diagnosticCase.extracted ?? {};
 
   const dtcs: string[] = [...(prior.dtcs ?? [])];
-  const measurements: string[] = [...(prior.measurements ?? [])];
-
-  const texts = [
+  const dtcTexts = [
     diagnosticCase.problemText,
     ...diagnosticCase.observations.map((o) => o.resultText),
     ...(extraText?.trim() ? [extraText] : []),
   ];
-
-  for (const text of texts) {
-    const next = extractFactsFromText(text);
-    if (next.dtcs) dtcs.push(...next.dtcs);
-    if (next.measurements) measurements.push(...next.measurements);
+  for (const text of dtcTexts) {
+    dtcs.push(...extractDtcCodes(text));
   }
 
   return {
     ...prior,
     dtcs: uniqStrings(dtcs).map((d) => d.toUpperCase()),
-    measurements: uniqStrings(measurements),
+    measurements: uniqStrings(
+      extractNumericMeasurements(diagnosticCase.problemText.trim()),
+    ),
   };
 }
 

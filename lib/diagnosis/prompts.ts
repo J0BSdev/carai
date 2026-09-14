@@ -20,6 +20,7 @@ import {
 } from "./diagnostic-meta";
 import {
   interpretTestResult,
+  isSkippedOrUnavailableResult,
   type TestResultInterpretation,
 } from "./test-result";
 
@@ -118,25 +119,7 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
   }] | null
 }`;
 
-/** Detect skipped / can't-perform / unavailable observation text. */
-export function isSkippedOrUnavailableResult(resultText: string): boolean {
-  const n = normalizeForCompare(resultText);
-  if (!n) return false;
-  return (
-    n.includes("ne mogu izvesti") ||
-    n.includes("preskocen") ||
-    n.includes("preskoceno") ||
-    n.includes("preskoci") ||
-    /\bskipped\b/.test(n) ||
-    n.includes("cant perform") ||
-    n.includes("cannot perform") ||
-    n.includes("can't perform") ||
-    /\bunavailable\b/.test(n) ||
-    n.includes("nije dostupan") ||
-    n.includes("nije moguce izvesti") ||
-    n.includes("test nedostupan")
-  );
-}
+export { isSkippedOrUnavailableResult } from "./test-result";
 
 function latestHypothesesFromCase(
   diagnosticCase: DiagnosticCase,
@@ -193,7 +176,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
   const previousDiagnosticActions: Array<{
     actionType: string;
     content: string;
-    outcome: "answered" | "result" | "skipped" | "pending";
+    outcome: "answered" | "result" | "skipped" | "ambiguous" | "pending";
   }> = [];
   const stepHistory: Array<{
     actionType: string;
@@ -253,8 +236,10 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
         ? "pending"
         : skipped
           ? "skipped"
-          : step.actionType === "TEST"
-            ? "result"
+          : interpretation
+            ? interpretation.kind === "AMBIGUOUS"
+              ? "ambiguous"
+              : "result"
             : "answered",
     });
 

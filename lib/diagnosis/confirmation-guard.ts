@@ -5,6 +5,7 @@ import type {
 } from "./types";
 import { getVerifiedTechnicalSpecs } from "./spec-guard";
 import { diagnosticEvidenceFamilyKey } from "./diagnostic-meta";
+import { isCompletedTestEvidence } from "./test-result";
 
 function normalizeForCompare(text: string): string {
   return text
@@ -173,12 +174,14 @@ function strongAlternativeExists(draft: FinishDraft): boolean {
   return alt.confidence >= 15;
 }
 
+/** Only VALUE/PASS/FAIL results count — skipped and AMBIGUOUS are not evidence. */
 function countCompletedTestFamilies(diagnosticCase: DiagnosticCase): number {
   const families = new Set<string>();
   for (const step of diagnosticCase.steps) {
     if (step.actionType !== "TEST") continue;
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
     if (!obs?.resultText) continue;
+    if (!isCompletedTestEvidence(step, obs.resultText)) continue;
     families.add(diagnosticEvidenceFamilyKey(step));
   }
   return families.size;
@@ -235,6 +238,7 @@ function newIndependentEvidenceSinceRejection(
     if (!obs?.resultText?.trim()) continue;
     if (isTechnicianRejection(obs.resultText)) continue;
     if (isContinueAfterFinish(obs.resultText)) continue;
+    if (!isCompletedTestEvidence(step, obs.resultText)) continue;
     if (!after || Date.parse(obs.recordedAt) > after) {
       // New test after rejection — treat as candidate independent evidence
       // Still not enough alone for auto-CONFIRMED; used only to unlock reconfirm path

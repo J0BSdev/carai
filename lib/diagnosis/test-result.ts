@@ -52,6 +52,25 @@ function normalizeResultText(text: string): string {
     .trim();
 }
 
+/** Detect skipped / can't-perform / unavailable observation text. */
+export function isSkippedOrUnavailableResult(resultText: string): boolean {
+  const n = normalizeResultText(resultText);
+  if (!n) return false;
+  return (
+    n.includes("ne mogu izvesti") ||
+    n.includes("preskocen") ||
+    n.includes("preskoceno") ||
+    n.includes("preskoci") ||
+    /\bskipped\b/.test(n) ||
+    n.includes("cant perform") ||
+    n.includes("cannot perform") ||
+    /\bunavailable\b/.test(n) ||
+    n.includes("nije dostupan") ||
+    n.includes("nije moguce izvesti") ||
+    n.includes("test nedostupan")
+  );
+}
+
 function stepContextBlob(step: DiagnosticStep): string {
   return [
     step.content,
@@ -293,4 +312,17 @@ export function interpretTestResult(
 
   // Bare subject echo without polarity ("napon", "masa") → ambiguous.
   return { kind: "AMBIGUOUS" };
+}
+
+/**
+ * A TEST result is completed evidence only when it interprets to VALUE/PASS/FAIL.
+ * Skipped/unavailable and AMBIGUOUS never count as evidence.
+ */
+export function isCompletedTestEvidence(
+  step: DiagnosticStep,
+  resultText: string,
+): boolean {
+  if (!resultText.trim()) return false;
+  if (isSkippedOrUnavailableResult(resultText)) return false;
+  return interpretTestResult(step, resultText).kind !== "AMBIGUOUS";
 }
