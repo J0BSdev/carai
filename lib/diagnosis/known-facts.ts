@@ -44,7 +44,7 @@ export function extractDtcCodes(text: string): string[] {
 }
 
 const MEASUREMENT_WITH_UNIT_RE =
-  /\d+(?:[.,]\d+)?\s*(?:Ω|ohm|V|mV|A|mA|bar|kPa|°C|%)/i;
+  /\d+(?:[.,]\d+)?\s*(?:ohm|bar|kPa|°C|mV|mA|Ω|V|A|%)/i;
 
 function extractNumericMeasurements(text: string): string[] {
   return MEASUREMENT_WITH_UNIT_RE.test(text) ? [text] : [];
@@ -108,8 +108,6 @@ export function refreshExtractedFacts(
 
   return {
     ...prior,
-    vehicle: prior.vehicle,
-    symptoms: prior.symptoms,
     dtcs: uniqStrings(dtcs).map((d) => d.toUpperCase()),
     measurements: uniqStrings(measurements),
   };
