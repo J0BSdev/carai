@@ -18,6 +18,10 @@ import {
   metaKeysEqual,
   testsAreSameDiagnosticBranch,
 } from "./diagnostic-meta";
+import {
+  interpretTestResult,
+  type TestResultInterpretation,
+} from "./test-result";
 
 export { testsAreSameDiagnosticBranch } from "./diagnostic-meta";
 
@@ -144,6 +148,29 @@ function latestHypothesesFromCase(
   return [];
 }
 
+/**
+ * How a recorded result was interpreted. `ambiguous` results stay visible to the
+ * model as raw text but never count as evidence.
+ */
+export type StepResultKind =
+  | "none"
+  | "answer"
+  | "value"
+  | "pass"
+  | "fail"
+  | "ambiguous"
+  | "skipped";
+
+const RESULT_KIND_BY_INTERPRETATION: Record<
+  TestResultInterpretation["kind"],
+  StepResultKind
+> = {
+  VALUE: "value",
+  PASS: "pass",
+  FAIL: "fail",
+  AMBIGUOUS: "ambiguous",
+};
+
 /** Explicit session case state sent on every model call. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
   const questionsAsked: string[] = [];
@@ -172,7 +199,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     actionType: string;
     content: string;
     result: string | null;
-    resultKind: "none" | "answer" | "measurement" | "skipped";
+    resultKind: StepResultKind;
     diagnosticTarget?: string;
     diagnosticGoal?: string;
     testMethod?: string;
@@ -193,12 +220,18 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
         ? step.recommendedTest?.name?.trim() || step.content
         : step.content;
 
-    let resultKind: "none" | "answer" | "measurement" | "skipped" = "none";
+    // Skipped wins; otherwise a TEST result is interpreted in its own step context.
+    const interpretation =
+      result && !skipped && step.actionType === "TEST"
+        ? interpretTestResult(step, result)
+        : null;
+
+    let resultKind: StepResultKind = "none";
     if (result) {
       if (skipped) resultKind = "skipped";
-      else if (step.actionType === "ASK") resultKind = "answer";
-      else if (step.actionType === "TEST") resultKind = "measurement";
-      else resultKind = "answer";
+      else if (interpretation) {
+        resultKind = RESULT_KIND_BY_INTERPRETATION[interpretation.kind];
+      } else resultKind = "answer";
     }
 
     stepHistory.push({
@@ -249,9 +282,10 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
             reason: result,
             ...meta,
           });
-        } else {
+        } else if (interpretation && interpretation.kind !== "AMBIGUOUS") {
+          // AMBIGUOUS stays out of evidence; raw text remains in history/observations.
           completedTests.push({ test: stepLabel, result, ...meta });
-          measurements.push(result);
+          if (interpretation.kind === "VALUE") measurements.push(result);
         }
       }
     }
