@@ -290,8 +290,15 @@ function extractSymptomLines(text: string): string[] {
   return [t.slice(0, 237) + "…"];
 }
 
+const MEASUREMENT_WITH_UNIT_RE =
+  /\d+(?:[.,]\d+)?\s*(?:Ω|ohm|V|mV|A|mA|bar|kPa|°C|%)/i;
+
+function extractNumericMeasurements(text: string): string[] {
+  return MEASUREMENT_WITH_UNIT_RE.test(text) ? [text] : [];
+}
+
 /**
- * Structured facts from free text (intake or later mechanic messages).
+ * Structured facts from free text (intake / problemText).
  * Does not invent data — only extracts what is explicitly present.
  */
 export function extractFactsFromText(text: string): ExtractedCaseFacts {
@@ -301,11 +308,7 @@ export function extractFactsFromText(text: string): ExtractedCaseFacts {
   const dtcs = extractDtcCodes(trimmed);
   const vehicle = extractVehicle(trimmed);
   const symptoms = extractSymptomLines(trimmed);
-
-  const measurements: string[] = [];
-  if (/\d+(?:[.,]\d+)?\s*(?:Ω|ohm|V|mV|A|mA|bar|kPa|°C|%)/i.test(trimmed)) {
-    measurements.push(trimmed);
-  }
+  const measurements = extractNumericMeasurements(trimmed);
 
   return {
     vehicle,
@@ -316,18 +319,39 @@ export function extractFactsFromText(text: string): ExtractedCaseFacts {
   };
 }
 
-function mergeVehicle(
-  a?: VehicleInfo,
-  b?: VehicleInfo,
-): VehicleInfo | undefined {
-  if (!a && !b) return undefined;
+/**
+ * Facts allowed from later observation.resultText.
+ * Must not yield vehicle or symptoms (those come from intake only).
+ */
+function extractFactsFromObservation(text: string): ExtractedCaseFacts {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+
+  const dtcs = extractDtcCodes(trimmed);
+  const measurements = extractNumericMeasurements(trimmed);
+
   return {
-    make: b?.make || a?.make,
-    model: b?.model || a?.model,
-    year: b?.year ?? a?.year,
-    engine: b?.engine || a?.engine,
-    mileage: b?.mileage ?? a?.mileage,
+    dtcs: dtcs.length ? dtcs : undefined,
+    measurements: measurements.length ? measurements : undefined,
   };
+}
+
+/** Prefer `primary`; fill gaps from `fallback`. Never overwrite known fields. */
+function mergeVehicle(
+  primary?: VehicleInfo,
+  fallback?: VehicleInfo,
+): VehicleInfo | undefined {
+  if (!primary && !fallback) return undefined;
+  const merged: VehicleInfo = {
+    make: primary?.make || fallback?.make,
+    model: primary?.model || fallback?.model,
+    year: primary?.year ?? fallback?.year,
+    engine: primary?.engine || fallback?.engine,
+    mileage: primary?.mileage ?? fallback?.mileage,
+  };
+  return Object.values(merged).some((v) => v != null && v !== "")
+    ? merged
+    : undefined;
 }
 
 function uniqStrings(values: Array<string | undefined>): string[] {
@@ -371,21 +395,41 @@ export function mergeExtractedFacts(
   };
 }
 
-/** Recompute extracted facts from complaint + all observations. */
+/**
+ * Recompute extracted facts from complaint + observations.
+ * problemText owns vehicle / symptoms / intake DTCs & measurements.
+ * Observations may only add new DTCs and explicit numeric measurements.
+ */
 export function refreshExtractedFacts(
   diagnosticCase: DiagnosticCase,
   extraText?: string,
 ): ExtractedCaseFacts {
-  let merged: ExtractedCaseFacts = { ...(diagnosticCase.extracted ?? {}) };
-  merged = mergeExtractedFacts(
-    merged,
-    extractFactsFromText(diagnosticCase.problemText),
-  );
+  const prior = diagnosticCase.extracted ?? {};
+  const fromIntake = extractFactsFromText(diagnosticCase.problemText);
+
+  // Do not re-seed vehicle/symptoms from prior (may be polluted by old obs extraction).
+  // Keep bags that are not re-derived from free text.
+  let merged: ExtractedCaseFacts = {
+    priorTests: prior.priorTests,
+    observations: prior.observations,
+  };
+
+  merged = mergeExtractedFacts(merged, fromIntake);
+
+  // Intake vehicle is authoritative; fill gaps only from previously stored vehicle.
+  merged.vehicle = mergeVehicle(fromIntake.vehicle, prior.vehicle);
+
   for (const obs of diagnosticCase.observations) {
-    merged = mergeExtractedFacts(merged, extractFactsFromText(obs.resultText));
+    merged = mergeExtractedFacts(
+      merged,
+      extractFactsFromObservation(obs.resultText),
+    );
   }
   if (extraText?.trim()) {
-    merged = mergeExtractedFacts(merged, extractFactsFromText(extraText));
+    merged = mergeExtractedFacts(
+      merged,
+      extractFactsFromObservation(extraText),
+    );
   }
   return merged;
 }
