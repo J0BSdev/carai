@@ -15,6 +15,19 @@ export type LlmStepPayload = {
   facts?: string[] | null;
   evidence?: string[] | null;
   /**
+   * Semantic vehicle fields from the diagnostic model (same Claude call).
+   * Merged into diagnosticCase.extracted; existing extracted remains authoritative.
+   */
+  vehicle?: {
+    make?: string | null;
+    model?: string | null;
+    year?: number | string | null;
+    engine?: string | null;
+    mileage?: number | null;
+  } | null;
+  /** Complaint symptoms from intake — not test results. */
+  symptoms?: string[] | null;
+  /**
    * Required for ASK: decision-critical justification.
    * Backend rejects ASK without this (or equivalent branch proof in rationale).
    */

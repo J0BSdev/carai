@@ -55,6 +55,7 @@ OUTPUT COMPACT (ASK/TEST posebno — ne troši tokene):
 - Za TEST OBAVEZNO 3 kratka metadata polja (2–6 riječi, stabilan label):
   diagnosticTarget = što se testira; diagnosticGoal = koju informaciju tražiš; testMethod = kako.
   Ista dijagnostička grana = isti diagnosticGoal (ne ponavljaj ga drugim wordingom).
+- vehicle + symptoms: semantički extract iz prijave/poznatih odgovora (ne iz test-rezultata). Samo eksplicitno navedeno; ne izmišljaj. Ako knownFacts.vehicle već ima polje — zadrži ga (echo ili izostavi). symptoms = početni simptomi prijave, ne "relej dobar"/"napon uredan".
 - content konkretan, bez eseja. JSON bez markdowna.
 
 Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
@@ -64,6 +65,14 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
   "rationale": "string — max 1–2 rečenice; kod TEST koje hipoteze razlikuje",
   "expectedResultHint": "string | null — što mehaničar treba zabilježiti",
   "confirmedFault": "string | null — samo uz FINISH",
+  "vehicle": {
+    "make": "string | null",
+    "model": "string | null",
+    "year": "number | null",
+    "engine": "string | null",
+    "mileage": "number | null"
+  } | null,
+  "symptoms": ["string"] | null,
   "diagnosticTarget": "string | null — OBAVEZNO za TEST: što se testira",
   "diagnosticGoal": "string | null — OBAVEZNO za TEST: koju dijagnostičku info tražiš",
   "testMethod": "string | null — OBAVEZNO za TEST: metoda (mjerenje/vizual/…)",

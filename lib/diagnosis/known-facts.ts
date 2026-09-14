@@ -55,241 +55,6 @@ export function extractDtcCodes(text: string): string[] {
   return [...found];
 }
 
-/** Words that must never become make/model (complaint fillers, not brands). */
-const VEHICLE_STOPWORDS = new Set(
-  [
-    "da",
-    "ne",
-    "je",
-    "su",
-    "sam",
-    "smo",
-    "ste",
-    "mi",
-    "ti",
-    "on",
-    "ona",
-    "ono",
-    "i",
-    "a",
-    "u",
-    "na",
-    "za",
-    "od",
-    "do",
-    "se",
-    "sa",
-    "po",
-    "kod",
-    "ima",
-    "nema",
-    "baca",
-    "gubi",
-    "radi",
-    "nece",
-    "neće",
-    "krece",
-    "kreće",
-    "pali",
-    "gasi",
-    "auto",
-    "auta",
-    "vozilo",
-    "kola",
-    "problem",
-    "kvar",
-    "greska",
-    "greška",
-    "klijent",
-    "kupac",
-    "danas",
-    "jutros",
-    "jucer",
-    "jučer",
-    "vecer",
-    "večer",
-    "molim",
-    "treba",
-    "trebam",
-    "zelim",
-    "želim",
-    "opet",
-    "jos",
-    "još",
-    "vec",
-    "već",
-    "samo",
-    "kad",
-    "kada",
-    "dok",
-    "jer",
-    "ali",
-    "ili",
-    "pa",
-    "tako",
-    "ovo",
-    "taj",
-    "ta",
-    "to",
-    "dtc",
-    "motor",
-    "engine",
-    "tdi",
-    "dci",
-    "cdi",
-    "hdi",
-    "tfsi",
-    "tsi",
-    "diesel",
-    "benzin",
-    "godina",
-    "godiste",
-    "godište",
-    "marka",
-    "model",
-  ].map((w) => w.toLowerCase()),
-);
-
-function isYearToken(t: string): boolean {
-  return /^(19|20)\d{2}$/.test(t);
-}
-
-function isDtcToken(t: string): boolean {
-  return /^[PCBU][0-9A-F]{4,6}$/i.test(t) || /^DF\d{2,4}$/i.test(t);
-}
-
-function isEngineToken(t: string): boolean {
-  return /^(tdi|tdci|cdi|dci|hdi|crdi|tfsi|tsi|fsi|gdi|mpi|vti|d4d|diesel|benzin|petrol|l|lit|litara)$/i.test(
-    t,
-  );
-}
-
-function isDisplacementToken(t: string): boolean {
-  return /^\d(?:[.,]\d)?$/.test(t);
-}
-
-function isStopwordToken(t: string): boolean {
-  const n = t
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-  return VEHICLE_STOPWORDS.has(n) || VEHICLE_STOPWORDS.has(t.toLowerCase());
-}
-
-function isPlausibleMake(t: string): boolean {
-  if (!t) return false;
-  if (isStopwordToken(t) || isYearToken(t) || isDtcToken(t) || isEngineToken(t)) {
-    return false;
-  }
-  // Short brand abbreviations (VW, SEAT as 4…)
-  if (/^[A-Za-z]{2,4}$/.test(t) && t === t.toUpperCase()) return true;
-  if (t.length < 3) return false;
-  if (!/^[A-Za-zÀ-ž]{3,}$/.test(t)) return false;
-  return true;
-}
-
-function isPlausibleModel(t: string): boolean {
-  if (!t || t.length < 1) return false;
-  if (isStopwordToken(t) || isYearToken(t) || isDtcToken(t) || isEngineToken(t)) {
-    return false;
-  }
-  if (isDisplacementToken(t)) return false;
-  // Model may be alphanumeric (320d, C-Max, Kangoo)
-  return /^[A-Za-zÀ-ž][A-Za-z0-9À-ž-]{0,24}$/.test(t);
-}
-
-function titleCaseWord(t: string): string {
-  if (!t) return t;
-  if (/^[A-Z]{2,4}$/.test(t)) return t; // VW, BMW, SEAT
-  if (/[0-9]/.test(t) && /[A-Za-z]/.test(t)) return t; // 320d / C-Max style
-  return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
-}
-
-function extractEngine(text: string): string | undefined {
-  const patterns: RegExp[] = [
-    /\b(\d(?:[.,]\d)?\s*(?:tdi|tdci|cdi|dci|hdi|crdi|tfsi|tsi|fsi|gdi|mpi|vti|d4d|skyactiv(?:-[\w]+)?))\b/i,
-    /\b(\d(?:[.,]\d)\s*(?:l|lit|litara)?\s*(?:diesel|benzin|petrol|tdi|tdci|cdi|dci|hdi)?)\b/i,
-    /\bmotor\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9.\-\/ ]{1,28})/i,
-    /\bengine\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9.\-\/ ]{1,28})/i,
-    /\bmotor\s+([A-Z]{1,3}\d{2,3}[A-Z]{0,2})\b/i,
-  ];
-
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (!m?.[1]) continue;
-    let eng = m[1].replace(/\s+/g, " ").trim();
-    eng =
-      eng.split(/\s+(?:gubi|ne|ima|kod|dtc|greska|,)/i)[0]?.trim() ?? eng;
-    if (/^[PCBU][0-9A-F]{4,6}$/i.test(eng)) continue;
-    if (/^[PCBU]\d{3}/i.test(eng) && eng.length <= 5) continue;
-    if (/^(19|20)\d{2}$/.test(eng)) continue;
-    if (eng.length < 2 || eng.length > 32) continue;
-    eng = eng.replace(
-      /^(\d(?:[.,]\d)?)\s*(tdi|tdci|cdi|dci|hdi|crdi|tfsi|tsi|fsi|gdi|mpi|vti)$/i,
-      (_: string, n: string, f: string) =>
-        `${n.replace(",", ".")} ${f.toUpperCase()}`,
-    );
-    return eng;
-  }
-  return undefined;
-}
-
-function extractVehicle(text: string): VehicleInfo | undefined {
-  const vehicle: VehicleInfo = {};
-  const yearMatch = text.match(/\b(19|20)\d{2}\b/);
-  if (yearMatch) vehicle.year = Number(yearMatch[0]);
-
-  const engine = extractEngine(text);
-  if (engine) vehicle.engine = engine;
-
-  const cleaned = text.replace(/[,\n;/|]+/g, " ").trim();
-  const tokens = cleaned.split(/\s+/).filter(Boolean);
-
-  // Skip leading fillers ("da", "baca", "ima"…) until a plausible make
-  let makeIdx = -1;
-  for (let i = 0; i < tokens.length; i++) {
-    if (isPlausibleMake(tokens[i]!)) {
-      makeIdx = i;
-      break;
-    }
-  }
-
-  if (makeIdx >= 0) {
-    vehicle.make = titleCaseWord(tokens[makeIdx]!);
-    const t1 = tokens[makeIdx + 1];
-    if (t1 && isPlausibleModel(t1)) {
-      const t2 = tokens[makeIdx + 2];
-      // "Golf 7" / "Golf VII" — not "Kangoo 2014" and not displacement "2 0"
-      if (
-        t2 &&
-        (/^\d{1,2}$/.test(t2) || /^(i{1,3}|iv|v|vi{0,3}|x+)$/i.test(t2)) &&
-        !isYearToken(t2)
-      ) {
-        const next = (tokens[makeIdx + 3] ?? "").toLowerCase();
-        const looksLikeDisplacement =
-          /^0\d*$/.test(next) || isEngineToken(next);
-        if (!looksLikeDisplacement) {
-          vehicle.model = `${titleCaseWord(t1)} ${t2}`;
-        } else {
-          vehicle.model = titleCaseWord(t1);
-        }
-      } else {
-        vehicle.model = titleCaseWord(t1);
-      }
-    }
-  }
-
-  return Object.keys(vehicle).length > 0 ? vehicle : undefined;
-}
-
-function extractSymptomLines(text: string): string[] {
-  const t = text.trim();
-  if (!t) return [];
-  // Keep short complaint snippets; full text is also in originalComplaint
-  if (t.length <= 240) return [t];
-  return [t.slice(0, 237) + "…"];
-}
-
 const MEASUREMENT_WITH_UNIT_RE =
   /\d+(?:[.,]\d+)?\s*(?:Ω|ohm|V|mV|A|mA|bar|kPa|°C|%)/i;
 
@@ -298,42 +63,29 @@ function extractNumericMeasurements(text: string): string[] {
 }
 
 /**
- * Structured facts from free text (intake / problemText).
- * Does not invent data — only extracts what is explicitly present.
+ * Deterministic facts from free text (intake or observation).
+ * Only DTCs + explicit numeric measurements — no semantic vehicle/symptoms parsing.
+ * Vehicle/symptoms come from the diagnostic AI draft into diagnosticCase.extracted.
  */
 export function extractFactsFromText(text: string): ExtractedCaseFacts {
   const trimmed = text.trim();
   if (!trimmed) return {};
 
   const dtcs = extractDtcCodes(trimmed);
-  const vehicle = extractVehicle(trimmed);
-  const symptoms = extractSymptomLines(trimmed);
   const measurements = extractNumericMeasurements(trimmed);
 
   return {
-    vehicle,
-    symptoms: symptoms.length ? symptoms : undefined,
     dtcs: dtcs.length ? dtcs : undefined,
     measurements: measurements.length ? measurements : undefined,
-    observations: undefined,
   };
 }
 
 /**
- * Facts allowed from later observation.resultText.
- * Must not yield vehicle or symptoms (those come from intake only).
+ * Observation.resultText may only contribute DTCs + numeric measurements.
+ * Never vehicle or symptoms.
  */
 function extractFactsFromObservation(text: string): ExtractedCaseFacts {
-  const trimmed = text.trim();
-  if (!trimmed) return {};
-
-  const dtcs = extractDtcCodes(trimmed);
-  const measurements = extractNumericMeasurements(trimmed);
-
-  return {
-    dtcs: dtcs.length ? dtcs : undefined,
-    measurements: measurements.length ? measurements : undefined,
-  };
+  return extractFactsFromText(text);
 }
 
 /** Prefer `primary`; fill gaps from `fallback`. Never overwrite known fields. */
@@ -376,9 +128,12 @@ export function mergeExtractedFacts(
   const base = existing ?? {};
   return {
     vehicle: mergeVehicle(base.vehicle, incoming.vehicle),
-    symptoms: uniqStrings([...(base.symptoms ?? []), ...(incoming.symptoms ?? [])]),
-    dtcs: uniqStrings([...(base.dtcs ?? []), ...(incoming.dtcs ?? [])]).map((d) =>
-      d.toUpperCase(),
+    symptoms: uniqStrings([
+      ...(base.symptoms ?? []),
+      ...(incoming.symptoms ?? []),
+    ]),
+    dtcs: uniqStrings([...(base.dtcs ?? []), ...(incoming.dtcs ?? [])]).map(
+      (d) => d.toUpperCase(),
     ),
     priorTests: uniqStrings([
       ...(base.priorTests ?? []),
@@ -396,28 +151,29 @@ export function mergeExtractedFacts(
 }
 
 /**
- * Recompute extracted facts from complaint + observations.
- * problemText owns vehicle / symptoms / intake DTCs & measurements.
- * Observations may only add new DTCs and explicit numeric measurements.
+ * Refresh deterministic bags (DTCs, measurements) from complaint + observations.
+ * Existing structured vehicle/symptoms on diagnosticCase.extracted are authoritative
+ * and are never overwritten by observation text.
  */
 export function refreshExtractedFacts(
   diagnosticCase: DiagnosticCase,
   extraText?: string,
 ): ExtractedCaseFacts {
   const prior = diagnosticCase.extracted ?? {};
-  const fromIntake = extractFactsFromText(diagnosticCase.problemText);
 
-  // Do not re-seed vehicle/symptoms from prior (may be polluted by old obs extraction).
-  // Keep bags that are not re-derived from free text.
   let merged: ExtractedCaseFacts = {
+    vehicle: prior.vehicle,
+    symptoms: prior.symptoms,
     priorTests: prior.priorTests,
     observations: prior.observations,
+    dtcs: prior.dtcs,
+    measurements: prior.measurements,
   };
 
-  merged = mergeExtractedFacts(merged, fromIntake);
-
-  // Intake vehicle is authoritative; fill gaps only from previously stored vehicle.
-  merged.vehicle = mergeVehicle(fromIntake.vehicle, prior.vehicle);
+  merged = mergeExtractedFacts(
+    merged,
+    extractFactsFromText(diagnosticCase.problemText),
+  );
 
   for (const obs of diagnosticCase.observations) {
     merged = mergeExtractedFacts(
@@ -431,6 +187,11 @@ export function refreshExtractedFacts(
       extractFactsFromObservation(extraText),
     );
   }
+
+  // Lock semantic fields: observations / deterministic extract must not change them.
+  merged.vehicle = prior.vehicle;
+  merged.symptoms = prior.symptoms;
+
   return merged;
 }
 

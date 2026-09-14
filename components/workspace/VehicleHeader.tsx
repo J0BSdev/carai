@@ -25,14 +25,14 @@ export default function VehicleHeader({
   const [open, setOpen] = useState(false);
 
   const { vehicle: v, dtcs, complaint } = useMemo(() => {
-    const fromText = extractFactsFromText(diagnosticCase.problemText);
     const stored = diagnosticCase.extracted;
+    const fromText = extractFactsFromText(diagnosticCase.problemText);
     const vehicle = {
-      make: stored?.vehicle?.make || fromText.vehicle?.make,
-      model: stored?.vehicle?.model || fromText.vehicle?.model,
-      year: stored?.vehicle?.year ?? fromText.vehicle?.year,
-      engine: stored?.vehicle?.engine || fromText.vehicle?.engine,
-      mileage: stored?.vehicle?.mileage ?? fromText.vehicle?.mileage,
+      make: stored?.vehicle?.make,
+      model: stored?.vehicle?.model,
+      year: stored?.vehicle?.year,
+      engine: stored?.vehicle?.engine,
+      mileage: stored?.vehicle?.mileage,
     };
     const codeSet = new Set<string>([
       ...(stored?.dtcs ?? []),

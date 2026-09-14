@@ -139,7 +139,7 @@ export interface DiagnosticCase {
   id: string;
   createdAt: string;
   problemText: string;
-  /** Merged facts extracted from NL + mechanic answers (mock may fill lightly). */
+  /** Structured facts: vehicle/symptoms from diagnostic AI; DTCs/measurements also refreshed deterministically. */
   extracted?: ExtractedCaseFacts;
   observations: Observation[];
   steps: DiagnosticStep[];

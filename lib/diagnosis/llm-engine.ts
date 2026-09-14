@@ -31,7 +31,11 @@ import {
   extractReferenceSpecClaims,
   mergeTechnicalSpecClaims,
 } from "./spec-guard";
-import { extractFactsFromText, refreshExtractedFacts } from "./known-facts";
+import {
+  extractFactsFromText,
+  mergeExtractedFacts,
+  refreshExtractedFacts,
+} from "./known-facts";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import { isSafetyCriticalTestDraft } from "./safety-guard";
 import {
@@ -48,9 +52,11 @@ import type {
   DiagnosticStep,
   DiagnoseResponse,
   DiagnosisCertainty,
+  ExtractedCaseFacts,
   Hypothesis,
   Observation,
   RejectedDiagnosis,
+  VehicleInfo,
 } from "./types";
 
 /** Max Claude regenerations after the initial draft, per user step. */
@@ -310,6 +316,68 @@ function toDiagnosticStep(
         ? payload.testMethod?.trim() || undefined
         : undefined,
   };
+}
+
+function parseAiYear(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const y = Math.round(value);
+    return y >= 1900 && y <= 2100 ? y : undefined;
+  }
+  if (typeof value === "string" && /^(19|20)\d{2}$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return undefined;
+}
+
+/** Normalize vehicle/symptoms from the same Claude diagnostic draft. */
+function extractedFactsFromAiDraft(draft: LlmStepPayload): ExtractedCaseFacts {
+  const raw = draft.vehicle;
+  let vehicle: VehicleInfo | undefined;
+  if (raw && typeof raw === "object") {
+    const next: VehicleInfo = {
+      make: raw.make?.trim() || undefined,
+      model: raw.model?.trim() || undefined,
+      year: parseAiYear(raw.year),
+      engine: raw.engine?.trim() || undefined,
+      mileage:
+        typeof raw.mileage === "number" && Number.isFinite(raw.mileage)
+          ? Math.round(raw.mileage)
+          : undefined,
+    };
+    if (Object.values(next).some((v) => v != null && v !== "")) {
+      vehicle = next;
+    }
+  }
+
+  const symptoms = Array.isArray(draft.symptoms)
+    ? draft.symptoms
+        .map((s) => (typeof s === "string" ? s.trim() : ""))
+        .filter(Boolean)
+    : [];
+
+  return {
+    vehicle,
+    symptoms: symptoms.length ? symptoms : undefined,
+  };
+}
+
+/**
+ * Persist semantic vehicle/symptoms from the accepted Claude draft into case.extracted.
+ * Existing extracted fields stay authoritative (gap-fill only).
+ */
+function applyAiExtractedFacts(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): void {
+  const fromAi = extractedFactsFromAiDraft(draft);
+  const prior = diagnosticCase.extracted ?? {};
+  const incoming: ExtractedCaseFacts = {
+    vehicle: fromAi.vehicle,
+    // Capture intake symptoms once; do not keep appending on later turns.
+    symptoms: prior.symptoms?.length ? undefined : fromAi.symptoms,
+  };
+  if (!incoming.vehicle && !incoming.symptoms?.length) return;
+  diagnosticCase.extracted = mergeExtractedFacts(prior, incoming);
 }
 
 async function draftWithClaude(
@@ -656,6 +724,7 @@ async function callVerifiedDiagnosticStep(
       }
 
       draft = await applyConfirmationPolicy(diagnosticCase, draft);
+      applyAiExtractedFacts(diagnosticCase, draft);
       return toDiagnosticStep(draft, stepId);
     },
   );
@@ -979,7 +1048,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const diagnosticCase: DiagnosticCase = {
       ...baseCase,
-      extracted: lightExtract(trimmed),
+      extracted: baseCase.extracted,
       steps: [nextStep],
       status: isFinish ? "completed" : "active",
       confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
