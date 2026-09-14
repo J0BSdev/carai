@@ -16,7 +16,8 @@ export type LlmStepPayload = {
   evidence?: string[] | null;
   /**
    * Semantic vehicle fields from the diagnostic model (same Claude call).
-   * Merged into diagnosticCase.extracted; existing extracted remains authoritative.
+   * Returned only when missing in knownFacts or user explicitly corrected;
+   * provided fields update diagnosticCase.extracted (test results must omit).
    */
   vehicle?: {
     make?: string | null;

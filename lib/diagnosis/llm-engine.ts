@@ -33,7 +33,6 @@ import {
 } from "./spec-guard";
 import {
   extractFactsFromText,
-  mergeExtractedFacts,
   refreshExtractedFacts,
 } from "./known-facts";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
@@ -362,22 +361,35 @@ function extractedFactsFromAiDraft(draft: LlmStepPayload): ExtractedCaseFacts {
 }
 
 /**
- * Persist semantic vehicle/symptoms from the accepted Claude draft into case.extracted.
- * Existing extracted fields stay authoritative (gap-fill only).
+ * Persist semantic vehicle/symptoms from the accepted Claude draft.
+ * AI-provided fields win (gap-fill or explicit user correction).
+ * Omitted fields keep prior. Ordinary test results never reach here as vehicle source —
+ * the model must omit vehicle/symptoms unless missing or user-corrected.
  */
 function applyAiExtractedFacts(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): void {
   const fromAi = extractedFactsFromAiDraft(draft);
+  if (!fromAi.vehicle && !fromAi.symptoms?.length) return;
+
   const prior = diagnosticCase.extracted ?? {};
-  const incoming: ExtractedCaseFacts = {
-    vehicle: fromAi.vehicle,
-    // Capture intake symptoms once; do not keep appending on later turns.
-    symptoms: prior.symptoms?.length ? undefined : fromAi.symptoms,
+  const vehicle = fromAi.vehicle
+    ? {
+        make: fromAi.vehicle.make || prior.vehicle?.make,
+        model: fromAi.vehicle.model || prior.vehicle?.model,
+        year: fromAi.vehicle.year ?? prior.vehicle?.year,
+        engine: fromAi.vehicle.engine || prior.vehicle?.engine,
+        mileage: fromAi.vehicle.mileage ?? prior.vehicle?.mileage,
+      }
+    : prior.vehicle;
+
+  diagnosticCase.extracted = {
+    ...prior,
+    vehicle,
+    // When model returns symptoms, it is fill-or-correct — replace with that list.
+    symptoms: fromAi.symptoms?.length ? fromAi.symptoms : prior.symptoms,
   };
-  if (!incoming.vehicle && !incoming.symptoms?.length) return;
-  diagnosticCase.extracted = mergeExtractedFacts(prior, incoming);
 }
 
 async function draftWithClaude(
