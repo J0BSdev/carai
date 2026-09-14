@@ -51,7 +51,6 @@ import type {
   DiagnosticStep,
   DiagnoseResponse,
   DiagnosisCertainty,
-  ExtractedCaseFacts,
   Hypothesis,
   Observation,
   RejectedDiagnosis,
@@ -328,67 +327,100 @@ function parseAiYear(value: unknown): number | undefined {
   return undefined;
 }
 
-/** Normalize vehicle/symptoms from the same Claude diagnostic draft. */
-function extractedFactsFromAiDraft(draft: LlmStepPayload): ExtractedCaseFacts {
-  const raw = draft.vehicle;
-  let vehicle: VehicleInfo | undefined;
-  if (raw && typeof raw === "object") {
-    const next: VehicleInfo = {
-      make: raw.make?.trim() || undefined,
-      model: raw.model?.trim() || undefined,
-      year: parseAiYear(raw.year),
-      engine: raw.engine?.trim() || undefined,
-      mileage:
-        typeof raw.mileage === "number" && Number.isFinite(raw.mileage)
-          ? Math.round(raw.mileage)
-          : undefined,
-    };
-    if (Object.values(next).some((v) => v != null && v !== "")) {
-      vehicle = next;
-    }
+function normalizeSymptomList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((s) => (typeof s === "string" ? s.trim() : ""))
+    .filter(Boolean);
+}
+
+function dedupeSymptoms(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of values) {
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
   }
-
-  const symptoms = Array.isArray(draft.symptoms)
-    ? draft.symptoms
-        .map((s) => (typeof s === "string" ? s.trim() : ""))
-        .filter(Boolean)
-    : [];
-
-  return {
-    vehicle,
-    symptoms: symptoms.length ? symptoms : undefined,
-  };
+  return out;
 }
 
 /**
- * Persist semantic vehicle/symptoms from the accepted Claude draft.
- * AI-provided fields win (gap-fill or explicit user correction).
- * Omitted fields keep prior. Ordinary test results never reach here as vehicle source —
- * the model must omit vehicle/symptoms unless missing or user-corrected.
+ * Apply explicit semanticUpdate from the accepted Claude draft.
+ * Partial vehicle patch; symptomsAdd dedupes; symptomsRemove only explicit corrections.
+ * No-op when semanticUpdate is omitted (plain test results).
  */
 function applyAiExtractedFacts(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): void {
-  const fromAi = extractedFactsFromAiDraft(draft);
-  if (!fromAi.vehicle && !fromAi.symptoms?.length) return;
+  const update = draft.semanticUpdate;
+  if (!update || typeof update !== "object") return;
 
   const prior = diagnosticCase.extracted ?? {};
-  const vehicle = fromAi.vehicle
-    ? {
-        make: fromAi.vehicle.make || prior.vehicle?.make,
-        model: fromAi.vehicle.model || prior.vehicle?.model,
-        year: fromAi.vehicle.year ?? prior.vehicle?.year,
-        engine: fromAi.vehicle.engine || prior.vehicle?.engine,
-        mileage: fromAi.vehicle.mileage ?? prior.vehicle?.mileage,
-      }
-    : prior.vehicle;
+  let vehicle = prior.vehicle;
+  let symptoms = [...(prior.symptoms ?? [])];
+  let changed = false;
+
+  const rawVehicle = update.vehicle;
+  if (rawVehicle && typeof rawVehicle === "object") {
+    const patch: VehicleInfo = { ...vehicle };
+    let vehicleChanged = false;
+
+    if (typeof rawVehicle.make === "string" && rawVehicle.make.trim()) {
+      patch.make = rawVehicle.make.trim();
+      vehicleChanged = true;
+    }
+    if (typeof rawVehicle.model === "string" && rawVehicle.model.trim()) {
+      patch.model = rawVehicle.model.trim();
+      vehicleChanged = true;
+    }
+    const year = parseAiYear(rawVehicle.year);
+    if (year !== undefined) {
+      patch.year = year;
+      vehicleChanged = true;
+    }
+    if (typeof rawVehicle.engine === "string" && rawVehicle.engine.trim()) {
+      patch.engine = rawVehicle.engine.trim();
+      vehicleChanged = true;
+    }
+    if (
+      typeof rawVehicle.mileage === "number" &&
+      Number.isFinite(rawVehicle.mileage)
+    ) {
+      patch.mileage = Math.round(rawVehicle.mileage);
+      vehicleChanged = true;
+    }
+
+    if (vehicleChanged) {
+      vehicle = patch;
+      changed = true;
+    }
+  }
+
+  const toAdd = normalizeSymptomList(update.symptomsAdd);
+  if (toAdd.length) {
+    symptoms = dedupeSymptoms([...symptoms, ...toAdd]);
+    changed = true;
+  }
+
+  const toRemove = normalizeSymptomList(update.symptomsRemove);
+  if (toRemove.length) {
+    const removeKeys = new Set(toRemove.map((s) => s.toLowerCase()));
+    const next = symptoms.filter((s) => !removeKeys.has(s.toLowerCase()));
+    if (next.length !== symptoms.length) {
+      symptoms = next;
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
 
   diagnosticCase.extracted = {
     ...prior,
     vehicle,
-    // When model returns symptoms, it is fill-or-correct — replace with that list.
-    symptoms: fromAi.symptoms?.length ? fromAi.symptoms : prior.symptoms,
+    symptoms: symptoms.length ? symptoms : undefined,
   };
 }
 

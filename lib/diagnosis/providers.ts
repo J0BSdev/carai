@@ -15,19 +15,20 @@ export type LlmStepPayload = {
   facts?: string[] | null;
   evidence?: string[] | null;
   /**
-   * Semantic vehicle fields from the diagnostic model (same Claude call).
-   * Returned only when missing in knownFacts or user explicitly corrected;
-   * provided fields update diagnosticCase.extracted (test results must omit).
+   * Explicit semantic case-fact delta from the diagnostic model (same Claude call).
+   * Only when the latest user input adds/corrects vehicle or symptoms — never from a plain test result.
    */
-  vehicle?: {
-    make?: string | null;
-    model?: string | null;
-    year?: number | string | null;
-    engine?: string | null;
-    mileage?: number | null;
+  semanticUpdate?: {
+    vehicle?: {
+      make?: string | null;
+      model?: string | null;
+      year?: number | string | null;
+      engine?: string | null;
+      mileage?: number | null;
+    } | null;
+    symptomsAdd?: string[] | null;
+    symptomsRemove?: string[] | null;
   } | null;
-  /** Complaint symptoms from intake — not test results. */
-  symptoms?: string[] | null;
   /**
    * Required for ASK: decision-critical justification.
    * Backend rejects ASK without this (or equivalent branch proof in rationale).
