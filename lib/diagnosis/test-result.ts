@@ -254,6 +254,41 @@ function textBefore(normalized: string, index: number | undefined): string {
   return normalized.slice(0, index ?? 0);
 }
 
+const MODAL_NUMBER = String.raw`-?\d+(?:[.,]\d+)?`;
+/** Optional note suffix as ResultModal writes it: ` · napomena: …` */
+const MODAL_NOTE = String.raw`(?:\s*·\s*napomena:\s+.+)`;
+const MODAL_SINGLE = new RegExp(`^(${MODAL_NUMBER})(?:${MODAL_NOTE})?$`, "i");
+const MODAL_DUAL = new RegExp(
+  `^prije:\\s*(${MODAL_NUMBER})\\s*·\\s*poslije:\\s*(${MODAL_NUMBER})(?:${MODAL_NOTE})?$`,
+  "i",
+);
+
+function parseNumberToken(raw: string): number | null {
+  const n = Number(raw.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Exact ResultModal numeric payloads (raw, before punctuation folding).
+ * Does not infer units and does not mine numbers from free-text answers.
+ */
+function parseResultModalNumeric(
+  raw: string,
+): { value: number; unit: null } | null {
+  const single = raw.match(MODAL_SINGLE);
+  if (single) {
+    const value = parseNumberToken(single[1]);
+    return value == null ? null : { value, unit: null };
+  }
+  const dual = raw.match(MODAL_DUAL);
+  if (!dual) return null;
+  const before = parseNumberToken(dual[1]);
+  const after = parseNumberToken(dual[2]);
+  if (before == null || after == null) return null;
+  // Type holds one number; poslije is the later reading. Both stay in raw for AI.
+  return { value: after, unit: null };
+}
+
 /**
  * Parse a measured VALUE from the mechanic's result text only.
  * Never invents a unit from the TEST instruction — a bare "12.4" stays unit: null.
@@ -316,10 +351,18 @@ export function interpretTestResult(
   const trimmed = resultText.trim();
   if (!trimmed) return { kind: "AMBIGUOUS" };
 
+  const allowUnitless = testRequiresNumericValue(step);
+  if (allowUnitless) {
+    const modal = parseResultModalNumeric(trimmed);
+    if (modal) {
+      return { kind: "VALUE", value: modal.value, unit: null };
+    }
+  }
+
   const normalized = normalizeResultText(trimmed);
   if (!normalized) return { kind: "AMBIGUOUS" };
 
-  const numeric = parseValue(normalized, testRequiresNumericValue(step));
+  const numeric = parseValue(normalized, allowUnitless);
   if (numeric) {
     return { kind: "VALUE", value: numeric.value, unit: numeric.unit };
   }
