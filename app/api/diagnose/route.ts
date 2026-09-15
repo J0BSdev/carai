@@ -1,4 +1,7 @@
-import { getDiagnosticEngine } from "@/lib/diagnosis";
+import {
+  DIAGNOSTIC_UNAVAILABLE_MESSAGE,
+  getDiagnosticEngine,
+} from "@/lib/diagnosis";
 import type { DiagnoseRequest, DiagnosticCase } from "@/lib/diagnosis";
 
 function isDiagnosticCase(value: unknown): value is DiagnosticCase {
@@ -39,48 +42,57 @@ function parseBody(body: unknown): DiagnoseRequest {
   };
 }
 
-export async function POST(request: Request) {
+/** Internal pipeline detail never reaches the client — only the server log. */
+async function runPipeline(run: () => Promise<unknown>): Promise<Response> {
   try {
-    const json = await request.json();
-    const body = parseBody(json);
-    const engine = getDiagnosticEngine();
-
-    if (body.action === "start") {
-      if (!body.problemText?.trim()) {
-        return Response.json(
-          { error: "problemText je obavezan kad je action start" },
-          { status: 400 },
-        );
-      }
-
-      const result = await engine.startCase(body.problemText);
-      return Response.json(result);
-    }
-
-    if (!body.case) {
-      return Response.json(
-        { error: "case je obavezan kad je action continue" },
-        { status: 400 },
-      );
-    }
-
-    if (!body.observation?.resultText?.trim()) {
-      return Response.json(
-        {
-          error: "observation.resultText je obavezan kad je action continue",
-        },
-        { status: 400 },
-      );
-    }
-
-    const result = await engine.continueCase(
-      body.case,
-      body.observation.resultText,
+    return Response.json(await run());
+  } catch (error) {
+    console.error("[diagnose] diagnostic pipeline failed", error);
+    return Response.json(
+      { error: DIAGNOSTIC_UNAVAILABLE_MESSAGE },
+      { status: 503 },
     );
-    return Response.json(result);
+  }
+}
+
+export async function POST(request: Request) {
+  let body: DiagnoseRequest;
+  try {
+    body = parseBody(await request.json());
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Obrada dijagnoze nije uspjela";
+      error instanceof Error ? error.message : "Zahtjev nije valjan JSON";
     return Response.json({ error: message }, { status: 400 });
   }
+
+  const engine = getDiagnosticEngine();
+
+  if (body.action === "start") {
+    const problemText = body.problemText?.trim();
+    if (!problemText) {
+      return Response.json(
+        { error: "problemText je obavezan kad je action start" },
+        { status: 400 },
+      );
+    }
+    return runPipeline(() => engine.startCase(problemText));
+  }
+
+  const diagnosticCase = body.case;
+  if (!diagnosticCase) {
+    return Response.json(
+      { error: "case je obavezan kad je action continue" },
+      { status: 400 },
+    );
+  }
+
+  const resultText = body.observation?.resultText?.trim();
+  if (!resultText) {
+    return Response.json(
+      { error: "observation.resultText je obavezan kad je action continue" },
+      { status: 400 },
+    );
+  }
+
+  return runPipeline(() => engine.continueCase(diagnosticCase, resultText));
 }

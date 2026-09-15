@@ -6,6 +6,7 @@ import {
   getVerifierModel,
 } from "./config";
 import type { DiagnosticEngine } from "./engine";
+import { DiagnosticPipelineError } from "./errors";
 import {
   classifyGuardName,
   getActiveAiStep,
@@ -1160,58 +1161,32 @@ async function ensureDraftPassesQualityGates(
   return finalizeAfterRetryLimit(turn, diagnosticCase, draft, issue);
 }
 
-function finalizeAfterRetryLimit(
+/**
+ * Retry budget spent. A failing ASK/TEST is never turned into a FINISH — exhausted
+ * retries must not invent a conclusion. An existing FINISH may only be softened
+ * through the confirmation policy that already owns certainty.
+ */
+async function finalizeAfterRetryLimit(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   issue: string | null,
-): LlmStepPayload {
+): Promise<LlmStepPayload> {
   if (!issue) return draft;
 
-  const isSpecIssue = /UNVERIFIED SPEC|FINISH GUARD|CONSISTENCY:/i.test(issue);
-
-  let next: LlmStepPayload = draft;
-  if (draft.actionType !== "FINISH") {
-    next = {
-      ...draft,
-      actionType: "FINISH",
-      content: isSpecIssue
-        ? "LIKELY / NEEDS CONFIRMATION: na temelju prikupljenih mjerenja i opažanja vodi se sumnja na navedeni uzrok, ali točan OEM/referentni raspon za ovo vozilo nije verificiran pa se usporedba measured vs expected ne smije koristiti kao potvrda. Potrebna je potvrda metodom koja ne ovisi o neprovjerenoj specifikaciji ili unos verificiranog podatka."
-        : draft.content?.trim() ||
-          "Na temelju prikupljenih dokaza vodeća dijagnoza je najvjerojatniji uzrok; dodatni slični testovi ne bi dali novu informaciju.",
-      rationale: isSpecIssue
-        ? "FINISH GUARD: requiresExactSpec bez verifiedSpec — dijagnoza ostaje LIKELY, ne CONFIRMED."
-        : draft.rationale?.trim() ||
-          "Dodatni semantički slični testovi ne mijenjaju ranking hipoteza — završavam na temelju postojećih dokaza.",
-      insufficientEvidence: true,
-      confidence: "medium",
-      confirmedFault: isSpecIssue
-        ? draft.confirmedFault?.trim() ||
-          "Vodeća sumnja prema mjerenjima (nije potvrđeno verificiranom specifikacijom)"
-        : draft.confirmedFault ??
-          "Vodeća hipoteza prema dostupnim dokazima (provjeri insufficientEvidence).",
-    };
+  if (draft.actionType === "FINISH") {
+    const softened = await applyConfirmationPolicy(
+      caseForTurn(turn, diagnosticCase),
+      draft,
+    );
+    if (!findDraftQualityIssueInTurn(turn, diagnosticCase, softened)) {
+      return softened;
+    }
   }
 
-  const still = findDraftQualityIssueInTurn(turn, diagnosticCase, next);
-  if (!still) return next;
-
-  if (next.actionType === "FINISH") {
-    return {
-      ...next,
-      content:
-        "LIKELY / NEEDS CONFIRMATION: dijagnoza se temelji na izmjerenim rezultatima i općim dijagnostičkim principima. Točan referentni raspon za ovo vozilo nije verificiran (specStatus=UNVERIFIED), stoga se ne potvrđuje usporedba measured vs expected OEM vrijednosti.",
-      rationale:
-        "Programski FINISH guard: odbijene neprovjerene/kontradiktorne specifikacije. UNVERIFIED SPEC nije dokaz.",
-      insufficientEvidence: true,
-      confidence: "medium",
-      confirmedFault:
-        "Vodeća sumnja (nije CONFIRMED — nedostaje verified specifikacija)",
-      expectedResultHint: null,
-    };
-  }
-
-  throw new Error(`AI draft odbijen: ${still}. Pokušaj ponovno.`);
+  throw new DiagnosticPipelineError(
+    `Draft nije prošao quality guard nakon retry limita: ${issue}`,
+  );
 }
 
 function formatStepMessage(

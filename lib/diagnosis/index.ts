@@ -29,6 +29,11 @@ export {
 export { LlmDiagnosticEngine } from "./llm-engine";
 
 export {
+  DIAGNOSTIC_UNAVAILABLE_MESSAGE,
+  DiagnosticPipelineError,
+} from "./errors";
+
+export {
   NoopWebSearchTool,
   type WebSearchResult,
   type WebSearchTool,
