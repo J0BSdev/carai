@@ -255,8 +255,8 @@ function textBefore(normalized: string, index: number | undefined): string {
 }
 
 const MODAL_NUMBER = String.raw`-?\d+(?:[.,]\d+)?`;
-/** Optional note suffix as ResultModal writes it: ` · napomena: …` */
-const MODAL_NOTE = String.raw`(?:\s*·\s*napomena:\s+.+)`;
+/** Optional note suffix as ResultModal writes it: ` · napomena: …` (note may wrap). */
+const MODAL_NOTE = String.raw`(?:\s*·\s*napomena:\s+[\s\S]+)`;
 const MODAL_SINGLE = new RegExp(`^(${MODAL_NUMBER})(?:${MODAL_NOTE})?$`, "i");
 const MODAL_DUAL = new RegExp(
   `^prije:\\s*(${MODAL_NUMBER})\\s*·\\s*poslije:\\s*(${MODAL_NUMBER})(?:${MODAL_NOTE})?$`,
