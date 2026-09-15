@@ -16,7 +16,9 @@ export type LlmStepPayload = {
   evidence?: string[] | null;
   /**
    * Explicit semantic case-fact delta from the diagnostic model (same Claude call).
-   * Only when the latest user input adds/corrects vehicle or symptoms — never from a plain test result.
+   * The model is the only semantic extractor for vehicle/symptoms/DTCs/measurements;
+   * the backend just validates types, dedupes and merges. Never evidence authority —
+   * guards still decide what counts as evidence, skipped/ambiguous, CONFIRMED, safety.
    */
   semanticUpdate?: {
     vehicle?: {
@@ -28,6 +30,15 @@ export type LlmStepPayload = {
     } | null;
     symptomsAdd?: string[] | null;
     symptomsRemove?: string[] | null;
+    /** Fault codes exactly as stated by the mechanic — backend never invents a namespace. */
+    dtcsAdd?: string[] | null;
+    /** Explicit numeric readings the mechanic reported. */
+    measurementsAdd?: Array<{
+      raw?: string | null;
+      value?: number | string | null;
+      unit?: string | null;
+      parameter?: string | null;
+    }> | null;
   } | null;
   /**
    * Required for ASK: decision-critical justification.

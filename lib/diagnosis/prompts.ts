@@ -7,10 +7,7 @@ import {
 import { findConfirmationGuardIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
-import {
-  buildKnownFactsSnapshot,
-  refreshExtractedFacts,
-} from "./known-facts";
+import { buildKnownFactsSnapshot } from "./known-facts";
 import { findAlreadyKnownInfoIssue } from "./known-facts-guard";
 import {
   legacyLexicalSameBranch,
@@ -60,7 +57,11 @@ OUTPUT COMPACT (ASK/TEST posebno — ne troši tokene):
 - Za TEST OBAVEZNO 3 kratka metadata polja (2–6 riječi, stabilan label):
   diagnosticTarget = što se testira; diagnosticGoal = koju informaciju tražiš; testMethod = kako.
   Ista dijagnostička grana = isti diagnosticGoal (ne ponavljaj ga drugim wordingom).
-- semanticUpdate: vrati SAMO ako zadnji korisnički unos stvarno dodaje/ispravlja vehicle ili symptoms. Običan test-result → IZOSTAVI. vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje (dedupe); symptomsRemove samo za eksplicitnu korekciju. Bez nove semantic info → izostavi cijeli objekt.
+- semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Vrati SAMO ono što zadnji korisnički unos (na prvom koraku: originalComplaint) stvarno dodaje/ispravlja i što NIJE već u knownFacts:
+  vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju;
+  dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja;
+  measurementsAdd = eksplicitna brojčana mjerenja: raw (verbatim, npr. "12,4 V") + value/unit/parameter ako su jasni. Ne izvodi mjerenje iz procjene/opisa.
+  Nema nove informacije → izostavi cijeli objekt. semanticUpdate je samo state, NE dokaz — status dokaza određuje backend.
 - content konkretan, bez eseja. JSON bez markdowna.
 
 Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
@@ -79,7 +80,14 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
       "mileage": "number"
     },
     "symptomsAdd": ["string"],
-    "symptomsRemove": ["string"]
+    "symptomsRemove": ["string"],
+    "dtcsAdd": ["string"],
+    "measurementsAdd": [{
+      "raw": "string — verbatim mjerenje",
+      "value": "number | null",
+      "unit": "string | null",
+      "parameter": "string | null — što je mjereno"
+    }]
   } | null,
   "diagnosticTarget": "string | null — OBAVEZNO za TEST: što se testira",
   "diagnosticGoal": "string | null — OBAVEZNO za TEST: koju dijagnostičku info tražiš",
@@ -188,11 +196,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     testMethod?: string;
   }> = [];
 
-  const extracted = refreshExtractedFacts(diagnosticCase);
-  const knownFacts = buildKnownFactsSnapshot({
-    ...diagnosticCase,
-    extracted,
-  });
+  const knownFacts = buildKnownFactsSnapshot(diagnosticCase);
 
   for (const step of diagnosticCase.steps) {
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);

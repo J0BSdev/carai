@@ -114,17 +114,6 @@ function buildScriptedSteps(problemText: string): DiagnosticStep[] {
   ];
 }
 
-function applyLightExtraction(
-  problemText: string,
-): DiagnosticCase["extracted"] {
-  const dtcMatches = problemText.toUpperCase().match(/P[0-9A-F]{4}/g);
-  return {
-    symptoms: [problemText.trim()],
-    dtcs: dtcMatches ? [...new Set(dtcMatches)] : undefined,
-    priorTests: undefined,
-  };
-}
-
 export class MockDiagnosticEngine implements DiagnosticEngine {
   async startCase(problemText: string): Promise<DiagnoseResponse> {
     const trimmed = problemText.trim();
@@ -138,7 +127,8 @@ export class MockDiagnosticEngine implements DiagnosticEngine {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       problemText: trimmed,
-      extracted: applyLightExtraction(trimmed),
+      // Mock has no AI extractor and must not regex-parse the complaint.
+      extracted: {},
       observations: [],
       steps: [firstStep],
       status: "active",

@@ -33,13 +33,24 @@ export interface VehicleInfo {
   mileage?: number;
 }
 
+/** Explicit measurement reported by the mechanic, as extracted by the diagnostic AI. */
+export interface ExtractedMeasurement {
+  /** Verbatim span the mechanic wrote ("12,4 V"). */
+  raw: string;
+  value?: number;
+  unit?: string;
+  /** What was measured ("napon akumulatora"), when the AI states it. */
+  parameter?: string;
+}
+
 export interface ExtractedCaseFacts {
   vehicle?: VehicleInfo;
   symptoms?: string[];
   dtcs?: string[];
   priorTests?: string[];
   observations?: string[];
-  measurements?: string[];
+  /** Legacy saved cases may hold plain strings here. */
+  measurements?: Array<ExtractedMeasurement | string>;
 }
 
 export interface Hypothesis {
@@ -139,7 +150,7 @@ export interface DiagnosticCase {
   id: string;
   createdAt: string;
   problemText: string;
-  /** Structured facts: vehicle/symptoms from diagnostic AI; DTCs/measurements also refreshed deterministically. */
+  /** Structured facts. Extracted by the diagnostic AI (semanticUpdate); backend only validates/merges. */
   extracted?: ExtractedCaseFacts;
   observations: Observation[];
   steps: DiagnosticStep[];

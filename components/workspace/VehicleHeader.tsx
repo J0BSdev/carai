@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import type { DiagnosticCase } from "@/lib/diagnosis";
-import { extractFactsFromText } from "@/lib/diagnosis/known-facts";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
 
 type VehicleHeaderProps = {
@@ -26,7 +25,6 @@ export default function VehicleHeader({
 
   const { vehicle: v, dtcs, complaint } = useMemo(() => {
     const stored = diagnosticCase.extracted;
-    const fromText = extractFactsFromText(diagnosticCase.problemText);
     const vehicle = {
       make: stored?.vehicle?.make,
       model: stored?.vehicle?.model,
@@ -34,13 +32,9 @@ export default function VehicleHeader({
       engine: stored?.vehicle?.engine,
       mileage: stored?.vehicle?.mileage,
     };
-    const codeSet = new Set<string>([
-      ...(stored?.dtcs ?? []),
-      ...(fromText.dtcs ?? []),
-    ]);
     return {
       vehicle,
-      dtcs: [...codeSet],
+      dtcs: [...new Set(stored?.dtcs ?? [])],
       complaint: shortComplaint(diagnosticCase.problemText),
     };
   }, [diagnosticCase]);

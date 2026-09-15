@@ -31,10 +31,6 @@ import {
   extractReferenceSpecClaims,
   mergeTechnicalSpecClaims,
 } from "./spec-guard";
-import {
-  extractFactsFromText,
-  refreshExtractedFacts,
-} from "./known-facts";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import { isSafetyCriticalTestDraft } from "./safety-guard";
 import {
@@ -51,6 +47,7 @@ import type {
   DiagnosticStep,
   DiagnoseResponse,
   DiagnosisCertainty,
+  ExtractedMeasurement,
   Hypothesis,
   Observation,
   RejectedDiagnosis,
@@ -346,9 +343,74 @@ function dedupeSymptoms(values: string[]): string[] {
   return out;
 }
 
+/** Type validation only — the code is stored as stated, no namespace guessing. */
+function normalizeAiDtcList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const out: string[] = [];
+  for (const v of values) {
+    if (typeof v !== "string") continue;
+    const code = v.trim().replace(/\s+/g, " ").toUpperCase();
+    if (!code || code.length > 24) continue;
+    out.push(code);
+  }
+  return out;
+}
+
+function parseAiNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const n = Number(value.trim().replace(",", "."));
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+/** Type validation only — `raw` stays verbatim, nothing is re-parsed from prose. */
+function normalizeAiMeasurementList(values: unknown): ExtractedMeasurement[] {
+  if (!Array.isArray(values)) return [];
+  const out: ExtractedMeasurement[] = [];
+  for (const v of values) {
+    if (!v || typeof v !== "object") continue;
+    const row = v as Record<string, unknown>;
+    const raw = typeof row.raw === "string" ? row.raw.trim() : "";
+    if (!raw || raw.length > 120) continue;
+
+    const measurement: ExtractedMeasurement = { raw };
+    const value = parseAiNumber(row.value);
+    if (value !== undefined) measurement.value = value;
+    if (typeof row.unit === "string" && row.unit.trim()) {
+      measurement.unit = row.unit.trim();
+    }
+    if (typeof row.parameter === "string" && row.parameter.trim()) {
+      measurement.parameter = row.parameter.trim();
+    }
+    out.push(measurement);
+  }
+  return out;
+}
+
+function measurementKey(m: ExtractedMeasurement | string): string {
+  if (typeof m === "string") return m.trim().toLowerCase();
+  return [m.parameter ?? "", m.raw].join("|").trim().toLowerCase();
+}
+
+function dedupeMeasurements(
+  values: Array<ExtractedMeasurement | string>,
+): Array<ExtractedMeasurement | string> {
+  const out: Array<ExtractedMeasurement | string> = [];
+  const seen = new Set<string>();
+  for (const v of values) {
+    const key = measurementKey(v);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
 /**
  * Apply explicit semanticUpdate from the accepted Claude draft.
- * Partial vehicle patch; symptomsAdd dedupes; symptomsRemove only explicit corrections.
+ * The model is the semantic extractor; this only validates types, dedupes and merges.
  * No-op when semanticUpdate is omitted (plain test results).
  */
 function applyAiExtractedFacts(
@@ -361,6 +423,8 @@ function applyAiExtractedFacts(
   const prior = diagnosticCase.extracted ?? {};
   let vehicle = prior.vehicle;
   let symptoms = [...(prior.symptoms ?? [])];
+  let dtcs = [...(prior.dtcs ?? [])];
+  let measurements = [...(prior.measurements ?? [])];
   let changed = false;
 
   const rawVehicle = update.vehicle;
@@ -415,12 +479,32 @@ function applyAiExtractedFacts(
     }
   }
 
+  const dtcsToAdd = normalizeAiDtcList(update.dtcsAdd);
+  if (dtcsToAdd.length) {
+    const merged = dedupeSymptoms([...dtcs, ...dtcsToAdd]);
+    if (merged.length !== dtcs.length) {
+      dtcs = merged;
+      changed = true;
+    }
+  }
+
+  const measurementsToAdd = normalizeAiMeasurementList(update.measurementsAdd);
+  if (measurementsToAdd.length) {
+    const merged = dedupeMeasurements([...measurements, ...measurementsToAdd]);
+    if (merged.length !== measurements.length) {
+      measurements = merged;
+      changed = true;
+    }
+  }
+
   if (!changed) return;
 
   diagnosticCase.extracted = {
     ...prior,
     vehicle,
     symptoms: symptoms.length ? symptoms : undefined,
+    dtcs: dtcs.length ? dtcs : undefined,
+    measurements: measurements.length ? measurements : undefined,
   };
 }
 
@@ -1048,10 +1132,6 @@ function finalizeAfterRetryLimit(
   throw new Error(`AI draft odbijen: ${still}. Pokušaj ponovno.`);
 }
 
-function lightExtract(problemText: string): DiagnosticCase["extracted"] {
-  return extractFactsFromText(problemText);
-}
-
 function formatStepMessage(
   actionType: string,
   diagnosticCase: DiagnosticCase,
@@ -1074,7 +1154,8 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       problemText: trimmed,
-      extracted: lightExtract(trimmed),
+      // Filled by the first draft's semanticUpdate — no backend text parsing.
+      extracted: {},
       observations: [],
       steps: [],
       status: "active",
@@ -1183,7 +1264,6 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         rejectedDiagnoses,
         observations: [...diagnosticCase.observations, rejectionObservation],
       };
-      reopened.extracted = refreshExtractedFacts(reopened, trimmed);
 
       const nextStep = await callVerifiedDiagnosticStep(reopened);
       const isFinish = nextStep.actionType === "FINISH";
@@ -1225,10 +1305,6 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       ...diagnosticCase,
       observations: [...diagnosticCase.observations, observation],
     };
-    caseWithObservation.extracted = refreshExtractedFacts(
-      caseWithObservation,
-      trimmed,
-    );
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);
     const isFinish = nextStep.actionType === "FINISH";
