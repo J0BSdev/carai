@@ -5,7 +5,6 @@ import {
   getStrongVerifierModel,
   getVerifierModel,
 } from "./config";
-import type { DiagnosticEngine } from "./engine";
 import { DiagnosticPipelineError } from "./errors";
 import {
   classifyGuardName,
@@ -45,6 +44,7 @@ import {
 import type {
   AiActionType,
   DiagnosticCase,
+  DiagnosticEngine,
   DiagnosticStep,
   DiagnoseResponse,
   DiagnosisCertainty,

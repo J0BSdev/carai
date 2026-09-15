@@ -42,7 +42,3 @@ export function getStrongVerifierModel(): string | undefined {
   const raw = process.env.STRONG_VERIFIER_MODEL?.trim();
   return raw || undefined;
 }
-
-export function hasLlmConfigured(): boolean {
-  return Boolean(getClaudeApiKey() && getOpenAiApiKey());
-}

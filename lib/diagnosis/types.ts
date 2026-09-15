@@ -180,3 +180,11 @@ export interface DiagnoseResponse {
   nextStep: DiagnosticStep | null;
   message?: string;
 }
+
+export interface DiagnosticEngine {
+  startCase(problemText: string): Promise<DiagnoseResponse>;
+  continueCase(
+    diagnosticCase: DiagnosticCase,
+    resultText: string,
+  ): Promise<DiagnoseResponse>;
+}

@@ -1,5 +1,4 @@
-import { hasLlmConfigured } from "./config";
-import { MockDiagnosticEngine, type DiagnosticEngine } from "./engine";
+import type { DiagnosticEngine } from "./types";
 import { LlmDiagnosticEngine } from "./llm-engine";
 
 export type {
@@ -9,6 +8,7 @@ export type {
   DiagnoseRequest,
   DiagnoseResponse,
   DiagnosticCase,
+  DiagnosticEngine,
   DiagnosticStep,
   DiagnosisCertainty,
   ExtractedCaseFacts,
@@ -21,16 +21,9 @@ export type {
   VehicleInfo,
 } from "./types";
 
-export { type DiagnosticEngine } from "./engine";
-
 export { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "./errors";
 
-/**
- * 3-tier LLM when both CLAUDE_API_KEY and OPENAI_API_KEY are set; otherwise mock.
- */
+/** Claude diagnostician + OpenAI verifier (requires CLAUDE_API_KEY and OPENAI_API_KEY). */
 export function getDiagnosticEngine(): DiagnosticEngine {
-  if (hasLlmConfigured()) {
-    return new LlmDiagnosticEngine();
-  }
-  return new MockDiagnosticEngine();
+  return new LlmDiagnosticEngine();
 }
