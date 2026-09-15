@@ -4,7 +4,6 @@ import type {
   DiagnosticStep,
   HypothesisStatus,
 } from "./types";
-import { inferUnitFromText } from "./test-result";
 
 export type DiagnosticPhaseUi =
   | "POČETNE PROVJERE"
@@ -107,20 +106,6 @@ export function hypothesisToKind(status: HypothesisStatus): EvidenceKind {
 }
 
 export { latestHypotheses } from "./known-facts";
-
-export function inferUnit(step: DiagnosticStep): string {
-  const blob = [
-    step.content,
-    step.expectedResultHint,
-    step.recommendedTest?.name,
-    step.recommendedTest?.whatToRecord,
-    step.recommendedTest?.specs?.value,
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  return inferUnitFromText(blob) ?? "";
-}
 
 export function needsDualMeasurement(step: DiagnosticStep): boolean {
   const blob = [

@@ -2,10 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { DiagnosticStep } from "@/lib/diagnosis";
-import {
-  inferUnit,
-  needsDualMeasurement,
-} from "@/lib/diagnosis/ui-helpers";
+import { needsDualMeasurement } from "@/lib/diagnosis/ui-helpers";
 import { testRequiresNumericValue } from "@/lib/diagnosis/test-result";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
 
@@ -27,7 +24,6 @@ export default function ResultModal({
   const [measure2, setMeasure2] = useState("");
   const numeric = testRequiresNumericValue(step);
   const dual = needsDualMeasurement(step);
-  const unit = inferUnit(step);
 
   const title =
     step.recommendedTest?.name?.trim() ||
@@ -59,11 +55,11 @@ export default function ResultModal({
     if (numeric) {
       if (!measure.trim() || (dual && !measure2.trim())) return null;
       if (dual) {
-        return `prije: ${measure.trim()}${unit ? ` ${unit}` : ""} · poslije: ${measure2.trim()}${unit ? ` ${unit}` : ""}${
+        return `prije: ${measure.trim()} · poslije: ${measure2.trim()}${
           text.trim() ? ` · napomena: ${text.trim()}` : ""
         }`;
       }
-      return `${measure.trim()}${unit ? ` ${unit}` : ""}${
+      return `${measure.trim()}${
         text.trim() ? ` · napomena: ${text.trim()}` : ""
       }`;
     }
@@ -88,14 +84,12 @@ export default function ResultModal({
             label={dual ? "Prije" : "Vrijednost"}
             value={measure}
             onChange={setMeasure}
-            unit={unit}
           />
           {dual && (
             <MeasureField
               label="Poslije"
               value={measure2}
               onChange={setMeasure2}
-              unit={unit}
             />
           )}
         </div>
@@ -166,12 +160,10 @@ function MeasureField({
   label,
   value,
   onChange,
-  unit,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
-  unit: string;
 }) {
   return (
     <label className="flex min-w-0 flex-1 flex-col gap-1.5">
@@ -186,11 +178,6 @@ function MeasureField({
           className="mono-data min-w-0 flex-1 bg-transparent px-3 text-lg outline-none"
           placeholder="0"
         />
-        {unit && (
-          <span className="mono-data flex items-center border-l border-[var(--border)] px-3 text-sm text-[var(--muted)]">
-            {unit}
-          </span>
-        )}
       </div>
     </label>
   );

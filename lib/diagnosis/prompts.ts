@@ -59,7 +59,7 @@ OUTPUT COMPACT (ASK/TEST posebno — ne troši tokene):
 - semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Vrati SAMO ono što zadnji korisnički unos (na prvom koraku: originalComplaint) stvarno dodaje/ispravlja i što NIJE već u knownFacts:
   vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju;
   dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja;
-  measurementsAdd = eksplicitna brojčana mjerenja: raw (verbatim, npr. "12,4 V") + value/unit/parameter ako su jasni. Ne izvodi mjerenje iz procjene/opisa.
+  measurementsAdd = eksplicitna brojčana mjerenja: raw = verbatim unos mehaničara. value/unit/parameter smiješ odrediti iz raw + konteksta trenutnog TEST-a (npr. gol "12,4" na napon-testu → value 12.4, unit "V"). Ne pretvaraj jedinice. Ne izvodi mjerenje iz procjene/opisa.
   Nema nove informacije → izostavi cijeli objekt. semanticUpdate je samo state, NE dokaz — status dokaza određuje backend.
 - content konkretan, bez eseja. JSON bez markdowna.
 

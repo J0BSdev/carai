@@ -254,9 +254,12 @@ function textBefore(normalized: string, index: number | undefined): string {
   return normalized.slice(0, index ?? 0);
 }
 
+/**
+ * Parse a measured VALUE from the mechanic's result text only.
+ * Never invents a unit from the TEST instruction — a bare "12.4" stays unit: null.
+ */
 function parseValue(
   normalized: string,
-  fallbackUnit: string | null,
   allowUnitlessValue: boolean,
 ): { value: number; unit: string | null } | null {
   // Range answers are not a single VALUE.
@@ -268,7 +271,7 @@ function parseValue(
     return null;
   }
 
-  // An explicit unit marks a reading, wherever it sits — unless a negation or a
+  // An explicit unit in the result marks a reading — unless a negation or a
   // quoted reference owns that number.
   for (const match of normalized.matchAll(READING_WITH_UNIT)) {
     const before = textBefore(normalized, match.index);
@@ -280,47 +283,14 @@ function parseValue(
     return { value, unit: UNIT_MAP[rawUnit] ?? rawUnit };
   }
 
-  // Unitless number only when the step expects a reading, its unit is known,
-  // and the answer is nothing but that number. Otherwise an incidental count
-  // ("3 puta sam probao, ne radi") would outrank the polarity.
-  if (!allowUnitlessValue || !fallbackUnit) return null;
+  // Bare number only when the step expects a reading and the answer is nothing
+  // but that number. Incidental counts ("3 puta sam probao, ne radi") stay out.
+  if (!allowUnitlessValue) return null;
   const bare = normalized.match(/^(-?\d+(?:[.,]\d+)?)$/);
   if (!bare) return null;
   const value = Number(bare[1].replace(",", "."));
   if (!Number.isFinite(value)) return null;
-  return { value, unit: fallbackUnit };
-}
-
-/**
- * Unit hints for a test instruction. Symbols are matched case-sensitively next to a
- * number or in parentheses: lowercase "a"/"ma"/"v" are ordinary Croatian words, so a
- * case-insensitive `\bA\b` would read "a zatim…" as amperes.
- */
-const UNIT_HINTS: Array<{ unit: string; symbol: RegExp; word: RegExp }> = [
-  { unit: "mA", symbol: /(?:\d|\(\s*)\s*mA(?![A-Za-z])/, word: /miliamper/i },
-  { unit: "V", symbol: /(?:\d|\(\s*)\s*V(?![A-Za-z])/, word: /volt/i },
-  { unit: "A", symbol: /(?:\d|\(\s*)\s*A(?![A-Za-z])/, word: /amper/i },
-  { unit: "%", symbol: /%/, word: /\bposto\b/i },
-  { unit: "Ω", symbol: /Ω/, word: /\bohm|otpor/i },
-  {
-    unit: "bar",
-    symbol: /(?:\d|\(\s*)\s*(?:bar|kPa)(?![A-Za-z])/,
-    word: /\btlak/i,
-  },
-  { unit: "°C", symbol: /°\s*C/, word: /\bstupanj|\btemp/i },
-];
-
-/** Unit a test instruction implies, or null when the text names none. */
-export function inferUnitFromText(blob: string): string | null {
-  if (!blob.trim()) return null;
-  for (const hint of UNIT_HINTS) {
-    if (hint.symbol.test(blob) || hint.word.test(blob)) return hint.unit;
-  }
-  return null;
-}
-
-function inferFallbackUnit(step: DiagnosticStep): string | null {
-  return inferUnitFromText(stepContextBlob(step));
+  return { value, unit: null };
 }
 
 /** True when the answer holds unit readings and every one of them is negated. */
@@ -349,12 +319,7 @@ export function interpretTestResult(
   const normalized = normalizeResultText(trimmed);
   if (!normalized) return { kind: "AMBIGUOUS" };
 
-  const fallbackUnit = inferFallbackUnit(step);
-  const numeric = parseValue(
-    normalized,
-    fallbackUnit,
-    fallbackUnit != null && testRequiresNumericValue(step),
-  );
+  const numeric = parseValue(normalized, testRequiresNumericValue(step));
   if (numeric) {
     return { kind: "VALUE", value: numeric.value, unit: numeric.unit };
   }
