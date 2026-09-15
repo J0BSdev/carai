@@ -47,6 +47,7 @@ import type {
   DiagnosticStep,
   DiagnoseResponse,
   DiagnosisCertainty,
+  ExtractedCaseFacts,
   ExtractedMeasurement,
   Hypothesis,
   Observation,
@@ -409,18 +410,14 @@ function dedupeMeasurements(
 }
 
 /**
- * Apply explicit semanticUpdate from the accepted Claude draft.
- * The model is the semantic extractor; this only validates types, dedupes and merges.
- * No-op when semanticUpdate is omitted (plain test results).
+ * Merge an explicit semanticUpdate into case facts. Pure — returns null when the
+ * delta changes nothing. The model is the semantic extractor; this only validates
+ * types, dedupes and merges.
  */
-function applyAiExtractedFacts(
-  diagnosticCase: DiagnosticCase,
-  draft: LlmStepPayload,
-): void {
-  const update = draft.semanticUpdate;
-  if (!update || typeof update !== "object") return;
-
-  const prior = diagnosticCase.extracted ?? {};
+function mergeSemanticUpdate(
+  prior: ExtractedCaseFacts,
+  update: NonNullable<LlmStepPayload["semanticUpdate"]>,
+): ExtractedCaseFacts | null {
   let vehicle = prior.vehicle;
   let symptoms = [...(prior.symptoms ?? [])];
   let dtcs = [...(prior.dtcs ?? [])];
@@ -497,15 +494,64 @@ function applyAiExtractedFacts(
     }
   }
 
-  if (!changed) return;
+  if (!changed) return null;
 
-  diagnosticCase.extracted = {
+  return {
     ...prior,
     vehicle,
     symptoms: symptoms.length ? symptoms : undefined,
     dtcs: dtcs.length ? dtcs : undefined,
     measurements: measurements.length ? measurements : undefined,
   };
+}
+
+/**
+ * Throwaway copy of the case with this draft's own facts applied, so guards and the
+ * verifier judge the draft in the context it just created. Never persisted — a
+ * rejected draft leaves no trace on the real case.
+ */
+function caseWithSemanticUpdate(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): DiagnosticCase {
+  const update = draft.semanticUpdate;
+  if (!update || typeof update !== "object") return diagnosticCase;
+  const merged = mergeSemanticUpdate(diagnosticCase.extracted ?? {}, update);
+  return merged ? { ...diagnosticCase, extracted: merged } : diagnosticCase;
+}
+
+/** Persist case facts — only for the finally accepted turn. */
+function persistSemanticUpdate(
+  diagnosticCase: DiagnosticCase,
+  update: LlmStepPayload["semanticUpdate"],
+): void {
+  if (!update || typeof update !== "object") return;
+  const merged = mergeSemanticUpdate(diagnosticCase.extracted ?? {}, update);
+  if (merged) diagnosticCase.extracted = merged;
+}
+
+/**
+ * The verifier corrects the action; the semantic delta stays the diagnostic model's.
+ * Carrying it over keeps extraction alive through a correctedStep without letting the
+ * verifier act as extractor.
+ */
+function withSemanticDeltaFrom(
+  corrected: LlmStepPayload,
+  source: LlmStepPayload,
+): LlmStepPayload {
+  if (corrected.semanticUpdate === source.semanticUpdate) return corrected;
+  return { ...corrected, semanticUpdate: source.semanticUpdate };
+}
+
+/** Guards evaluate the draft against the case including the draft's own facts. */
+function findDraftQualityIssueInTurn(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): string | null {
+  return findDraftQualityIssue(
+    caseWithSemanticUpdate(diagnosticCase, draft),
+    draft,
+  );
 }
 
 async function draftWithClaude(
@@ -599,10 +645,14 @@ async function verifyWithOpenAi(
     apiKey,
     model,
     system: VERIFIER_SYSTEM_PROMPT,
-    user: buildVerifierUserPrompt(diagnosticCase, draft, {
-      previousIssues: options?.previousIssues,
-      strongFinal: options?.strongFinal,
-    }),
+    user: buildVerifierUserPrompt(
+      caseWithSemanticUpdate(diagnosticCase, draft),
+      draft,
+      {
+        previousIssues: options?.previousIssues,
+        strongFinal: options?.strongFinal,
+      },
+    ),
     telemetry: step
       ? {
           caseId: step.caseId,
@@ -740,6 +790,7 @@ function buildSafeVerifierFallback(
         },
       ],
     },
+    semanticUpdate: draft.semanticUpdate,
     facts: draft.facts ?? null,
     evidence: draft.evidence ?? null,
     hypotheses: draft.hypotheses ?? null,
@@ -852,7 +903,9 @@ async function callVerifiedDiagnosticStep(
       }
 
       draft = await applyConfirmationPolicy(diagnosticCase, draft);
-      applyAiExtractedFacts(diagnosticCase, draft);
+
+      // Turn accepted — only now do the model's case facts reach the real case.
+      persistSemanticUpdate(diagnosticCase, draft.semanticUpdate);
       return toDiagnosticStep(draft, stepId);
     },
   );
@@ -862,10 +915,12 @@ async function applyVerifierCorrection(
   diagnosticCase: DiagnosticCase,
   corrected: LlmStepPayload,
   budget: RetryBudget,
+  source: LlmStepPayload,
 ): Promise<LlmStepPayload> {
-  const correctedIssue = findDraftQualityIssue(diagnosticCase, corrected);
-  if (!correctedIssue) return corrected;
-  return ensureDraftPassesQualityGates(diagnosticCase, corrected, budget, [
+  const carried = withSemanticDeltaFrom(corrected, source);
+  const correctedIssue = findDraftQualityIssueInTurn(diagnosticCase, carried);
+  if (!correctedIssue) return carried;
+  return ensureDraftPassesQualityGates(diagnosticCase, carried, budget, [
     correctedIssue,
   ]);
 }
@@ -889,6 +944,7 @@ async function runSelectiveVerifier(
       diagnosticCase,
       verdict.correctedStep,
       budget,
+      draft,
     );
   }
 
@@ -922,6 +978,7 @@ async function runSelectiveVerifier(
         diagnosticCase,
         verdict.correctedStep,
         budget,
+        draft,
       );
     }
     collectedIssues.push(
@@ -963,12 +1020,13 @@ async function runStrongVerifierOnce(
   }
 
   if (verdict.correctedStep) {
-    const correctedIssue = findDraftQualityIssue(
+    const corrected = withSemanticDeltaFrom(verdict.correctedStep, draft);
+    const correctedIssue = findDraftQualityIssueInTurn(
       diagnosticCase,
-      verdict.correctedStep,
+      corrected,
     );
     if (!correctedIssue) {
-      return applyConfirmationPolicy(diagnosticCase, verdict.correctedStep);
+      return applyConfirmationPolicy(diagnosticCase, corrected);
     }
     return buildSafeVerifierFallback(diagnosticCase, draft, [
       ...previousIssues,
@@ -1001,7 +1059,7 @@ async function ensureDraftPassesQualityGates(
     }
   }
 
-  let issue = findDraftQualityIssue(diagnosticCase, draft);
+  let issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
   let pendingExtra = [...extraIssues];
   if (!issue && pendingExtra.length === 0) return draft;
 
@@ -1016,7 +1074,7 @@ async function ensureDraftPassesQualityGates(
     budget,
   );
   pendingExtra = [];
-  issue = findDraftQualityIssue(diagnosticCase, draft);
+  issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
 
   if (
     draft.actionType === "ASK" &&
@@ -1032,7 +1090,7 @@ async function ensureDraftPassesQualityGates(
       ],
       budget,
     );
-    issue = findDraftQualityIssue(diagnosticCase, draft);
+    issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
   }
 
   if (
@@ -1054,7 +1112,7 @@ async function ensureDraftPassesQualityGates(
       ],
       budget,
     );
-    issue = findDraftQualityIssue(diagnosticCase, draft);
+    issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
   }
 
   if (!issue) return draft;
@@ -1072,7 +1130,7 @@ async function ensureDraftPassesQualityGates(
       ]),
       budget,
     );
-    issue = findDraftQualityIssue(diagnosticCase, draft);
+    issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
     if (!issue) return draft;
   }
 
@@ -1111,7 +1169,7 @@ function finalizeAfterRetryLimit(
     };
   }
 
-  const still = findDraftQualityIssue(diagnosticCase, next);
+  const still = findDraftQualityIssueInTurn(diagnosticCase, next);
   if (!still) return next;
 
   if (next.actionType === "FINISH") {

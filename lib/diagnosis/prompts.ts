@@ -293,14 +293,6 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
 
   const significantEvidenceCount = answers.length + completedTests.length;
 
-  const measurementsMerged = [
-    ...measurements,
-    ...knownFacts.measurements.filter(
-      (m) =>
-        !measurements.some((x) => x.trim().toLowerCase() === m.trim().toLowerCase()),
-    ),
-  ];
-
   return {
     originalComplaint: diagnosticCase.problemText,
     // Top-level aliases kept for backend guards; prompt uses compactCaseStateForPrompt.
@@ -316,7 +308,8 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     completedTests,
     skippedUnavailableTests,
     testResults: completedTests.map((t) => t.result),
-    measurements: measurementsMerged,
+    // Evidence only — VALUE test results. knownFacts.measurements stay case context.
+    measurements,
     currentHypotheses,
     previousDiagnosticActions,
     diagnosticStepHistory: stepHistory,
@@ -1006,7 +999,9 @@ function rationaleHasDistinctBranches(rationale: string): boolean {
 function canSelectMeaningfulTestNow(state: ReturnType<typeof buildCaseState>): boolean {
   if ((state.dtcs?.length ?? 0) > 0) return true;
   if (state.completedTests.length > 0) return true;
+  // Intake measurements are context, not evidence, but still enough to pick a test.
   if ((state.measurements?.length ?? 0) > 0) return true;
+  if (state.knownFacts.measurements.length > 0) return true;
   if (state.answersToPreviousQuestions.length >= 1 && (state.symptoms?.length ?? 0) > 0) {
     return true;
   }
