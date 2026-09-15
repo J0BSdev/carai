@@ -3,6 +3,7 @@ import type {
   SpecVerificationStatus,
   TechnicalSpecClaim,
 } from "./types";
+import { draftBlob } from "./text";
 
 export type { SpecVerificationStatus, TechnicalSpecClaim };
 
@@ -16,9 +17,17 @@ export function getVerifiedTechnicalSpecs(
 }
 
 /**
- * Extract vehicle-specific REFERENCE claims (expected/OEM/typical ranges),
- * not user MEASURED_EVIDENCE.
+ * Lowercase + strip diacritics. Patterns below are ASCII, so raw Croatian
+ * ("očekivani", "tipično") must be folded first or the guard misses it.
  */
+function fold(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/** Vehicle-specific REFERENCE claims (expected/OEM/typical ranges), not measured evidence. */
 export function extractReferenceSpecClaims(text: string): TechnicalSpecClaim[] {
   if (!text?.trim()) return [];
 
@@ -36,8 +45,8 @@ export function extractReferenceSpecClaims(text: string): TechnicalSpecClaim[] {
     const before = normalized.slice(Math.max(0, idx - 48), idx);
     const after = normalized.slice(idx, Math.min(normalized.length, idx + match[0].length + 24));
     const context = `${before} ${after}`;
-    const contextLower = context.toLowerCase();
-    const beforeLower = before.toLowerCase();
+    const contextLower = fold(context);
+    const beforeLower = fold(before);
 
     // Skip measured evidence phrasing
     if (isMeasuredEvidenceContext(contextLower)) continue;
@@ -73,7 +82,7 @@ export function extractReferenceSpecClaims(text: string): TechnicalSpecClaim[] {
 
     const condition = detectCondition(beforeLower);
     const subject = detectSubject(
-      `${contextLower} ${normalized.toLowerCase().slice(0, 200)}`,
+      `${contextLower} ${fold(normalized).slice(0, 200)}`,
     );
     const parameterKey = [
       unitFamily(unit),
@@ -123,20 +132,20 @@ function unitFamily(unit: string): string {
 
 function isMeasuredEvidenceContext(contextLower: string): boolean {
   return (
-    /izmjeren|izmjereno|izmjerili|ocitano|ocitano|rezultat\s*:|measured|reading\s*:|dobiveno|dobili smo|korisnik/.test(
+    /izmjeren|izmjereno|izmjerili|ocitano|rezultat\s*:|measured|reading\s*:|dobiveno|dobili smo|korisnik/.test(
       contextLower,
-    ) && !/ocekivan|trebalo|normalno|tipicno|oem|spec/.test(contextLower)
+    ) && !/ocekivan|trebalo|trebao|trebala|normalno|tipicno|oem|spec/.test(contextLower)
   );
 }
 
 function isReferenceLanguage(contextLower: string): boolean {
-  return /ocekivan|trebalo bi|treba biti|mora biti|normalno|tipicno|tipično|oem|specifikac|referent|raspon|range|prazan|pun\b|empty|full|približn|priblizn|~|za ovo vozilo|na ovom vozilu|factory|datasheet/.test(
+  return /ocekivan|trebalo bi|trebao bi|trebala bi|treba biti|mora biti|normalno|tipicno|oem|specifikac|referent|raspon|range|prazan|pun\b|empty|full|priblizn|~|za ovo vozilo|na ovom vozilu|factory|datasheet/.test(
     contextLower,
   );
 }
 
 function looksLikeSpecTable(contextLower: string): boolean {
-  return /prazan|pun\b|empty|full|min\b|max\b|raspon|referent|ocekivan|normalno|tipicno|tipično/.test(
+  return /prazan|pun\b|empty|full|min\b|max\b|raspon|referent|ocekivan|normalno|tipicno/.test(
     contextLower,
   );
 }
@@ -190,11 +199,8 @@ function dedupeClaims(claims: TechnicalSpecClaim[]): TechnicalSpecClaim[] {
 }
 
 function isExplicitlyUnverifiedStatement(text: string): boolean {
-  const n = text.toLowerCase();
-  return (
-    /nije verificiran|nije potvrden|nije potvrđen|unverified|specstatus\s*=\s*unverified|tocan referentni raspon.*nije|točan referentni raspon.*nije|nemam verificiran|bez verificiran/.test(
-      n,
-    )
+  return /nije verificiran|nije potvrden|unverified|specstatus\s*=\s*unverified|tocan referentni raspon.*nije|nemam verificiran|bez verificiran/.test(
+    fold(text),
   );
 }
 
@@ -246,39 +252,9 @@ export function collectHistoricalReferenceClaims(
   const fromField = diagnosticCase.technicalSpecClaims ?? [];
   const fromSteps: TechnicalSpecClaim[] = [];
   for (const step of diagnosticCase.steps) {
-    const blob = [
-      step.content,
-      step.rationale,
-      step.expectedResultHint,
-      step.confirmedFault,
-      ...(step.facts ?? []),
-      ...(step.evidence ?? []),
-    ]
-      .filter(Boolean)
-      .join("\n");
-    fromSteps.push(...extractReferenceSpecClaims(blob));
+    fromSteps.push(...extractReferenceSpecClaims(draftBlob(step)));
   }
   return dedupeClaims([...fromField, ...fromSteps]);
-}
-
-function draftBlob(draft: {
-  content?: string;
-  rationale?: string;
-  expectedResultHint?: string | null;
-  confirmedFault?: string | null;
-  facts?: string[] | null;
-  evidence?: string[] | null;
-}): string {
-  return [
-    draft.content,
-    draft.rationale,
-    draft.expectedResultHint,
-    draft.confirmedFault,
-    ...(draft.facts ?? []),
-    ...(draft.evidence ?? []),
-  ]
-    .filter(Boolean)
-    .join("\n");
 }
 
 /**
@@ -349,12 +325,12 @@ export function findSpecGuardIssue(
 }
 
 function assertsSpecAsFact(text: string, claim: TechnicalSpecClaim): boolean {
-  const n = text.toLowerCase();
-  const valueBits = claim.valueText.toLowerCase().slice(0, 24);
+  const n = fold(text);
+  const valueBits = fold(claim.valueText).slice(0, 24);
   if (!n.includes(valueBits.slice(0, Math.min(12, valueBits.length))) && !n.includes(String(claim.low))) {
     return isReferenceLanguage(n);
   }
-  return /mora biti|trebalo bi|ocekivan|normalno|tipicno|tipično|oem|za ovo vozilo|na ovom|definitiv|dokaz|potvrd/.test(
+  return /mora biti|trebalo bi|trebao bi|trebala bi|ocekivan|normalno|tipicno|oem|za ovo vozilo|na ovom|definitiv|dokaz|potvrd/.test(
     n,
   ) || looksLikeSpecTable(n);
 }

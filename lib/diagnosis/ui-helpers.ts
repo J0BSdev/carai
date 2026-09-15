@@ -2,10 +2,9 @@ import type {
   AiActionType,
   DiagnosticCase,
   DiagnosticStep,
-  Hypothesis,
   HypothesisStatus,
 } from "./types";
-import { testRequiresNumericValue } from "./test-result";
+import { inferUnitFromText } from "./test-result";
 
 export type DiagnosticPhaseUi =
   | "POČETNE PROVJERE"
@@ -20,33 +19,9 @@ export function actionLabel(actionType: AiActionType): string {
       return "PITANJE";
     case "TEST":
       return "TEST";
-    case "SEARCH_WEB":
-      return "PRETRAGA";
     case "FINISH":
       return "DIJAGNOZA";
   }
-}
-
-export function vehicleMake(diagnosticCase: DiagnosticCase): string {
-  const make = diagnosticCase.extracted?.vehicle?.make?.trim();
-  if (make) return make.toUpperCase();
-  const first = diagnosticCase.problemText.trim().split(/\s+/)[0];
-  return (first || "VOZILO").toUpperCase();
-}
-
-export function vehicleSubtitle(diagnosticCase: DiagnosticCase): string {
-  const v = diagnosticCase.extracted?.vehicle;
-  const bits = [v?.model, v?.year, v?.engine].filter(Boolean);
-  if (bits.length > 0) return bits.join(" · ");
-  const line = diagnosticCase.problemText.split(/[.\n]/)[0]?.trim() ?? "";
-  return line.length > 72 ? `${line.slice(0, 69)}…` : line;
-}
-
-export function vehicleTitle(diagnosticCase: DiagnosticCase): string {
-  const v = diagnosticCase.extracted?.vehicle;
-  const bits = [v?.make, v?.model, v?.year, v?.engine].filter(Boolean);
-  if (bits.length > 0) return bits.join(" · ");
-  return vehicleSubtitle(diagnosticCase);
 }
 
 export function diagnosticStatusLabel(
@@ -78,26 +53,10 @@ export function diagnosticStatusLabel(
   return "SUŽAVANJE UZROKA";
 }
 
-export function statusProgress(
-  label: DiagnosticPhaseUi,
-): { index: number; total: number } {
-  const order: DiagnosticPhaseUi[] = [
-    "POČETNE PROVJERE",
-    "SUŽAVANJE UZROKA",
-    "PROVJERA HIPOTEZE",
-    "DIJAGNOZA POTVRĐENA",
-  ];
-  if (label === "VJEROJATAN UZROK") {
-    return { index: 3, total: 4 };
-  }
-  return { index: order.indexOf(label) + 1, total: 4 };
-}
-
 export type EvidenceKind =
   | "verified"
   | "assumption"
   | "weak"
-  | "fact"
   | "ruled_out";
 
 export function evidenceBadgeMeta(kind: EvidenceKind): {
@@ -110,12 +69,6 @@ export function evidenceBadgeMeta(kind: EvidenceKind): {
         label: "potvrđeno",
         className:
           "border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)]",
-      };
-    case "fact":
-      return {
-        label: "činjenica",
-        className:
-          "border-[var(--accent)]/30 bg-[var(--accent-soft)] text-[var(--accent)]",
       };
     case "assumption":
       return {
@@ -153,13 +106,7 @@ export function hypothesisToKind(status: HypothesisStatus): EvidenceKind {
   }
 }
 
-export function latestHypotheses(diagnosticCase: DiagnosticCase): Hypothesis[] {
-  for (let i = diagnosticCase.steps.length - 1; i >= 0; i -= 1) {
-    const h = diagnosticCase.steps[i]?.hypotheses;
-    if (h && h.length > 0) return h;
-  }
-  return [];
-}
+export { latestHypotheses } from "./known-facts";
 
 export function inferUnit(step: DiagnosticStep): string {
   const blob = [
@@ -172,14 +119,7 @@ export function inferUnit(step: DiagnosticStep): string {
     .filter(Boolean)
     .join(" ");
 
-  if (/\bmA\b|miliamper/i.test(blob)) return "mA";
-  if (/\bA\b|amper/i.test(blob) && !/\bmA\b/i.test(blob)) return "A";
-  if (/\bV\b|volt/i.test(blob)) return "V";
-  if (/%|posto/i.test(blob)) return "%";
-  if (/Ω|ohm|otpor/i.test(blob)) return "Ω";
-  if (/bar|kPa|tlak/i.test(blob)) return "bar";
-  if (/°C|stupanj|temp/i.test(blob)) return "°C";
-  return "";
+  return inferUnitFromText(blob) ?? "";
 }
 
 export function needsDualMeasurement(step: DiagnosticStep): boolean {
@@ -198,25 +138,3 @@ export function needsDualMeasurement(step: DiagnosticStep): boolean {
     blob.includes("prije i poslije")
   );
 }
-
-/**
- * Quality gate: require a numeric entry UI only when the active TEST
- * diagnostically depends on a concrete value.
- */
-export function looksNumericTest(step: DiagnosticStep): boolean {
-  return testRequiresNumericValue(step);
-}
-
-export {
-  interpretTestResult,
-  testRequiresNumericValue,
-  testAllowsQualitativeResult,
-  type TestResultInterpretation,
-} from "./test-result";
-
-export const THINKING_MESSAGES = [
-  "Analiziram dokaze…",
-  "Pregledavam prethodne rezultate…",
-  "Uspoređujem dokaze…",
-  "Biram sljedeći dijagnostički korak…",
-] as const;

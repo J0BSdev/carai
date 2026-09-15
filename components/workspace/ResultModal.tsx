@@ -4,9 +4,9 @@ import { useMemo, useState } from "react";
 import type { DiagnosticStep } from "@/lib/diagnosis";
 import {
   inferUnit,
-  looksNumericTest,
   needsDualMeasurement,
 } from "@/lib/diagnosis/ui-helpers";
+import { testRequiresNumericValue } from "@/lib/diagnosis/test-result";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
 
 type ResultModalProps = {
@@ -25,7 +25,7 @@ export default function ResultModal({
   const [text, setText] = useState("");
   const [measure, setMeasure] = useState("");
   const [measure2, setMeasure2] = useState("");
-  const numeric = looksNumericTest(step);
+  const numeric = testRequiresNumericValue(step);
   const dual = needsDualMeasurement(step);
   const unit = inferUnit(step);
 

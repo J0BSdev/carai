@@ -21,32 +21,9 @@ export type {
   VehicleInfo,
 } from "./types";
 
-export {
-  MockDiagnosticEngine,
-  type DiagnosticEngine,
-} from "./engine";
+export { type DiagnosticEngine } from "./engine";
 
-export { LlmDiagnosticEngine } from "./llm-engine";
-
-export {
-  DIAGNOSTIC_UNAVAILABLE_MESSAGE,
-  DiagnosticPipelineError,
-} from "./errors";
-
-export {
-  NoopWebSearchTool,
-  type WebSearchResult,
-  type WebSearchTool,
-} from "./web-search";
-
-export {
-  getClaudeApiKey,
-  getDiagnosticModel,
-  getOpenAiApiKey,
-  getVerifierModel,
-  getStrongVerifierModel,
-  hasLlmConfigured,
-} from "./config";
+export { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "./errors";
 
 /**
  * 3-tier LLM when both CLAUDE_API_KEY and OPENAI_API_KEY are set; otherwise mock.

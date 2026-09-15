@@ -1,4 +1,5 @@
 import type { DiagnosticCase, DiagnosticStep } from "./types";
+import { draftBlob as coreDraftBlob } from "./text";
 
 export type ReasoningDraft = {
   actionType?: string;
@@ -40,12 +41,7 @@ function normalize(text: string): string {
 
 function draftBlob(draft: ReasoningDraft): string {
   return [
-    draft.content,
-    draft.rationale,
-    draft.expectedResultHint,
-    draft.confirmedFault,
-    ...(draft.facts ?? []),
-    ...(draft.evidence ?? []),
+    coreDraftBlob(draft),
     ...(draft.hypotheses ?? []).flatMap((h) => [
       h.label,
       h.cause,
@@ -59,12 +55,7 @@ function draftBlob(draft: ReasoningDraft): string {
 
 function stepBlob(step: DiagnosticStep): string {
   return [
-    step.content,
-    step.rationale,
-    step.expectedResultHint,
-    step.confirmedFault,
-    ...(step.facts ?? []),
-    ...(step.evidence ?? []),
+    coreDraftBlob(step),
     ...(step.hypotheses ?? []).flatMap((h) => [
       h.label,
       h.status,
@@ -107,18 +98,6 @@ const POSITIVE_RE =
 const NEGATIVE_RE =
   /\b(missing|nedostaje|odsutan|odsutno|nema|fail|failed|neispravan|neispravno|kvar|prekinut|open|otvoren|loose|loose connection|ruled.?out|iskljucen|isključen|negativ|lo[sš]|bad|absent|prekida|prekid)\b/;
 
-function detectSubject(window: string): string | null {
-  for (const alias of SUBJECT_ALIASES) {
-    if (alias.patterns.some((p) => p.test(window))) return alias.key;
-  }
-  // Generic "X = OK/MISSING" subject token
-  const eq = window.match(
-    /\b([a-zčćžšđ][a-zčćžšđ0-9_/]{2,24})\s*(?:=|jest|je)\s*(ok|missing|nedostaje|neispravan|ispravan|fail|failed|prisutan|odsutan)/,
-  );
-  if (eq?.[1]) return normalizeSubjectToken(eq[1]);
-  return null;
-}
-
 function normalizeSubjectToken(token: string): string {
   const t = normalize(token);
   for (const alias of SUBJECT_ALIASES) {
@@ -144,7 +123,7 @@ function polarityFromWindow(window: string): Polarity | null {
 }
 
 /** Extract subject↔polarity claims from free text. */
-export function extractPolarityClaims(
+function extractPolarityClaims(
   text: string,
   baseOrder: number,
   stepIndex: number | null,

@@ -82,7 +82,7 @@ function logLine(message: string): void {
 }
 
 /** Rough USD estimates when provider usage is known. */
-export function estimateCostUsd(
+function estimateCostUsd(
   provider: AiProvider,
   model: string,
   usage: AiTokenUsage,
@@ -117,7 +117,7 @@ function pricingForModel(
   return { inPerM: 2, outPerM: 8 };
 }
 
-export function formatCost(cost: number | null): string {
+function formatCost(cost: number | null): string {
   if (cost == null || Number.isNaN(cost)) return "?";
   if (cost < 0.0001) return `$${cost.toFixed(6)}`;
   if (cost < 0.01) return `$${cost.toFixed(4)}`;

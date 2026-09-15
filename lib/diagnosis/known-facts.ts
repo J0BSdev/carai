@@ -1,6 +1,7 @@
 import type {
   DiagnosticCase,
   ExtractedMeasurement,
+  Hypothesis,
   VehicleInfo,
 } from "./types";
 
@@ -57,4 +58,12 @@ export function buildKnownFactsSnapshot(
       .filter(Boolean),
     doNotReAsk,
   };
+}
+
+export function latestHypotheses(diagnosticCase: DiagnosticCase): Hypothesis[] {
+  for (let i = diagnosticCase.steps.length - 1; i >= 0; i -= 1) {
+    const h = diagnosticCase.steps[i]?.hypotheses;
+    if (h && h.length > 0) return h;
+  }
+  return [];
 }

@@ -6,16 +6,7 @@ import type {
 import { getVerifiedTechnicalSpecs } from "./spec-guard";
 import { diagnosticEvidenceFamilyKey } from "./diagnostic-meta";
 import { isCompletedTestEvidence } from "./test-result";
-
-function normalizeForCompare(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9čćžšđ\s]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+import { normalizeForCompare } from "./text";
 
 export type FinishDraft = {
   actionType?: string;

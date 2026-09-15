@@ -1,15 +1,6 @@
 import type { DiagnosticCase, VehicleInfo } from "./types";
 import { buildKnownFactsSnapshot } from "./known-facts";
-
-function normalizeForCompare(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9čćžšđ\s]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+import { normalizeForCompare } from "./text";
 
 function asksForDtcInventoryOrRescan(normalized: string): boolean {
   const asksInventory =

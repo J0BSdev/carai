@@ -55,6 +55,7 @@ import type {
   RejectedDiagnosis,
   VehicleInfo,
 } from "./types";
+import { draftBlob } from "./text";
 
 /** Max Claude regenerations after the initial draft, per user step. */
 const MAX_DIAGNOSTIC_RETRIES = 2;
@@ -70,19 +71,6 @@ type DiagnosticTurn = {
 };
 
 const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
-
-function draftBlob(draft: LlmStepPayload): string {
-  return [
-    draft.content,
-    draft.rationale,
-    draft.expectedResultHint,
-    draft.confirmedFault,
-    ...(draft.facts ?? []),
-    ...(draft.evidence ?? []),
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
 
 function hasTechnicalClaimsOrSpecs(draft: LlmStepPayload): boolean {
   const claims = Array.isArray(draft.technicalClaims) ? draft.technicalClaims : [];
@@ -159,7 +147,7 @@ function hasContradictoryStrongEvidence(draft: LlmStepPayload): boolean {
  * OpenAI verifier only for high-risk drafts.
  * Ordinary ASK/TEST that pass backend guards go straight to UI (including first step).
  */
-export function shouldCallVerifier(
+function shouldCallVerifier(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): boolean {
@@ -186,7 +174,7 @@ export function shouldCallVerifier(
  * Never on normal ASK; never on ordinary TEST without stuck signals.
  * Max 1× per case (enforced via strongVerifierUsed).
  */
-export function shouldEscalateToStrongVerifier(
+function shouldEscalateToStrongVerifier(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   previousIssues: string[],
@@ -1200,6 +1188,13 @@ function formatStepMessage(
   return `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}${strong}): ${actionType}${suffix}`;
 }
 
+/** Fields scanned for locked technical-spec claims after an accepted step. */
+function stepClaimText(step: DiagnosticStep): string {
+  return [step.content, step.rationale, step.confirmedFault]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export class LlmDiagnosticEngine implements DiagnosticEngine {
   async startCase(problemText: string): Promise<DiagnoseResponse> {
     const trimmed = problemText.trim();
@@ -1220,21 +1215,16 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const nextStep = await callVerifiedDiagnosticStep(baseCase);
     const isFinish = nextStep.actionType === "FINISH";
-    const draftText = [
-      nextStep.content,
-      nextStep.rationale,
-      nextStep.confirmedFault,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
     const diagnosticCase: DiagnosticCase = {
       ...baseCase,
       extracted: baseCase.extracted,
       steps: [nextStep],
       status: isFinish ? "completed" : "active",
       confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
-      technicalSpecClaims: mergeTechnicalSpecClaims(baseCase, draftText),
+      technicalSpecClaims: mergeTechnicalSpecClaims(
+        baseCase,
+        stepClaimText(nextStep),
+      ),
       strongVerifierUsed: baseCase.strongVerifierUsed,
     };
 
@@ -1324,20 +1314,15 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
       const nextStep = await callVerifiedDiagnosticStep(reopened);
       const isFinish = nextStep.actionType === "FINISH";
-      const draftText = [
-        nextStep.content,
-        nextStep.rationale,
-        nextStep.confirmedFault,
-      ]
-        .filter(Boolean)
-        .join("\n");
-
       const updated: DiagnosticCase = {
         ...reopened,
         steps: [...reopened.steps, nextStep],
         status: isFinish ? "completed" : "active",
         confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
-        technicalSpecClaims: mergeTechnicalSpecClaims(reopened, draftText),
+        technicalSpecClaims: mergeTechnicalSpecClaims(
+          reopened,
+          stepClaimText(nextStep),
+        ),
         strongVerifierUsed: reopened.strongVerifierUsed,
       };
 
@@ -1365,14 +1350,6 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);
     const isFinish = nextStep.actionType === "FINISH";
-    const draftText = [
-      nextStep.content,
-      nextStep.rationale,
-      nextStep.confirmedFault,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
     const updated: DiagnosticCase = {
       ...caseWithObservation,
       steps: [...caseWithObservation.steps, nextStep],
@@ -1382,7 +1359,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         : caseWithObservation.confirmedFault,
       technicalSpecClaims: mergeTechnicalSpecClaims(
         caseWithObservation,
-        draftText,
+        stepClaimText(nextStep),
       ),
       strongVerifierUsed: caseWithObservation.strongVerifierUsed,
     };

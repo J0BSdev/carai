@@ -1,12 +1,6 @@
-import type { DiagnosticCase } from "./types";
+import type { DiagnosticCase, TechnicalSourceType } from "./types";
 import { extractReferenceSpecClaims } from "./spec-guard";
-
-export type TechnicalSourceType =
-  | "VERIFIED_OEM"
-  | "VERIFIED_TECHNICAL"
-  | "GENERAL_PRINCIPLE"
-  | "MODEL_KNOWLEDGE"
-  | "UNKNOWN";
+import { draftBlob, normalizeForCompare } from "./text";
 
 export type TechnicalClaimPayload = {
   claim?: string | null;
@@ -30,36 +24,6 @@ const SOURCE_TYPES = new Set<TechnicalSourceType>([
   "UNKNOWN",
 ]);
 
-function normalize(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9čćžšđ\s]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function draftText(draft: {
-  content?: string;
-  rationale?: string;
-  expectedResultHint?: string | null;
-  confirmedFault?: string | null;
-  facts?: string[] | null;
-  evidence?: string[] | null;
-}): string {
-  return [
-    draft.content,
-    draft.rationale,
-    draft.expectedResultHint,
-    draft.confirmedFault,
-    ...(draft.facts ?? []),
-    ...(draft.evidence ?? []),
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
 function normalizeSourceType(raw: string | null | undefined): TechnicalSourceType | null {
   if (!raw) return null;
   const key = raw.trim().toUpperCase().replace(/[\s-]+/g, "_");
@@ -70,7 +34,7 @@ function normalizeSourceType(raw: string | null | undefined): TechnicalSourceTyp
 }
 
 function looksVehicleSpecificClaim(text: string): boolean {
-  const n = normalize(text);
+  const n = normalizeForCompare(text);
   return (
     /(za ovo vozilo|na ovom vozilu|oem|tvornick|tvorničk|specifikac|pin\s*\d|pinout|moment|torque|cekaj \d|čekaj \d|\d+\s*(min|sek|s)\b)/.test(
       n,
@@ -97,7 +61,7 @@ export function findTechnicalSourceTypeIssue(
     technicalClaims?: TechnicalClaimPayload[] | null;
   },
 ): string | null {
-  const text = draftText(draft);
+  const text = draftBlob(draft);
   const claims = Array.isArray(draft.technicalClaims)
     ? draft.technicalClaims
     : [];
@@ -165,7 +129,7 @@ export function findTechnicalSourceTypeIssue(
       const st = normalizeSourceType(c.sourceType);
       return st === "UNKNOWN" || st === "MODEL_KNOWLEDGE";
     });
-    const n = normalize(text);
+    const n = normalizeForCompare(text);
     const presentsAsGeneral =
       /(opci princip|opći princip|general principle|uvijek je|uvijek iznosi)/.test(
         n,
@@ -290,12 +254,12 @@ export function findSafetyCriticalTestIssue(draft: {
 }): string | null {
   if (draft.actionType !== "TEST") return null;
 
-  const text = draftText(draft);
-  const normalized = normalize(text);
+  const text = draftBlob(draft);
+  const normalized = normalizeForCompare(text);
   const category = detectSafetyCategory(normalized);
   if (!category) return null;
 
-  const safetyBlob = normalize(
+  const safetyBlob = normalizeForCompare(
     [
       text,
       draft.safetyPreconditions?.category,
@@ -365,7 +329,7 @@ export function isSafetyCriticalTestDraft(draft: {
   evidence?: string[] | null;
 }): boolean {
   if (draft.actionType !== "TEST") return false;
-  return detectSafetyCategory(normalize(draftText(draft))) != null;
+  return detectSafetyCategory(normalizeForCompare(draftBlob(draft))) != null;
 }
 
 /** Combined safety + technical source guard. */

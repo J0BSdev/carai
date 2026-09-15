@@ -240,6 +240,20 @@ const UNIT_MAP: Record<string, string> = {
   psi: "psi",
 };
 
+const READING_WITH_UNIT =
+  /(-?\d+(?:[.,]\d+)?)\s*(v|mv|a|ma|ohm|bar|kpa|c|%|psi)\b/g;
+
+/** Negation directly governing the number: "nema 12 V" states absence, not a reading. */
+const NEGATED_BEFORE_VALUE = /\b(ne|nije|nema|bez|ni)\s+$/;
+
+/** Reference target the mechanic quotes ("trebalo bi biti 12 V"), not a measurement. */
+const REFERENCE_BEFORE_VALUE =
+  /\b(trebalo bi|trebao bi|trebala bi|mora biti|ocekivan\w*|normalno je|po specifikaciji)\s+(?:biti\s+)?$/;
+
+function textBefore(normalized: string, index: number | undefined): string {
+  return normalized.slice(0, index ?? 0);
+}
+
 function parseValue(
   normalized: string,
   fallbackUnit: string | null,
@@ -254,14 +268,15 @@ function parseValue(
     return null;
   }
 
-  // An explicit unit always marks a reading, wherever it sits in the answer.
-  const withUnit = normalized.match(
-    /(-?\d+(?:[.,]\d+)?)\s*(v|mv|a|ma|ohm|bar|kpa|c|%|psi)\b/,
-  );
-  if (withUnit) {
-    const value = Number(withUnit[1].replace(",", "."));
-    if (!Number.isFinite(value)) return null;
-    const rawUnit = withUnit[2].toLowerCase();
+  // An explicit unit marks a reading, wherever it sits — unless a negation or a
+  // quoted reference owns that number.
+  for (const match of normalized.matchAll(READING_WITH_UNIT)) {
+    const before = textBefore(normalized, match.index);
+    if (NEGATED_BEFORE_VALUE.test(before)) continue;
+    if (REFERENCE_BEFORE_VALUE.test(before)) continue;
+    const value = Number(match[1].replace(",", "."));
+    if (!Number.isFinite(value)) continue;
+    const rawUnit = match[2].toLowerCase();
     return { value, unit: UNIT_MAP[rawUnit] ?? rawUnit };
   }
 
@@ -276,16 +291,48 @@ function parseValue(
   return { value, unit: fallbackUnit };
 }
 
-function inferFallbackUnit(step: DiagnosticStep): string | null {
-  const blob = stepContextBlob(step);
-  if (/\bmA\b|miliamper/i.test(blob)) return "mA";
-  if (/\bA\b|amper/i.test(blob) && !/\bmA\b/i.test(blob)) return "A";
-  if (/\bV\b|volt/i.test(blob)) return "V";
-  if (/%|posto/i.test(blob)) return "%";
-  if (/Ω|ohm|otpor/i.test(blob)) return "Ω";
-  if (/bar|kPa|tlak/i.test(blob)) return "bar";
-  if (/°C|stupanj|temp/i.test(blob)) return "°C";
+/**
+ * Unit hints for a test instruction. Symbols are matched case-sensitively next to a
+ * number or in parentheses: lowercase "a"/"ma"/"v" are ordinary Croatian words, so a
+ * case-insensitive `\bA\b` would read "a zatim…" as amperes.
+ */
+const UNIT_HINTS: Array<{ unit: string; symbol: RegExp; word: RegExp }> = [
+  { unit: "mA", symbol: /(?:\d|\(\s*)\s*mA(?![A-Za-z])/, word: /miliamper/i },
+  { unit: "V", symbol: /(?:\d|\(\s*)\s*V(?![A-Za-z])/, word: /volt/i },
+  { unit: "A", symbol: /(?:\d|\(\s*)\s*A(?![A-Za-z])/, word: /amper/i },
+  { unit: "%", symbol: /%/, word: /\bposto\b/i },
+  { unit: "Ω", symbol: /Ω/, word: /\bohm|otpor/i },
+  {
+    unit: "bar",
+    symbol: /(?:\d|\(\s*)\s*(?:bar|kPa)(?![A-Za-z])/,
+    word: /\btlak/i,
+  },
+  { unit: "°C", symbol: /°\s*C/, word: /\bstupanj|\btemp/i },
+];
+
+/** Unit a test instruction implies, or null when the text names none. */
+export function inferUnitFromText(blob: string): string | null {
+  if (!blob.trim()) return null;
+  for (const hint of UNIT_HINTS) {
+    if (hint.symbol.test(blob) || hint.word.test(blob)) return hint.unit;
+  }
   return null;
+}
+
+function inferFallbackUnit(step: DiagnosticStep): string | null {
+  return inferUnitFromText(stepContextBlob(step));
+}
+
+/** True when the answer holds unit readings and every one of them is negated. */
+function readingsAreNegatedAbsence(normalized: string): boolean {
+  let sawReading = false;
+  for (const match of normalized.matchAll(READING_WITH_UNIT)) {
+    sawReading = true;
+    if (!NEGATED_BEFORE_VALUE.test(textBefore(normalized, match.index))) {
+      return false;
+    }
+  }
+  return sawReading;
 }
 
 /**
@@ -310,6 +357,11 @@ export function interpretTestResult(
   );
   if (numeric) {
     return { kind: "VALUE", value: numeric.value, unit: numeric.unit };
+  }
+
+  // "nema 12 V na konektoru" — the nominal value is what is missing, so it is a FAIL.
+  if (readingsAreNegatedAbsence(normalized)) {
+    return { kind: "FAIL" };
   }
 
   const polarity = detectPolarity(normalized);

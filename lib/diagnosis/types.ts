@@ -1,7 +1,7 @@
 export type CaseStatus = "active" | "completed";
 
 /** Primary AI action for one diagnostic turn (product spec). */
-export type AiActionType = "ASK" | "TEST" | "SEARCH_WEB" | "FINISH";
+export type AiActionType = "ASK" | "TEST" | "FINISH";
 
 export type HypothesisStatus =
   | "plausible"
@@ -47,8 +47,6 @@ export interface ExtractedCaseFacts {
   vehicle?: VehicleInfo;
   symptoms?: string[];
   dtcs?: string[];
-  priorTests?: string[];
-  observations?: string[];
   /** Legacy saved cases may hold plain strings here. */
   measurements?: Array<ExtractedMeasurement | string>;
 }
@@ -80,10 +78,7 @@ export interface RecommendedTest {
   };
 }
 
-/**
- * One AI turn: exactly one primary action (ASK | TEST | SEARCH_WEB | FINISH).
- * SEARCH_WEB is reserved for a later milestone; mock never emits it.
- */
+/** One AI turn: exactly one primary action (ASK | TEST | FINISH). */
 export interface DiagnosticStep {
   id: string;
   actionType: AiActionType;
@@ -94,8 +89,6 @@ export interface DiagnosticStep {
   evidence?: string[];
   hypotheses?: Hypothesis[];
   recommendedTest?: RecommendedTest;
-  searchQuery?: string;
-  sources?: SourceRef[];
   confirmedFault?: string;
   confidence?: "low" | "medium" | "high";
   /** Evidence-based ranking 0–100 for the leading diagnosis (FINISH). */

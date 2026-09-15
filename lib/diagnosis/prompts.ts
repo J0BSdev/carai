@@ -1,4 +1,6 @@
-import type { DiagnosticCase, Hypothesis } from "./types";
+import type { DiagnosticCase } from "./types";
+import { buildKnownFactsSnapshot, latestHypotheses } from "./known-facts";
+import { normalizeForCompare } from "./text";
 import {
   collectHistoricalReferenceClaims,
   findSpecGuardIssue,
@@ -7,7 +9,6 @@ import {
 import { findConfirmationGuardIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
-import { buildKnownFactsSnapshot } from "./known-facts";
 import { findAlreadyKnownInfoIssue } from "./known-facts-guard";
 import {
   legacyLexicalSameBranch,
@@ -20,8 +21,6 @@ import {
   isSkippedOrUnavailableResult,
   type TestResultInterpretation,
 } from "./test-result";
-
-export { testsAreSameDiagnosticBranch } from "./diagnostic-meta";
 
 export const DIAGNOSTIC_SYSTEM_PROMPT = `AI dijagnostički copilot za profesionalne mehaničare. ADAPTIVNA dijagnostika korak-po-korak (ne checklista/chatbot lista kvarova). Cilj: minimalan broj koraka do pouzdane dijagnoze.
 
@@ -127,23 +126,11 @@ Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
   }] | null
 }`;
 
-export { isSkippedOrUnavailableResult } from "./test-result";
-
-function latestHypothesesFromCase(
-  diagnosticCase: DiagnosticCase,
-): Hypothesis[] {
-  for (let i = diagnosticCase.steps.length - 1; i >= 0; i -= 1) {
-    const h = diagnosticCase.steps[i]?.hypotheses;
-    if (h && h.length > 0) return h;
-  }
-  return [];
-}
-
 /**
  * How a recorded result was interpreted. `ambiguous` results stay visible to the
  * model as raw text but never count as evidence.
  */
-export type StepResultKind =
+type StepResultKind =
   | "none"
   | "answer"
   | "value"
@@ -280,7 +267,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     }
   }
 
-  const currentHypotheses = latestHypothesesFromCase(diagnosticCase).map(
+  const currentHypotheses = latestHypotheses(diagnosticCase).map(
     (h) => ({
       hypothesis: h.label,
       status: h.status,
@@ -645,17 +632,6 @@ export function buildVerifierUserPrompt(
   ]
     .filter(Boolean)
     .join("\n");
-}
-
-/** Normalize text for cheap repetition checks. */
-export function normalizeForCompare(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9čćžšđ\s]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 /**

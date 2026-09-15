@@ -1,4 +1,3 @@
-import type { DiagnosticStep } from "./types";
 import { recordAiCall, type AiCallMeta, type AiTokenUsage } from "./ai-telemetry";
 
 export type LlmStepPayload = {
@@ -328,18 +327,3 @@ export function parseJson<T>(raw: string, label: string): T {
     throw new Error(`${label} nije valjani JSON.`);
   }
 }
-
-/** Narrow helper for typing step-shaped objects after verification. */
-export type DraftStepFields = Pick<
-  DiagnosticStep,
-  | "actionType"
-  | "content"
-  | "rationale"
-  | "expectedResultHint"
-  | "confirmedFault"
-  | "confidence"
-  | "insufficientEvidence"
-  | "facts"
-  | "evidence"
-  | "hypotheses"
->;

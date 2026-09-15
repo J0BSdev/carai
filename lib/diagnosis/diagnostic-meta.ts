@@ -1,4 +1,5 @@
 import type { DiagnosticStep } from "./types";
+import { normalizeForCompare } from "./text";
 
 /**
  * Branch-identity metadata for a TEST.
@@ -11,18 +12,8 @@ export type DiagnosticTestMeta = {
   testMethod?: string | null;
 };
 
-function normalizeMetaText(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9čćžšđ\s]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export function normalizeMetaKey(value: string | null | undefined): string {
-  return normalizeMetaText(value ?? "");
+  return normalizeForCompare(value ?? "");
 }
 
 export function metaKeysEqual(
@@ -38,20 +29,6 @@ export function metaKeysEqual(
     return true;
   }
   return false;
-}
-
-export function metaFromStep(
-  step: Pick<
-    DiagnosticStep,
-    "content" | "diagnosticTarget" | "diagnosticGoal" | "testMethod"
-  >,
-): DiagnosticTestMeta {
-  return {
-    content: step.content,
-    diagnosticTarget: step.diagnosticTarget ?? null,
-    diagnosticGoal: step.diagnosticGoal ?? null,
-    testMethod: step.testMethod ?? null,
-  };
 }
 
 export function metaFromDraft(draft: {
@@ -117,8 +94,8 @@ export function legacyLexicalSameBranch(
   contentA: string,
   contentB: string,
 ): boolean {
-  const a = normalizeMetaText(contentA);
-  const b = normalizeMetaText(contentB);
+  const a = normalizeForCompare(contentA);
+  const b = normalizeForCompare(contentB);
   if (!a || !b) return false;
   if (a === b || a.includes(b) || b.includes(a)) return true;
   const { ratio, inter } = tokenOverlap(
