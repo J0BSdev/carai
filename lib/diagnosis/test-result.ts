@@ -47,6 +47,8 @@ function normalizeResultText(text: string): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/ω/g, "ohm")
+    // Croatian decimal comma must survive punctuation stripping ("12,4 V").
+    .replace(/(\d),(\d)/g, "$1.$2")
     .replace(/[^a-z0-9.%\s-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -225,9 +227,23 @@ function detectPolarity(normalized: string): "pass" | "fail" | null {
   return null;
 }
 
+const UNIT_MAP: Record<string, string> = {
+  v: "V",
+  mv: "mV",
+  a: "A",
+  ma: "mA",
+  ohm: "Ω",
+  bar: "bar",
+  kpa: "kPa",
+  c: "°C",
+  "%": "%",
+  psi: "psi",
+};
+
 function parseValue(
   normalized: string,
   fallbackUnit: string | null,
+  allowUnitlessValue: boolean,
 ): { value: number; unit: string | null } | null {
   // Range answers are not a single VALUE.
   if (
@@ -238,29 +254,26 @@ function parseValue(
     return null;
   }
 
-  const m = normalized.match(
-    /(-?\d+(?:[.,]\d+)?)\s*(v|mv|a|ma|ohm|bar|kpa|c|%|psi)?\b/,
+  // An explicit unit always marks a reading, wherever it sits in the answer.
+  const withUnit = normalized.match(
+    /(-?\d+(?:[.,]\d+)?)\s*(v|mv|a|ma|ohm|bar|kpa|c|%|psi)\b/,
   );
-  if (!m) return null;
+  if (withUnit) {
+    const value = Number(withUnit[1].replace(",", "."));
+    if (!Number.isFinite(value)) return null;
+    const rawUnit = withUnit[2].toLowerCase();
+    return { value, unit: UNIT_MAP[rawUnit] ?? rawUnit };
+  }
 
-  const value = Number(m[1].replace(",", "."));
+  // Unitless number only when the step expects a reading, its unit is known,
+  // and the answer is nothing but that number. Otherwise an incidental count
+  // ("3 puta sam probao, ne radi") would outrank the polarity.
+  if (!allowUnitlessValue || !fallbackUnit) return null;
+  const bare = normalized.match(/^(-?\d+(?:[.,]\d+)?)$/);
+  if (!bare) return null;
+  const value = Number(bare[1].replace(",", "."));
   if (!Number.isFinite(value)) return null;
-
-  const rawUnit = (m[2] ?? "").toLowerCase();
-  const unitMap: Record<string, string> = {
-    v: "V",
-    mv: "mV",
-    a: "A",
-    ma: "mA",
-    ohm: "Ω",
-    bar: "bar",
-    kpa: "kPa",
-    c: "°C",
-    "%": "%",
-    psi: "psi",
-  };
-  const unit = rawUnit ? (unitMap[rawUnit] ?? rawUnit) : fallbackUnit;
-  return { value, unit };
+  return { value, unit: fallbackUnit };
 }
 
 function inferFallbackUnit(step: DiagnosticStep): string | null {
@@ -290,7 +303,11 @@ export function interpretTestResult(
   if (!normalized) return { kind: "AMBIGUOUS" };
 
   const fallbackUnit = inferFallbackUnit(step);
-  const numeric = parseValue(normalized, fallbackUnit);
+  const numeric = parseValue(
+    normalized,
+    fallbackUnit,
+    fallbackUnit != null && testRequiresNumericValue(step),
+  );
   if (numeric) {
     return { kind: "VALUE", value: numeric.value, unit: numeric.unit };
   }

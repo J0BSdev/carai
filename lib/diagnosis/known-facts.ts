@@ -33,10 +33,14 @@ export function extractDtcCodes(text: string): string[] {
     }
   }
 
-  // "P-0299" / "P 0299" / "C-40186"
-  for (const m of text
-    .toUpperCase()
-    .matchAll(/\b([PCBU])\s*[-–]?\s*([0-9A-F]{4,6})\b/g)) {
+  // "P-0299" / "C – 40186" — an explicit separator marks the code.
+  for (const m of text.matchAll(/\b([PCBU])\s?[-–]\s?([0-9A-F]{4,6})\b/gi)) {
+    found.add(`${m[1]}${m[2]}`.toUpperCase());
+  }
+
+  // "P 0299" — a bare space needs an uppercase code letter, otherwise Croatian
+  // prepositions swallow the next number ("u 2015", "na b 1234 rpm").
+  for (const m of text.matchAll(/\b([PCBU]) ([0-9A-F]{4,6})\b/g)) {
     found.add(`${m[1]}${m[2]}`);
   }
 
@@ -44,10 +48,13 @@ export function extractDtcCodes(text: string): string[] {
 }
 
 const MEASUREMENT_WITH_UNIT_RE =
-  /\d+(?:[.,]\d+)?\s*(?:ohm|bar|kPa|°C|mV|mA|Ω|V|A|%)/i;
+  /-?\d+(?:[.,]\d+)?\s*(?:ohm|bar|kPa|°C|mV|mA|Ω|V|A|%)(?![a-z])/gi;
 
+/** Only the matched value+unit spans — never the surrounding sentence. */
 function extractNumericMeasurements(text: string): string[] {
-  return MEASUREMENT_WITH_UNIT_RE.test(text) ? [text] : [];
+  return [...text.matchAll(MEASUREMENT_WITH_UNIT_RE)].map((m) =>
+    m[0].replace(/\s+/g, " ").trim(),
+  );
 }
 
 function uniqStrings(values: Array<string | undefined>): string[] {

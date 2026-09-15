@@ -39,7 +39,8 @@ export default function ResultModal({
       return ["Da", "Ne", "Nisam siguran"];
     }
     if (numeric) return [];
-    return ["Uobičajeno", "Neuobičajeno", "Nisam mogao utvrditi"];
+    // Wording must resolve to PASS/FAIL in interpretTestResult, not AMBIGUOUS.
+    return ["Ispravno", "Neispravno", "Nisam mogao utvrditi"];
   }, [step.actionType, numeric]);
 
   function reset() {
