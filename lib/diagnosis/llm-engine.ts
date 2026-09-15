@@ -58,7 +58,15 @@ import type {
 /** Max Claude regenerations after the initial draft, per user step. */
 const MAX_DIAGNOSTIC_RETRIES = 2;
 
-type RetryBudget = { used: number };
+/**
+ * Mutable state of one diagnostic turn. The semantic delta belongs to the turn, not
+ * to a single draft: a guard retry that omits semanticUpdate must not drop facts an
+ * earlier draft of the same turn already extracted.
+ */
+type DiagnosticTurn = {
+  retriesUsed: number;
+  extracted: ExtractedCaseFacts | null;
+};
 
 const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
 
@@ -429,29 +437,30 @@ function mergeSemanticUpdate(
     const patch: VehicleInfo = { ...vehicle };
     let vehicleChanged = false;
 
-    if (typeof rawVehicle.make === "string" && rawVehicle.make.trim()) {
-      patch.make = rawVehicle.make.trim();
+    const setField = <K extends keyof VehicleInfo>(
+      key: K,
+      value: VehicleInfo[K] | undefined,
+    ) => {
+      if (value === undefined || patch[key] === value) return;
+      patch[key] = value;
       vehicleChanged = true;
+    };
+
+    if (typeof rawVehicle.make === "string" && rawVehicle.make.trim()) {
+      setField("make", rawVehicle.make.trim());
     }
     if (typeof rawVehicle.model === "string" && rawVehicle.model.trim()) {
-      patch.model = rawVehicle.model.trim();
-      vehicleChanged = true;
+      setField("model", rawVehicle.model.trim());
     }
-    const year = parseAiYear(rawVehicle.year);
-    if (year !== undefined) {
-      patch.year = year;
-      vehicleChanged = true;
-    }
+    setField("year", parseAiYear(rawVehicle.year));
     if (typeof rawVehicle.engine === "string" && rawVehicle.engine.trim()) {
-      patch.engine = rawVehicle.engine.trim();
-      vehicleChanged = true;
+      setField("engine", rawVehicle.engine.trim());
     }
     if (
       typeof rawVehicle.mileage === "number" &&
       Number.isFinite(rawVehicle.mileage)
     ) {
-      patch.mileage = Math.round(rawVehicle.mileage);
-      vehicleChanged = true;
+      setField("mileage", Math.round(rawVehicle.mileage));
     }
 
     if (vehicleChanged) {
@@ -462,8 +471,11 @@ function mergeSemanticUpdate(
 
   const toAdd = normalizeSymptomList(update.symptomsAdd);
   if (toAdd.length) {
-    symptoms = dedupeSymptoms([...symptoms, ...toAdd]);
-    changed = true;
+    const merged = dedupeSymptoms([...symptoms, ...toAdd]);
+    if (merged.length !== symptoms.length) {
+      symptoms = merged;
+      changed = true;
+    }
   }
 
   const toRemove = normalizeSymptomList(update.symptomsRemove);
@@ -506,55 +518,55 @@ function mergeSemanticUpdate(
 }
 
 /**
- * Throwaway copy of the case with this draft's own facts applied, so guards and the
- * verifier judge the draft in the context it just created. Never persisted — a
- * rejected draft leaves no trace on the real case.
+ * Fold a diagnostic draft's semanticUpdate into the turn. Only drafts from the
+ * diagnostic model reach this, so the verifier never acts as extractor.
  */
-function caseWithSemanticUpdate(
+function recordSemanticUpdate(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
-): DiagnosticCase {
-  const update = draft.semanticUpdate;
-  if (!update || typeof update !== "object") return diagnosticCase;
-  const merged = mergeSemanticUpdate(diagnosticCase.extracted ?? {}, update);
-  return merged ? { ...diagnosticCase, extracted: merged } : diagnosticCase;
-}
-
-/** Persist case facts — only for the finally accepted turn. */
-function persistSemanticUpdate(
-  diagnosticCase: DiagnosticCase,
-  update: LlmStepPayload["semanticUpdate"],
 ): void {
+  const update = draft.semanticUpdate;
   if (!update || typeof update !== "object") return;
-  const merged = mergeSemanticUpdate(diagnosticCase.extracted ?? {}, update);
-  if (merged) diagnosticCase.extracted = merged;
+  const merged = mergeSemanticUpdate(
+    turn.extracted ?? diagnosticCase.extracted ?? {},
+    update,
+  );
+  if (merged) turn.extracted = merged;
 }
 
 /**
- * The verifier corrects the action; the semantic delta stays the diagnostic model's.
- * Carrying it over keeps extraction alive through a correctedStep without letting the
- * verifier act as extractor.
+ * Throwaway copy of the case carrying the turn's facts, so every part of the turn
+ * judges the draft against the same state. Never persisted — a rejected draft
+ * leaves no trace on the real case.
  */
-function withSemanticDeltaFrom(
-  corrected: LlmStepPayload,
-  source: LlmStepPayload,
-): LlmStepPayload {
-  if (corrected.semanticUpdate === source.semanticUpdate) return corrected;
-  return { ...corrected, semanticUpdate: source.semanticUpdate };
+function caseForTurn(
+  turn: DiagnosticTurn,
+  diagnosticCase: DiagnosticCase,
+): DiagnosticCase {
+  if (!turn.extracted) return diagnosticCase;
+  return { ...diagnosticCase, extracted: turn.extracted };
 }
 
-/** Guards evaluate the draft against the case including the draft's own facts. */
+/** Persist case facts — only once the turn is accepted. */
+function persistSemanticUpdate(
+  diagnosticCase: DiagnosticCase,
+  turn: DiagnosticTurn,
+): void {
+  if (turn.extracted) diagnosticCase.extracted = turn.extracted;
+}
+
+/** Guards evaluate the draft against the case including the turn's own facts. */
 function findDraftQualityIssueInTurn(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): string | null {
-  return findDraftQualityIssue(
-    caseWithSemanticUpdate(diagnosticCase, draft),
-    draft,
-  );
+  return findDraftQualityIssue(caseForTurn(turn, diagnosticCase), draft);
 }
 
 async function draftWithClaude(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   userPrompt: string,
   callMeta?: {
@@ -586,44 +598,49 @@ async function draftWithClaude(
       : undefined,
   });
 
-  return parseJson<LlmStepPayload>(raw, "Claude dijagnostički odgovor");
+  const draft = parseJson<LlmStepPayload>(raw, "Claude dijagnostički odgovor");
+  recordSemanticUpdate(turn, diagnosticCase, draft);
+  return draft;
 }
 
 async function regenerateWithClaude(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   issues: string[],
-  budget: RetryBudget,
   reasonCalled: string = "quality_gate",
 ): Promise<LlmStepPayload> {
-  if (budget.used >= MAX_DIAGNOSTIC_RETRIES) {
+  if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
     throw new Error(
       `Dosegnut MAX_DIAGNOSTIC_RETRIES=${MAX_DIAGNOSTIC_RETRIES}; nema dodatnih Claude retryjeva.`,
     );
   }
-  budget.used += 1;
+  turn.retriesUsed += 1;
 
   const step = getActiveAiStep();
   const primaryIssue = issues[0] ?? reasonCalled;
   logGuardRetry({
     stepNumber: step?.stepNumber ?? diagnosticCase.steps.length + 1,
     guard: classifyGuardName(primaryIssue),
-    retryNumber: budget.used,
+    retryNumber: turn.retriesUsed,
     issueSummary: primaryIssue,
   });
 
+  const turnCase = caseForTurn(turn, diagnosticCase);
   return draftWithClaude(
-    diagnosticCase,
-    buildDiagnosticRetryPrompt(diagnosticCase, draft, issues),
+    turn,
+    turnCase,
+    buildDiagnosticRetryPrompt(turnCase, draft, issues),
     {
       role: "diagnostic_retry",
       reasonCalled,
-      retryNumber: budget.used,
+      retryNumber: turn.retriesUsed,
     },
   );
 }
 
 async function verifyWithOpenAi(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   options?: {
@@ -646,7 +663,7 @@ async function verifyWithOpenAi(
     model,
     system: VERIFIER_SYSTEM_PROMPT,
     user: buildVerifierUserPrompt(
-      caseWithSemanticUpdate(diagnosticCase, draft),
+      caseForTurn(turn, diagnosticCase),
       draft,
       {
         previousIssues: options?.previousIssues,
@@ -790,7 +807,6 @@ function buildSafeVerifierFallback(
         },
       ],
     },
-    semanticUpdate: draft.semanticUpdate,
     facts: draft.facts ?? null,
     evidence: draft.evidence ?? null,
     hypotheses: draft.hypotheses ?? null,
@@ -880,7 +896,7 @@ async function callVerifiedDiagnosticStep(
 ): Promise<DiagnosticStep> {
   const stepNumber = diagnosticCase.steps.length + 1;
   const stepId = `step-${stepNumber}`;
-  const budget: RetryBudget = { used: 0 };
+  const turn: DiagnosticTurn = { retriesUsed: 0, extracted: null };
 
   return runAiStep(
     {
@@ -890,62 +906,66 @@ async function callVerifiedDiagnosticStep(
     },
     async () => {
       let draft = await draftWithClaude(
+        turn,
         diagnosticCase,
         buildDiagnosticUserPrompt(diagnosticCase),
         { role: "diagnostic", reasonCalled: "initial", retryNumber: 0 },
       );
 
-      draft = await ensureDraftPassesQualityGates(diagnosticCase, draft, budget);
-      draft = await applyConfirmationPolicy(diagnosticCase, draft);
+      draft = await ensureDraftPassesQualityGates(turn, diagnosticCase, draft);
+      draft = await applyConfirmationPolicy(
+        caseForTurn(turn, diagnosticCase),
+        draft,
+      );
 
-      if (shouldCallVerifier(diagnosticCase, draft)) {
-        draft = await runSelectiveVerifier(diagnosticCase, draft, budget);
+      if (shouldCallVerifier(caseForTurn(turn, diagnosticCase), draft)) {
+        draft = await runSelectiveVerifier(turn, diagnosticCase, draft);
       }
 
-      draft = await applyConfirmationPolicy(diagnosticCase, draft);
+      draft = await applyConfirmationPolicy(
+        caseForTurn(turn, diagnosticCase),
+        draft,
+      );
 
       // Turn accepted — only now do the model's case facts reach the real case.
-      persistSemanticUpdate(diagnosticCase, draft.semanticUpdate);
+      persistSemanticUpdate(diagnosticCase, turn);
       return toDiagnosticStep(draft, stepId);
     },
   );
 }
 
 async function applyVerifierCorrection(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   corrected: LlmStepPayload,
-  budget: RetryBudget,
-  source: LlmStepPayload,
 ): Promise<LlmStepPayload> {
-  const carried = withSemanticDeltaFrom(corrected, source);
-  const correctedIssue = findDraftQualityIssueInTurn(diagnosticCase, carried);
-  if (!correctedIssue) return carried;
-  return ensureDraftPassesQualityGates(diagnosticCase, carried, budget, [
+  const correctedIssue = findDraftQualityIssueInTurn(
+    turn,
+    diagnosticCase,
+    corrected,
+  );
+  if (!correctedIssue) return corrected;
+  return ensureDraftPassesQualityGates(turn, diagnosticCase, corrected, [
     correctedIssue,
   ]);
 }
 
 async function runSelectiveVerifier(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   initialDraft: LlmStepPayload,
-  budget: RetryBudget,
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
   const collectedIssues: string[] = [];
 
-  let verdict = await verifyWithOpenAi(diagnosticCase, draft, {
+  let verdict = await verifyWithOpenAi(turn, diagnosticCase, draft, {
     retryNumber: 0,
     reasonCalled: "verifier_required",
   });
   if (verdict.approved) return draft;
 
   if (verdict.correctedStep) {
-    return applyVerifierCorrection(
-      diagnosticCase,
-      verdict.correctedStep,
-      budget,
-      draft,
-    );
+    return applyVerifierCorrection(turn, diagnosticCase, verdict.correctedStep);
   }
 
   collectedIssues.push(
@@ -954,31 +974,30 @@ async function runSelectiveVerifier(
       : ["Primary verifier odbio draft"]),
   );
 
-  if (budget.used < MAX_DIAGNOSTIC_RETRIES) {
+  if (turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES) {
     draft = await regenerateWithClaude(
+      turn,
       diagnosticCase,
       draft,
       collectedIssues,
-      budget,
       "verifier_rejected",
     );
-    draft = await ensureDraftPassesQualityGates(diagnosticCase, draft, budget);
+    draft = await ensureDraftPassesQualityGates(turn, diagnosticCase, draft);
 
-    if (!shouldCallVerifier(diagnosticCase, draft)) {
+    if (!shouldCallVerifier(caseForTurn(turn, diagnosticCase), draft)) {
       return draft;
     }
 
-    verdict = await verifyWithOpenAi(diagnosticCase, draft, {
+    verdict = await verifyWithOpenAi(turn, diagnosticCase, draft, {
       retryNumber: 1,
       reasonCalled: "verifier_required",
     });
     if (verdict.approved) return draft;
     if (verdict.correctedStep) {
       return applyVerifierCorrection(
+        turn,
         diagnosticCase,
         verdict.correctedStep,
-        budget,
-        draft,
       );
     }
     collectedIssues.push(
@@ -988,26 +1007,29 @@ async function runSelectiveVerifier(
     );
   }
 
-  if (shouldEscalateToStrongVerifier(diagnosticCase, draft, collectedIssues)) {
-    return runStrongVerifierOnce(diagnosticCase, draft, collectedIssues);
+  const turnCase = caseForTurn(turn, diagnosticCase);
+  if (shouldEscalateToStrongVerifier(turnCase, draft, collectedIssues)) {
+    return runStrongVerifierOnce(turn, diagnosticCase, draft, collectedIssues);
   }
 
-  return buildSafeVerifierFallback(diagnosticCase, draft, collectedIssues);
+  return buildSafeVerifierFallback(turnCase, draft, collectedIssues);
 }
 
 async function runStrongVerifierOnce(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   previousIssues: string[],
 ): Promise<LlmStepPayload> {
+  const turnCase = caseForTurn(turn, diagnosticCase);
   const strongModel = getStrongVerifierModel();
   if (!strongModel) {
-    return buildSafeVerifierFallback(diagnosticCase, draft, previousIssues);
+    return buildSafeVerifierFallback(turnCase, draft, previousIssues);
   }
 
   diagnosticCase.strongVerifierUsed = true;
 
-  const verdict = await verifyWithOpenAi(diagnosticCase, draft, {
+  const verdict = await verifyWithOpenAi(turn, diagnosticCase, draft, {
     model: strongModel,
     previousIssues,
     strongFinal: true,
@@ -1020,37 +1042,41 @@ async function runStrongVerifierOnce(
   }
 
   if (verdict.correctedStep) {
-    const corrected = withSemanticDeltaFrom(verdict.correctedStep, draft);
+    const corrected = verdict.correctedStep;
     const correctedIssue = findDraftQualityIssueInTurn(
+      turn,
       diagnosticCase,
       corrected,
     );
     if (!correctedIssue) {
-      return applyConfirmationPolicy(diagnosticCase, corrected);
+      return applyConfirmationPolicy(turnCase, corrected);
     }
-    return buildSafeVerifierFallback(diagnosticCase, draft, [
+    return buildSafeVerifierFallback(turnCase, draft, [
       ...previousIssues,
       ...verdict.issues,
       correctedIssue,
     ]);
   }
 
-  return buildSafeVerifierFallback(diagnosticCase, draft, [
+  return buildSafeVerifierFallback(turnCase, draft, [
     ...previousIssues,
     ...verdict.issues,
   ]);
 }
 
 async function ensureDraftPassesQualityGates(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   initialDraft: LlmStepPayload,
-  budget: RetryBudget,
   extraIssues: string[] = [],
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
 
   if (draft.actionType === "FINISH") {
-    const confIssue = findConfirmationGuardIssue(diagnosticCase, draft);
+    const confIssue = findConfirmationGuardIssue(
+      caseForTurn(turn, diagnosticCase),
+      draft,
+    );
     if (confIssue) {
       draft = {
         ...downgradeUnjustifiedConfirmed(draft, confIssue),
@@ -1059,47 +1085,48 @@ async function ensureDraftPassesQualityGates(
     }
   }
 
-  let issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
+  let issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
   let pendingExtra = [...extraIssues];
   if (!issue && pendingExtra.length === 0) return draft;
 
-  if (budget.used >= MAX_DIAGNOSTIC_RETRIES) {
-    return finalizeAfterRetryLimit(diagnosticCase, draft, issue);
+  if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
+    return finalizeAfterRetryLimit(turn, diagnosticCase, draft, issue);
   }
 
   draft = await regenerateWithClaude(
+    turn,
     diagnosticCase,
     draft,
     buildGuardRetryIssues(draft, issue, pendingExtra),
-    budget,
   );
   pendingExtra = [];
-  issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
+  issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
 
   if (
     draft.actionType === "ASK" &&
     issue &&
-    budget.used < MAX_DIAGNOSTIC_RETRIES
+    turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES
   ) {
     draft = await regenerateWithClaude(
+      turn,
       diagnosticCase,
       draft,
       [
         issue,
         "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
       ],
-      budget,
     );
-    issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
+    issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
   }
 
   if (
     issue &&
     /SAFETY REJECT/i.test(issue) &&
     draft.actionType === "TEST" &&
-    budget.used < MAX_DIAGNOSTIC_RETRIES
+    turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES
   ) {
     draft = await regenerateWithClaude(
+      turn,
       diagnosticCase,
       draft,
       [
@@ -1110,15 +1137,15 @@ async function ensureDraftPassesQualityGates(
         "Ne izmišljaj vehicle-specific vrijeme čekanja — needsVerifiedProcedure=true.",
         "technicalClaims[]: svaka tvrdnja mora imati ispravan sourceType.",
       ],
-      budget,
     );
-    issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
+    issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
   }
 
   if (!issue) return draft;
 
-  if (budget.used < MAX_DIAGNOSTIC_RETRIES) {
+  if (turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES) {
     draft = await regenerateWithClaude(
+      turn,
       diagnosticCase,
       draft,
       buildGuardRetryIssues(draft, issue, [
@@ -1128,16 +1155,16 @@ async function ensureDraftPassesQualityGates(
         "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…) bez verifiedTechnicalSpecs.",
         "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
       ]),
-      budget,
     );
-    issue = findDraftQualityIssueInTurn(diagnosticCase, draft);
+    issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
     if (!issue) return draft;
   }
 
-  return finalizeAfterRetryLimit(diagnosticCase, draft, issue);
+  return finalizeAfterRetryLimit(turn, diagnosticCase, draft, issue);
 }
 
 function finalizeAfterRetryLimit(
+  turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   issue: string | null,
@@ -1169,7 +1196,7 @@ function finalizeAfterRetryLimit(
     };
   }
 
-  const still = findDraftQualityIssueInTurn(diagnosticCase, next);
+  const still = findDraftQualityIssueInTurn(turn, diagnosticCase, next);
   if (!still) return next;
 
   if (next.actionType === "FINISH") {
