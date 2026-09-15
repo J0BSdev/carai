@@ -658,18 +658,15 @@ async function verifyWithOpenAi(
 
   const model = options?.model ?? getVerifierModel();
   const step = getActiveAiStep();
+  const turnCase = caseForTurn(turn, diagnosticCase);
   const raw = await callOpenAiJson({
     apiKey,
     model,
     system: VERIFIER_SYSTEM_PROMPT,
-    user: buildVerifierUserPrompt(
-      caseForTurn(turn, diagnosticCase),
-      draft,
-      {
-        previousIssues: options?.previousIssues,
-        strongFinal: options?.strongFinal,
-      },
-    ),
+    user: buildVerifierUserPrompt(turnCase, draft, {
+      previousIssues: options?.previousIssues,
+      strongFinal: options?.strongFinal,
+    }),
     telemetry: step
       ? {
           caseId: step.caseId,
@@ -692,9 +689,9 @@ async function verifyWithOpenAi(
   };
 
   const contradiction =
-    findReasoningConsistencyIssue(diagnosticCase, draft) ??
+    findReasoningConsistencyIssue(turnCase, draft) ??
     (verdict.correctedStep
-      ? findReasoningConsistencyIssue(diagnosticCase, verdict.correctedStep)
+      ? findReasoningConsistencyIssue(turnCase, verdict.correctedStep)
       : null);
   if (contradiction) {
     return {
