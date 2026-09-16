@@ -232,6 +232,20 @@ function isClearlyLiveHvWork(normalized: string): boolean {
   );
 }
 
+/** Scan / live data / visual — not physical work on a live high-energy assembly. */
+function looksLikeScanOrInspectionOnly(normalized: string): boolean {
+  const scanOrInspect =
+    /(ocitaj|ocitati|procitaj|skenir|scan|live data|pid\b|freeze|dtc|kodov|vizual|pregled|logiraj)/.test(
+      normalized,
+    );
+  if (!scanOrInspect) return false;
+  const physical =
+    /(konektor|connector|uticnica|utikač|rastavi|skini|odspoji|odspoj|service plug|service disconnect|orange cable|narancast|narančast|snop|zica|žica)/.test(
+      normalized,
+    );
+  return !physical;
+}
+
 function draftSafetyBlob(draft: {
   content?: string;
   rationale?: string;
@@ -294,7 +308,11 @@ export function findSafetyCriticalTestIssue(draft: {
   return null;
 }
 
-/** True when TEST text touches SRS/HV/brakes/other safety-critical work (for selective verifier). */
+/**
+ * Selective verifier routing: only actually high-energy physical work.
+ * Keyword-only SRS/HV/brake TESTs (DTC read, scan, visual, ordinary metering)
+ * must not force OpenAI.
+ */
 export function isSafetyCriticalTestDraft(draft: {
   actionType?: string;
   content?: string;
@@ -305,7 +323,11 @@ export function isSafetyCriticalTestDraft(draft: {
   evidence?: string[] | null;
 }): boolean {
   if (draft.actionType !== "TEST") return false;
-  return detectSafetyCategory(normalizeForCompare(draftBlob(draft))) != null;
+  const normalized = normalizeForCompare(draftBlob(draft));
+  if (looksLikeScanOrInspectionOnly(normalized)) return false;
+  return (
+    isClearlyLiveSrsWork(normalized) || isClearlyLiveHvWork(normalized)
+  );
 }
 
 /** Combined safety + technical source guard. */
