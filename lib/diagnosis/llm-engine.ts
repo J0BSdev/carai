@@ -849,7 +849,7 @@ function buildGuardRetryIssues(
       ? "Skipped test s istim testMethod — predloži DRUGAČIJI testMethod za isti diagnosticGoal, ili novi goal."
       : "",
     safetyRejected
-      ? "SAFETY REJECT: regeneriraj isti TEST (isti diagnosticTarget + diagnosticGoal) s obaveznim safetyPreconditions + upozorenjima u content (SRS: deaktivacija/odspajanje napajanja prije rada; ne izmišljaj wait time — needsVerifiedProcedure)."
+      ? "SAFETY REJECT: isti TEST (isti diagnosticTarget + diagnosticGoal). Dodaj 1 kratku praktičnu rečenicu što napraviti PRIJE rada. Ne checklista. Ne izmišljaj wait time."
       : "",
     !goalRejected &&
       !askRejected &&
@@ -1117,10 +1117,9 @@ async function ensureDraftPassesQualityGates(
       draft,
       [
         issue,
-        "OBAVEZNO: actionType=TEST s safetyPreconditions.",
-        "U content na početku navedi sigurnosne korake.",
-        "SRS/airbag konektor/modul: deaktiviraj sustav / odspoji napajanje PRIJE rada.",
-        "Ne izmišljaj vehicle-specific vrijeme čekanja — needsVerifiedProcedure=true.",
+        "OBAVEZNO: actionType=TEST.",
+        "Dodaj 1 kratku praktičnu rečenicu u content (što napraviti PRIJE rada).",
+        "Ne checklista. Ne izmišljaj wait time/OEM proceduru.",
         "technicalClaims[]: svaka tvrdnja mora imati ispravan sourceType.",
       ],
     );

@@ -198,22 +198,7 @@ function involvesConnectorOrModuleWork(normalized: string): boolean {
   );
 }
 
-function hasSrsDeactivationWarning(normalized: string): boolean {
-  return (
-    /(deaktiv|iskljuc|isključ|odspoji|odspoj|disconnect).{0,40}(srs|airbag|jastuk|napajanj|baterij|akumulator)/.test(
-      normalized,
-    ) ||
-    /(srs|airbag|jastuk).{0,40}(deaktiv|iskljuc|isključ|odspoji|odspoj|disconnect)/.test(
-      normalized,
-    ) ||
-    /(odspoji baterij|odspoji akumulator|iskljuci paljenje i odspoji|prije rada.*napajan)/.test(
-      normalized,
-    )
-  );
-}
-
 function inventsVehicleSpecificWaitOrProcedure(normalized: string): boolean {
-  // Invented wait times / OEM procedure specifics without verified caveat
   const inventsWait =
     /(pricekaj|pričekaj|cekaj|čekaj|wait)\s+\d+\s*(min|minut|sek|s|second)/.test(
       normalized,
@@ -225,43 +210,37 @@ function inventsVehicleSpecificWaitOrProcedure(normalized: string): boolean {
   return inventsWait && !admitsUnverified;
 }
 
-function hasHvSafetyBasics(normalized: string): boolean {
-  return (
-    /(izol|hv isolat|service plug|service disconnect|ppe|rukavic|visokonapon)/.test(
-      normalized,
-    ) &&
-    /(odspoji|deaktiv|iskljuc|isključ|provjeri napon|discharge|praznjen)/.test(
-      normalized,
-    )
-  );
-}
-
-function hasBrakeSafetyBasics(normalized: string): boolean {
-  return /(osiguraj vozilo|podupri|stand|odzraci|odzrači|tlak.*pusti|depressur|sigurnos)/.test(
+/** Any short practical caution — AI owns the wording. */
+function hasAnySafetyLanguage(normalized: string): boolean {
+  return /(odspoji|deaktiv|iskljuc|isključ|ppe|rukavic|izol|service plug|service disconnect|prije rada|napajan.*prije|baterij.*prije|akumulator.*prije|verificiran\w* procedur|needs verified procedure)/.test(
     normalized,
   );
 }
 
-/**
- * Reject safety-critical TESTs missing mandatory safety preconditions.
- */
-export function findSafetyCriticalTestIssue(draft: {
-  actionType?: string;
+function isClearlyLiveSrsWork(normalized: string): boolean {
+  const category = detectSafetyCategory(normalized);
+  return (
+    (category === "SRS" || category === "OTHER_CRITICAL") &&
+    involvesConnectorOrModuleWork(normalized)
+  );
+}
+
+function isClearlyLiveHvWork(normalized: string): boolean {
+  if (detectSafetyCategory(normalized) !== "HV") return false;
+  return /(orange cable|narancast|narančast|inverter|service plug|service disconnect|traction battery|visokonaponsk)/.test(
+    normalized,
+  );
+}
+
+function draftSafetyBlob(draft: {
   content?: string;
   rationale?: string;
   expectedResultHint?: string | null;
   safetyPreconditions?: SafetyPreconditionsPayload | null;
-}): string | null {
-  if (draft.actionType !== "TEST") return null;
-
-  const text = draftBlob(draft);
-  const normalized = normalizeForCompare(text);
-  const category = detectSafetyCategory(normalized);
-  if (!category) return null;
-
-  const safetyBlob = normalizeForCompare(
+}): string {
+  return normalizeForCompare(
     [
-      text,
+      draftBlob(draft),
       draft.safetyPreconditions?.category,
       ...(draft.safetyPreconditions?.warnings ?? []),
       ...(draft.safetyPreconditions?.requiredSteps ?? []),
@@ -272,46 +251,43 @@ export function findSafetyCriticalTestIssue(draft: {
       .filter(Boolean)
       .join(" "),
   );
+}
 
-  const prefix =
-    "SAFETY REJECT: safety-critical TEST ne smije se prikazati bez obaveznih safety preconditions. Regeneriraj TEST sa sigurnosnim koracima. ";
+/**
+ * Light fail-safe only: clearly live high-energy TESTs with no caution at all,
+ * or invented numeric wait times. AI owns whether/how to warn on ordinary tests.
+ */
+export function findSafetyCriticalTestIssue(draft: {
+  actionType?: string;
+  content?: string;
+  rationale?: string;
+  expectedResultHint?: string | null;
+  safetyPreconditions?: SafetyPreconditionsPayload | null;
+}): string | null {
+  if (draft.actionType !== "TEST") return null;
 
-  if (category === "SRS") {
-    if (
-      involvesConnectorOrModuleWork(normalized) &&
-      !hasSrsDeactivationWarning(safetyBlob)
-    ) {
-      return (
-        prefix +
-        "SRS/airbag rad na konektorima/modulu zahtijeva jasno upozorenje: deaktivacija sustava / odspajanje napajanja PRIJE rada."
-      );
-    }
-    if (inventsVehicleSpecificWaitOrProcedure(normalized)) {
-      return (
-        prefix +
-        "Ne izmišljaj vehicle-specific SRS vrijeme čekanja/postupak. Označi needsVerifiedProcedure=true i reci da treba verificiranu proceduru."
-      );
-    }
-  }
-
-  if (category === "HV" && !hasHvSafetyBasics(safetyBlob)) {
+  const normalized = normalizeForCompare(draftBlob(draft));
+  if (inventsVehicleSpecificWaitOrProcedure(normalized)) {
     return (
-      prefix +
-      "HV/hybrid rad zahtijeva sigurnosne preconditions (izolacija HV, PPE, provjera napona/pražnjenje). Ne izmišljaj OEM wait time — traži verificiranu proceduru ako treba."
+      "SAFETY REJECT: ne izmišljaj vehicle-specific wait/OEM postupak. " +
+      "Jedna rečenica da treba verificiranu proceduru — bez izmišljenih minuta."
     );
   }
 
-  if (category === "BRAKES" && !hasBrakeSafetyBasics(safetyBlob)) {
+  const safetyBlob = draftSafetyBlob(draft);
+  if (hasAnySafetyLanguage(safetyBlob)) return null;
+
+  if (isClearlyLiveSrsWork(normalized)) {
     return (
-      prefix +
-      "Rad na kočnicama zahtijeva sigurnosne preconditions (osiguranje vozila / kontrola tlaka / pravilni postupak). Regeneriraj TEST sa safety koracima."
+      "SAFETY REJECT: živi SRS/airbag rad na konektoru/modulu treba 1 kratku praktičnu rečenicu " +
+      "(odspoji napajanje prije rada). Bez checklisti i bez izmišljenog wait time."
     );
   }
 
-  if (category === "OTHER_CRITICAL" && !hasSrsDeactivationWarning(safetyBlob)) {
+  if (isClearlyLiveHvWork(normalized)) {
     return (
-      prefix +
-      "Safety-critical rad zahtijeva jasne safety preconditions prije izvođenja."
+      "SAFETY REJECT: živi HV rad treba 1 kratku praktičnu rečenicu " +
+      "(izolacija / odspajanje prije rada). Ne izmišljaj OEM wait."
     );
   }
 

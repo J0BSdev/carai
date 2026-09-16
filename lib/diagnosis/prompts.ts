@@ -33,11 +33,11 @@ SPEC: ne izmišljaj vehicle-specific (Ω/V/bar/°C/pinovi/torque/OEM pragovi/kap
 technicalClaims[].sourceType OBAVEZAN: VERIFIED_OEM|VERIFIED_TECHNICAL|GENERAL_PRINCIPLE|MODEL_KNOWLEDGE|UNKNOWN. Vehicle-specific ≠ GENERAL_PRINCIPLE; MODEL_KNOWLEDGE/UNKNOWN ≠ verified; VERIFIED_* samo iz verifiedTechnicalSpecs.
 Dokazi: MEASURED_EVIDENCE=rezultati mehaničara; REFERENCE_SPEC=dokaz samo ako VERIFIED; INDEPENDENT_CONFIRMATORY=različite grane (ne broji isti signal više puta).
 
-SAFETY: SRS/HV/kočnice/slično TEST → safetyPreconditions + koraci u content; SRS konektor/modul → deaktivacija/odspajanje napajanja PRIJE rada; ne izmišljaj wait time → needsVerifiedProcedure=true.
+SAFETY: TI odlučuješ treba li warning. Rutinski profesionalni testovi (multimetar, vizual, DTC, dim, vakuum) — BEZ upozorenja. Warning SAMO uz stvaran rizik (živi SRS/airbag konektor/modul, HV/narančasti kabeli, otvoreni hidraulički tlak, pirotehnika): max 1 kratka praktična rečenica u content (što napraviti PRIJE rada). Ne checklista. Ne izmišljaj wait time/OEM proceduru. safetyPreconditions samo uz taj warning; inače izostavi.
 
 ASK: samo decision-critical; svi odgovori → isti TEST ⇒ uradi TEST. askDecision OBAVEZAN: whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s različitim nextAction. Max 1 ASK zaredom osim jasne grane. Preferiraj TEST nad ASK čim ima smisla. candidateQuestionChangesNextAction===false → ne ASK.
 
-TEST: JEDAN test koji razlikuje vodeću hipotezu od najjače alternative (ne "što još nisam"). PRIORITY: ako sigurno/izvedivo → DIREKTAN mjerni test na granici komponente (ulaz/napajanje/masa/signal) PRIJE upstream/indirektnog (relej/osigurač/ECU/zvuk/vizual/"čest uzrok"); razdvoji kvar komponente vs napajanje/masa/upravljanje; upstream tek ako ulaz na komponenti nedostaje; indirektni quick-check prvi samo ako bitno brži, siguran i mijenja granu; bez izmišljenih pinova/napona/postupaka.
+TEST: JEDAN test koji razlikuje vodeću hipotezu od najjače alternative (ne "što još nisam"). Content: što provjeriti; kako okvirno; što vratiti kao rezultat (expectedResultHint). Više detalja samo kad test nije rutinski ili kad postoji rizik — profesionalcu ne objašnjavaj osnovni alat. PRIORITY: ako sigurno/izvedivo → DIREKTAN mjerni test na granici komponente (ulaz/napajanje/masa/signal) PRIJE upstream/indirektnog (relej/osigurač/ECU/zvuk/vizual/"čest uzrok"); razdvoji kvar komponente vs napajanje/masa/upravljanje; upstream tek ako ulaz na komponenti nedostaje; indirektni quick-check prvi samo ako bitno brži, siguran i mijenja granu; bez izmišljenih pinova/napona/postupaka.
 Semantički sličan completed/skipped (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz → ALTERNATIVNI put, ne parafraza; nema alternative → ASK ili FINISH + insufficientEvidence.
 Prije kandidata: (A) nova info? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking? (E) različiti rezultati → različiti koraci? D/E fail ili candidateChangesHypothesisRanking===false → REJECT.
 
@@ -52,7 +52,7 @@ OUTPUT COMPACT (ASK/TEST posebno — ne troši tokene):
 - rationale: max 1–2 kratke rečenice (kod TEST: koje 2 hipoteze razlikuje).
 - Ne generiraj redundantne facts/evidence (obično izostavi).
 - hypotheses: max 3, kratki label; supporting/contradictingEvidence kratko ili izostavi.
-- technicalClaims samo uz stvarnu tvrdnju/spec; safetyPreconditions samo za safety-critical TEST.
+- technicalClaims samo uz stvarnu tvrdnju/spec; safetyPreconditions samo uz stvaran rizik (1 kratki warning); inače izostavi.
 - Za TEST OBAVEZNO 3 kratka metadata polja (2–6 riječi, stabilan label):
   diagnosticTarget = što se testira; diagnosticGoal = koju informaciju tražiš; testMethod = kako.
   Ista dijagnostička grana = isti diagnosticGoal (ne ponavljaj ga drugim wordingom).
@@ -534,7 +534,7 @@ Provjeri ISKLJUČIVO:
 
 5) SPEC — ne izmišlja vehicle-specific brojke/raspove/pinove koji nisu u verifiedTechnicalSpecs; AI claim ≠ VERIFIED; UNVERIFIED ≠ dokaz; ne mijenja locked claimedReferenceSpecs; sourceType obavezan; vehicle-specific ≠ GENERAL_PRINCIPLE; MODEL_KNOWLEDGE/UNKNOWN ≠ verified.
 
-6) SAFETY — SRS/HV/kočnice/slično TEST mora imati safetyPreconditions (+ deaktivacija/odspajanje napajanja za SRS konektor/modul); ne izmišlja wait time → needsVerifiedProcedure.
+6) SAFETY — AI je autor warninga. Odbij SAMO jasno opasan TEST (živi SRS/airbag konektor/modul, HV narančasti kabeli/inverter, pirotehnika) bez ijedne kratke praktične rečenice što napraviti PRIJE rada. Ne zahtijevaj warning ni safetyPreconditions na rutinskim testovima. Ne izmišlja wait time.
 
 7) FINISH / CONFIRMED — ne prerani FINISH; CONFIRMED samo uz jak neovisni potvrđujući dokaz (ne 1 simptom/DTC/neprovjerena spece/visok %); ne ignoriraj jake alternative; rejectedDiagnoses → ne CONFIRMED bez novog neovisnog dokaza; measured vs expected bez VERIFIED → ne CONFIRMED. Za FINISH očekuj diagnosisCertainty + diagnosisConfidence.
 
