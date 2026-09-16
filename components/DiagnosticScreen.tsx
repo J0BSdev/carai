@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  DiagnoseRequest,
   DiagnoseResponse,
   DiagnosticCase,
   DiagnosticStep,
 } from "@/lib/diagnosis";
+import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis";
 import {
   diagnosticStatusLabel,
   latestHypotheses,
@@ -37,6 +39,67 @@ function elapsedLabel(iso: string): string {
   return `${mins} min`;
 }
 
+function lastFinishStep(
+  diagnosticCase: DiagnosticCase,
+  nextStep: DiagnosticStep | null,
+): DiagnosticStep | null {
+  if (nextStep?.actionType === "FINISH") return nextStep;
+  for (let i = diagnosticCase.steps.length - 1; i >= 0; i -= 1) {
+    const step = diagnosticCase.steps[i];
+    if (step?.actionType === "FINISH") return step;
+  }
+  return null;
+}
+
+function AnalysisInterrupted({
+  error,
+  canRetry,
+  loading,
+  onRetry,
+  onDismiss,
+}: {
+  error: string;
+  canRetry: boolean;
+  loading: boolean;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="rounded-2xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] px-4 py-3"
+    >
+      <p className="text-xs font-semibold tracking-wide text-[var(--danger)]">
+        ANALIZA PREKINUTA
+      </p>
+      <p className="mt-1 text-sm text-[var(--muted-strong)]">{error}</p>
+      <p className="mt-1 text-xs text-[var(--muted)]">
+        Podaci slučaja su sačuvani.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {canRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={loading}
+            className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm disabled:opacity-35"
+          >
+            PONOVNO POKUŠAJ
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onDismiss}
+          disabled={loading}
+          className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm disabled:opacity-35"
+        >
+          ZATVORI
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function DiagnosticScreen() {
   const [phase, setPhase] = useState<Phase>("intake");
   const [problemText, setProblemText] = useState("");
@@ -45,8 +108,13 @@ export default function DiagnosticScreen() {
   );
   const [nextStep, setNextStep] = useState<DiagnosticStep | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failedRequest, setFailedRequest] = useState<DiagnoseRequest | null>(
+    null,
+  );
   const [loading, setLoading] = useState(false);
   const [initLoading, setInitLoading] = useState(false);
+  const requestInFlight = useRef(false);
+  const requestGeneration = useRef(0);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [nav, setNav] = useState<NavKey>("new");
@@ -64,12 +132,8 @@ export default function DiagnosticScreen() {
   const hypotheses = diagnosticCase ? latestHypotheses(diagnosticCase) : [];
 
   const finishStep =
-    phase === "completed"
-      ? (nextStep?.actionType === "FINISH"
-          ? nextStep
-          : diagnosticCase?.steps.find((s) => s.actionType === "FINISH") ??
-            diagnosticCase?.steps.at(-1) ??
-            null)
+    phase === "completed" && diagnosticCase
+      ? lastFinishStep(diagnosticCase, nextStep)
       : null;
 
   const showActiveStep =
@@ -79,21 +143,39 @@ export default function DiagnosticScreen() {
     !loading;
 
   const applyResponse = useCallback((data: DiagnoseResponse) => {
-    setDiagnosticCase(data.case);
-    setNextStep(data.nextStep);
     const finished =
       data.case.status === "completed" ||
       data.nextStep?.actionType === "FINISH";
-    setPhase(finished ? "completed" : "active");
+    const finish = lastFinishStep(data.case, data.nextStep);
+
+    setDiagnosticCase(data.case);
     setNav("active");
+
+    if (!finished) {
+      setNextStep(data.nextStep);
+      setPhase("active");
+      return;
+    }
+
+    setPhase("completed");
+    if (finish) {
+      setNextStep(finish);
+      return;
+    }
+
+    setNextStep(data.nextStep);
+    setError(DIAGNOSTIC_UNAVAILABLE_MESSAGE);
   }, []);
 
   function resetCase() {
+    requestGeneration.current += 1;
+    requestInFlight.current = false;
     setPhase("intake");
     setProblemText("");
     setDiagnosticCase(null);
     setNextStep(null);
     setError(null);
+    setFailedRequest(null);
     setLoading(false);
     setInitLoading(false);
     setResultOpen(false);
@@ -103,7 +185,9 @@ export default function DiagnosticScreen() {
     setNav("new");
   }
 
-  async function callDiagnose(body: unknown): Promise<DiagnoseResponse> {
+  async function callDiagnose(
+    body: DiagnoseRequest,
+  ): Promise<DiagnoseResponse> {
     const response = await fetch("/api/diagnose", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -118,25 +202,51 @@ export default function DiagnosticScreen() {
     return data as DiagnoseResponse;
   }
 
-  async function handleStart() {
-    setError(null);
+  async function runDiagnose(payload: DiagnoseRequest) {
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
+    const generation = requestGeneration.current;
+    const isStart = payload.action === "start";
     setLoading(true);
-    setInitLoading(true);
+    if (isStart) setInitLoading(true);
+    setResultOpen(false);
+    setCantOpen(false);
     try {
-      applyResponse(await callDiagnose({ action: "start", problemText }));
+      const data = await callDiagnose(payload);
+      if (generation !== requestGeneration.current) return;
+      setFailedRequest(null);
+      setError(null);
+      applyResponse(data);
     } catch (err) {
+      if (generation !== requestGeneration.current) return;
+      setFailedRequest(payload);
       setError(
-        err instanceof Error ? err.message : "Nije moguće pokrenuti dijagnozu",
+        err instanceof Error
+          ? err.message
+          : isStart
+            ? "Nije moguće pokrenuti dijagnozu"
+            : "Nije moguće nastaviti dijagnozu",
       );
-      setPhase("intake");
-      setNav("new");
+      if (isStart) {
+        setPhase("intake");
+        setNav("new");
+      }
     } finally {
-      setLoading(false);
-      setInitLoading(false);
+      if (generation === requestGeneration.current) {
+        requestInFlight.current = false;
+        setLoading(false);
+        if (isStart) setInitLoading(false);
+      }
     }
   }
 
-  async function handleContinue(
+  function handleStart() {
+    const text = problemText.trim();
+    if (!text) return;
+    void runDiagnose({ action: "start", problemText: text });
+  }
+
+  function handleContinue(
     resultText: string,
     caseOverride?: DiagnosticCase,
   ) {
@@ -147,32 +257,22 @@ export default function DiagnosticScreen() {
       setError("Unesi rezultat prije nastavka.");
       return;
     }
-    setError(null);
-    setResultOpen(false);
-    setCantOpen(false);
-    setLoading(true);
-    try {
-      applyResponse(
-        await callDiagnose({
-          action: "continue",
-          case: base,
-          observation: { resultText: text },
-        }),
-      );
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Nije moguće nastaviti dijagnozu",
-      );
-    } finally {
-      setLoading(false);
-    }
+    void runDiagnose({
+      action: "continue",
+      case: base,
+      observation: { resultText: text },
+    });
+  }
+
+  function retryFailedRequest() {
+    if (!failedRequest) return;
+    void runDiagnose(failedRequest);
   }
 
   /** Reopen FINISH via engine: rejection is stored in case.rejectedDiagnoses. */
-  async function reopenAndContinue(reason: string) {
+  function reopenAndContinue(reason: string) {
     if (!diagnosticCase || !finishStep) return;
-    setPhase("active");
-    await handleContinue(reason, {
+    handleContinue(reason, {
       ...diagnosticCase,
       status: "active",
     });
@@ -294,13 +394,26 @@ export default function DiagnosticScreen() {
       )}
 
       {phase === "intake" && !initLoading && (
-        <NewCaseExperience
-          value={problemText}
-          onChange={setProblemText}
-          onStart={handleStart}
-          loading={loading}
-          error={error}
-        />
+        <>
+          {error ? (
+            <div className="mx-auto w-full max-w-2xl px-4 pt-6 sm:px-6">
+              <AnalysisInterrupted
+                error={error}
+                canRetry={failedRequest != null}
+                loading={loading}
+                onRetry={retryFailedRequest}
+                onDismiss={() => setError(null)}
+              />
+            </div>
+          ) : null}
+          <NewCaseExperience
+            value={problemText}
+            onChange={setProblemText}
+            onStart={handleStart}
+            loading={loading}
+            error={null}
+          />
+        </>
       )}
 
       {(initLoading || (loading && phase === "intake")) && (
@@ -313,27 +426,13 @@ export default function DiagnosticScreen() {
         <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-4 sm:px-6 sm:py-6 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div className="flex min-w-0 flex-col gap-4">
             {error && (
-              <div
-                role="alert"
-                className="rounded-2xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] px-4 py-3"
-              >
-                <p className="text-xs font-semibold tracking-wide text-[var(--danger)]">
-                  ANALIZA PREKINUTA
-                </p>
-                <p className="mt-1 text-sm text-[var(--muted-strong)]">
-                  {error}
-                </p>
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  Podaci slučaja su sačuvani.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setError(null)}
-                  className="mt-3 min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm"
-                >
-                  PONOVNO POKUŠAJ / ZATVORI
-                </button>
-              </div>
+              <AnalysisInterrupted
+                error={error}
+                canRetry={failedRequest != null}
+                loading={loading}
+                onRetry={retryFailedRequest}
+                onDismiss={() => setError(null)}
+              />
             )}
 
             <VehicleHeader
@@ -386,6 +485,20 @@ export default function DiagnosticScreen() {
                   )
                 }
               />
+            )}
+
+            {phase === "completed" && !finishStep && (
+              <div
+                role="alert"
+                className="rounded-2xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] px-4 py-3"
+              >
+                <p className="text-xs font-semibold tracking-wide text-[var(--danger)]">
+                  DIJAGNOZA NIJE DOSTUPNA
+                </p>
+                <p className="mt-1 text-sm text-[var(--muted-strong)]">
+                  {DIAGNOSTIC_UNAVAILABLE_MESSAGE}
+                </p>
+              </div>
             )}
 
             <EvidenceTimeline diagnosticCase={diagnosticCase} />
