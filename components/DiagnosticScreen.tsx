@@ -53,12 +53,14 @@ function lastFinishStep(
 
 function AnalysisInterrupted({
   error,
+  savedHint,
   canRetry,
   loading,
   onRetry,
   onDismiss,
 }: {
   error: string;
+  savedHint: string;
   canRetry: boolean;
   loading: boolean;
   onRetry: () => void;
@@ -73,9 +75,7 @@ function AnalysisInterrupted({
         ANALIZA PREKINUTA
       </p>
       <p className="mt-1 text-sm text-[var(--muted-strong)]">{error}</p>
-      <p className="mt-1 text-xs text-[var(--muted)]">
-        Podaci slučaja su sačuvani.
-      </p>
+      <p className="mt-1 text-xs text-[var(--muted)]">{savedHint}</p>
       <div className="mt-3 flex flex-wrap gap-2">
         {canRetry ? (
           <button
@@ -135,6 +135,10 @@ export default function DiagnosticScreen() {
     phase === "completed" && diagnosticCase
       ? lastFinishStep(diagnosticCase, nextStep)
       : null;
+  const missingFinish = phase === "completed" && !finishStep;
+  const interruptedSavedHint = diagnosticCase
+    ? "Podaci slučaja su sačuvani."
+    : "Uneseni opis ostao je sačuvan.";
 
   const showActiveStep =
     phase === "active" &&
@@ -164,7 +168,6 @@ export default function DiagnosticScreen() {
     }
 
     setNextStep(data.nextStep);
-    setError(DIAGNOSTIC_UNAVAILABLE_MESSAGE);
   }, []);
 
   function resetCase() {
@@ -209,6 +212,7 @@ export default function DiagnosticScreen() {
     const isStart = payload.action === "start";
     setLoading(true);
     if (isStart) setInitLoading(true);
+    setError(null);
     setResultOpen(false);
     setCantOpen(false);
     try {
@@ -267,6 +271,11 @@ export default function DiagnosticScreen() {
   function retryFailedRequest() {
     if (!failedRequest) return;
     void runDiagnose(failedRequest);
+  }
+
+  function dismissInterrupted() {
+    setError(null);
+    setFailedRequest(null);
   }
 
   /** Reopen FINISH via engine: rejection is stored in case.rejectedDiagnoses. */
@@ -399,10 +408,11 @@ export default function DiagnosticScreen() {
             <div className="mx-auto w-full max-w-2xl px-4 pt-6 sm:px-6">
               <AnalysisInterrupted
                 error={error}
+                savedHint={interruptedSavedHint}
                 canRetry={failedRequest != null}
                 loading={loading}
                 onRetry={retryFailedRequest}
-                onDismiss={() => setError(null)}
+                onDismiss={dismissInterrupted}
               />
             </div>
           ) : null}
@@ -425,13 +435,14 @@ export default function DiagnosticScreen() {
       {phase !== "intake" && diagnosticCase && (
         <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-4 sm:px-6 sm:py-6 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div className="flex min-w-0 flex-col gap-4">
-            {error && (
+            {error && !missingFinish && (
               <AnalysisInterrupted
                 error={error}
+                savedHint={interruptedSavedHint}
                 canRetry={failedRequest != null}
                 loading={loading}
                 onRetry={retryFailedRequest}
-                onDismiss={() => setError(null)}
+                onDismiss={dismissInterrupted}
               />
             )}
 
@@ -487,7 +498,7 @@ export default function DiagnosticScreen() {
               />
             )}
 
-            {phase === "completed" && !finishStep && (
+            {missingFinish && (
               <div
                 role="alert"
                 className="rounded-2xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] px-4 py-3"
