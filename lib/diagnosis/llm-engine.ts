@@ -11,6 +11,7 @@ import {
   getActiveAiStep,
   logDiagnosticDraftShape,
   logGuardRetry,
+  logVerifierRoute,
   runAiStep,
 } from "./ai-telemetry";
 import {
@@ -144,6 +145,16 @@ function hasContradictoryStrongEvidence(draft: LlmStepPayload): boolean {
   );
 }
 
+type VerifierRouteReason =
+  | "finish"
+  | "rejected_diagnosis"
+  | "reasoning_consistency"
+  | "technical_claim_or_spec"
+  | "safety_critical"
+  | "expensive_or_risky"
+  | "high_confidence"
+  | "none";
+
 /**
  * OpenAI verifier only for high-risk drafts.
  * Ordinary ASK/TEST that pass backend guards go straight to UI (including first step).
@@ -151,23 +162,27 @@ function hasContradictoryStrongEvidence(draft: LlmStepPayload): boolean {
 function shouldCallVerifier(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
-): boolean {
-  if (draft.actionType === "FINISH") return true;
-  if ((diagnosticCase.rejectedDiagnoses?.length ?? 0) > 0) return true;
-  if (findReasoningConsistencyIssue(diagnosticCase, draft)) return true;
-  if (hasTechnicalClaimsOrSpecs(draft)) return true;
+): VerifierRouteReason {
+  if (draft.actionType === "FINISH") return "finish";
+  if ((diagnosticCase.rejectedDiagnoses?.length ?? 0) > 0) {
+    return "rejected_diagnosis";
+  }
+  if (findReasoningConsistencyIssue(diagnosticCase, draft)) {
+    return "reasoning_consistency";
+  }
+  if (hasTechnicalClaimsOrSpecs(draft)) return "technical_claim_or_spec";
 
   // Ordinary ASK (incl. first step): never call OpenAI after guards.
-  if (draft.actionType === "ASK") return false;
+  if (draft.actionType === "ASK") return "none";
 
   if (draft.actionType === "TEST") {
-    if (isSafetyCriticalTestDraft(draft)) return true;
-    if (looksExpensiveOrRiskyRecommendation(draft)) return true;
-    if (hasHighConfidence(draft)) return true;
-    return false;
+    if (isSafetyCriticalTestDraft(draft)) return "safety_critical";
+    if (looksExpensiveOrRiskyRecommendation(draft)) return "expensive_or_risky";
+    if (hasHighConfidence(draft)) return "high_confidence";
+    return "none";
   }
 
-  return false;
+  return "none";
 }
 
 /**
@@ -906,8 +921,18 @@ async function callVerifiedDiagnosticStep(
         draft,
       );
 
-      if (shouldCallVerifier(caseForTurn(turn, diagnosticCase), draft)) {
-        draft = await runSelectiveVerifier(turn, diagnosticCase, draft);
+      const verifierReason = shouldCallVerifier(
+        caseForTurn(turn, diagnosticCase),
+        draft,
+      );
+      logVerifierRoute(verifierReason);
+      if (verifierReason !== "none") {
+        draft = await runSelectiveVerifier(
+          turn,
+          diagnosticCase,
+          draft,
+          verifierReason,
+        );
       }
 
       draft = await applyConfirmationPolicy(
@@ -942,13 +967,14 @@ async function runSelectiveVerifier(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   initialDraft: LlmStepPayload,
+  reasonCalled: Exclude<VerifierRouteReason, "none">,
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
   const collectedIssues: string[] = [];
 
   let verdict = await verifyWithOpenAi(turn, diagnosticCase, draft, {
     retryNumber: 0,
-    reasonCalled: "verifier_required",
+    reasonCalled,
   });
   if (verdict.approved) return draft;
 
@@ -972,13 +998,18 @@ async function runSelectiveVerifier(
     );
     draft = await ensureDraftPassesQualityGates(turn, diagnosticCase, draft);
 
-    if (!shouldCallVerifier(caseForTurn(turn, diagnosticCase), draft)) {
+    const retryReason = shouldCallVerifier(
+      caseForTurn(turn, diagnosticCase),
+      draft,
+    );
+    logVerifierRoute(retryReason);
+    if (retryReason === "none") {
       return draft;
     }
 
     verdict = await verifyWithOpenAi(turn, diagnosticCase, draft, {
       retryNumber: 1,
-      reasonCalled: "verifier_required",
+      reasonCalled: retryReason,
     });
     if (verdict.approved) return draft;
     if (verdict.correctedStep) {

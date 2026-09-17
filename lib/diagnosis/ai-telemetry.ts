@@ -330,6 +330,12 @@ export function logAnthropicJsonEnvelope(params: {
   );
 }
 
+export function logVerifierRoute(reason: string): void {
+  const step = getActiveAiStep();
+  const stepPart = step ? `step=${step.stepNumber} ` : "";
+  logLine(`[AI] ${stepPart}verifier_route reason=${reason}`);
+}
+
 /** Log which backend guard triggered a diagnostic retry (no prompt/issue dump). */
 export function logGuardRetry(params: {
   stepNumber: number;
