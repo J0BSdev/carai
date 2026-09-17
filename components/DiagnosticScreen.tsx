@@ -7,7 +7,7 @@ import type {
   DiagnosticCase,
   DiagnosticStep,
 } from "@/lib/diagnosis";
-import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis";
+import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis/errors";
 import {
   diagnosticStatusLabel,
   latestHypotheses,

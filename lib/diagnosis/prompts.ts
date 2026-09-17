@@ -41,90 +41,24 @@ TEST: JEDAN test koji razlikuje vodeću hipotezu od najjače alternative (ne "š
 Semantički sličan completed/skipped (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz → ALTERNATIVNI put, ne parafraza; nema alternative → ASK ili FINISH + insufficientEvidence.
 Prije kandidata: (A) nova info? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking? (E) različiti rezultati → različiti koraci? D/E fail ili candidateChangesHypothesisRanking===false → REJECT.
 
-HIPOTEZE (≥2 značajna dokaza; skipped≠dokaz): max 3; label; LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null (evidence ranking, ne zbroj 100; bez dokaza → null); supporting/contradictingEvidence kratko ili izostavi. Status/confidence samo iz dokaza.
+HIPOTEZE (razmišljanje, skipped≠dokaz): kad ima ≥2 značajna dokaza, interno drži max 3 (LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null, ne zbroj 100). Status/confidence samo iz dokaza. U JSON-u hypotheses SAMO uz FINISH.
 
 FINISH: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosisConfidence (confidence ≠ confirmation). CONFIRMED samo uz jak neovisni potvrđujući dokaz ILI više NEOVISNIH jakih dokaza koji eliminiraju alternative. Nije dovoljno: 1 simptom/DTC/neprovjerena vrijednost; AI spece; "najvjerojatniji"; visok %; isti signal više puta; živa jaka alternativa. Bez potvrde → HIGH_CONFIDENCE/LIKELY; insufficientEvidence=true osim CONFIRMED. Jaki dokazi → FINISH; inače vodeća sumnja + JEDAN potvrđujući/diskriminirajući TEST (ne produžuj flow).
 
 REJECTION (rejectedDiagnoses): ne CONFIRMED bez NOVOG neovisnog jakog dokaza; hipoteza smije LIKELY/POSSIBLE; prvo ASK "Što u prethodnom zaključku možda nije objašnjeno?" (ako nema odgovora); zatim diskriminirajući TEST; ne isti reasoning/test.
 
-OUTPUT COMPACT (ASK/TEST posebno — ne troši tokene):
-- Vrati samo polja potrebna za ovaj korak; null/prazna polja izostavi.
-- rationale: max 1–2 kratke rečenice (kod TEST: koje 2 hipoteze razlikuje).
-- Ne generiraj redundantne facts/evidence (obično izostavi).
-- hypotheses: max 3, kratki label; supporting/contradictingEvidence kratko ili izostavi.
-- technicalClaims samo uz stvarnu tvrdnju/spec; safetyPreconditions samo uz stvaran rizik (1 kratki warning); inače izostavi.
-- Za TEST OBAVEZNO 3 kratka metadata polja (2–6 riječi, stabilan label):
-  diagnosticTarget = što se testira; diagnosticGoal = koju informaciju tražiš; testMethod = kako.
-  Ista dijagnostička grana = isti diagnosticGoal (ne ponavljaj ga drugim wordingom).
-- semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Vrati SAMO ono što zadnji korisnički unos (na prvom koraku: originalComplaint) stvarno dodaje/ispravlja i što NIJE već u knownFacts:
-  vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju;
-  dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja;
-  measurementsAdd = eksplicitna brojčana mjerenja: raw = verbatim unos mehaničara. value/unit/parameter smiješ odrediti iz raw + konteksta trenutnog TEST-a (npr. gol "12,4" na napon-testu → value 12.4, unit "V"). Ne pretvaraj jedinice. Ne izvodi mjerenje iz procjene/opisa.
-  Nema nove informacije → izostavi cijeli objekt. semanticUpdate je samo state, NE dokaz — status dokaza određuje backend.
-- content konkretan, bez eseja. JSON bez markdowna.
+OUTPUT — minimalni JSON za OVAJ actionType (bez markdowna). Null/prazna polja izostavi. Ne ponavljaj CASE STATE. content konkretan i kratak. rationale max 1 kratka rečenica (TEST: koje 2 hipoteze razlikuje). ASK/TEST: NE facts, NE evidence, NE hypotheses.
 
-Odgovori ISKLJUČIVO validnim JSON objektom (bez markdowna) u ovom obliku:
-{
-  "actionType": "ASK" | "TEST" | "FINISH",
-  "content": "string — pitanje, uputa za test, ili zaključak",
-  "rationale": "string — max 1–2 rečenice; kod TEST koje hipoteze razlikuje",
-  "expectedResultHint": "string | null — što mehaničar treba zabilježiti",
-  "confirmedFault": "string | null — samo uz FINISH",
-  "semanticUpdate": {
-    "vehicle": {
-      "make": "string",
-      "model": "string",
-      "year": "number",
-      "engine": "string",
-      "mileage": "number"
-    },
-    "symptomsAdd": ["string"],
-    "symptomsRemove": ["string"],
-    "dtcsAdd": ["string"],
-    "measurementsAdd": [{
-      "raw": "string — verbatim mjerenje",
-      "value": "number | null",
-      "unit": "string | null",
-      "parameter": "string | null — što je mjereno"
-    }]
-  } | null,
-  "diagnosticTarget": "string | null — OBAVEZNO za TEST: što se testira",
-  "diagnosticGoal": "string | null — OBAVEZNO za TEST: koju dijagnostičku info tražiš",
-  "testMethod": "string | null — OBAVEZNO za TEST: metoda (mjerenje/vizual/…)",
-  "askDecision": {
-    "whyNeeded": "string — zašto je informacija decision-critical",
-    "expectedAnswers": ["string", "string"],
-    "nextStepByAnswer": [
-      { "answer": "string", "nextAction": "string — konkretan različiti TEST/FINISH" }
-    ]
-  } | null,
-  "diagnosisCertainty": "SUSPECTED" | "LIKELY" | "HIGH_CONFIDENCE" | "CONFIRMED" | null,
-  "diagnosisConfidence": "number | null — evidence ranking 0–100; null ako nema dovoljno dokaza",
-  "confidence": "low" | "medium" | "high",
-  "insufficientEvidence": "boolean — true za sve osim CONFIRMED",
-  "facts": ["string"] | null,
-  "evidence": ["string"] | null,
-  "technicalClaims": [{
-    "claim": "string",
-    "valueText": "string | null",
-    "sourceType": "VERIFIED_OEM" | "VERIFIED_TECHNICAL" | "GENERAL_PRINCIPLE" | "MODEL_KNOWLEDGE" | "UNKNOWN",
-    "vehicleSpecific": boolean
-  }] | null,
-  "safetyPreconditions": {
-    "category": "SRS" | "HV" | "BRAKES" | "OTHER_CRITICAL" | null,
-    "warnings": ["string"],
-    "requiredSteps": ["string"],
-    "needsVerifiedProcedure": boolean
-  } | null,
-  "hypotheses": [{
-    "label": "string",
-    "status": "LIKELY" | "POSSIBLE" | "WEAK" | "RULED_OUT",
-    "confidence": number | null,
-    "supportingEvidence": ["string"] | null,
-    "contradictingEvidence": ["string"] | null,
-    "note": "string | null"
-  }] | null
-}`;
+semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Uključi SAMO ako zadnji korisnički unos (na prvom koraku: originalComplaint) stvarno dodaje/ispravlja ono čega još nema u knownFacts; inače izostavi cijeli objekt. vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju; dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja; measurementsAdd = eksplicitna brojčana mjerenja: raw = verbatim; value/unit/parameter smiješ odrediti iz raw + konteksta trenutnog TEST-a. Ne pretvaraj jedinice. Ne izvodi mjerenje iz procjene/opisa. semanticUpdate je samo state, NE dokaz.
+
+TEST — obavezno: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod (svaki meta 2–6 riječi; ista grana = isti diagnosticGoal). semanticUpdate / safetyPreconditions / technicalClaims samo ako treba (safetyPreconditions samo uz stvaran rizik; technicalClaims samo uz stvarnu tvrdnju/spec + sourceType).
+{"actionType":"TEST","content":"…","rationale":"Razlikuje X od Y.","expectedResultHint":"…","diagnosticTarget":"…","diagnosticGoal":"…","testMethod":"…"}
+
+ASK — obavezno: actionType, content, rationale, askDecision (whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s različitim nextAction). semanticUpdate samo ako treba.
+{"actionType":"ASK","content":"…","rationale":"…","askDecision":{"whyNeeded":"…","expectedAnswers":["…","…"],"nextStepByAnswer":[{"answer":"…","nextAction":"…"}]}}
+
+FINISH — obavezno: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence, insufficientEvidence. hypotheses samo za završni zaključak (max 3, kratki label). Ostala polja (facts/evidence/technicalClaims) samo ako ih stvarno trebaš.
+{"actionType":"FINISH","content":"…","rationale":"…","confirmedFault":"…","diagnosisCertainty":"LIKELY","diagnosisConfidence":40,"insufficientEvidence":true}`;
 
 /**
  * How a recorded result was interpreted. `ambiguous` results stay visible to the
@@ -465,12 +399,12 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
     "CASE STATE (cijeli state; history=dokazi):",
     JSON.stringify(compact),
     "",
-    "REEVALUATE → točno jedna ASK|TEST|FINISH → kratki JSON.",
-    "OUTPUT: rationale≤2 rečenice; bez redundant facts/evidence; hypotheses≤3 kratke; technicalClaims/safetyPreconditions samo ako treba; omit null polja.",
+    "REEVALUATE → točno jedna ASK|TEST|FINISH → minimalni JSON za taj actionType.",
+    "OUTPUT: samo obavezna polja; omit null; ASK/TEST bez facts/evidence/hypotheses; rationale 1 rečenica; semanticUpdate/safety/technicalClaims samo ako treba.",
     "TEST: obavezno diagnosticTarget + diagnosticGoal + testMethod (kratko). Ne ponavljaj isti diagnosticGoal.",
     evidence >= 2
-      ? "≥2 dokaza: hypotheses max 3; preferiraj LIKELY/HIGH_CONFIDENCE nad lažnim CONFIRMED."
-      : "Malo dokaza — diagnosisConfidence može biti null.",
+      ? "≥2 dokaza: preferiraj LIKELY/HIGH_CONFIDENCE nad lažnim CONFIRMED. hypotheses samo uz FINISH."
+      : "Malo dokaza — na FINISH diagnosisConfidence može biti null.",
     consecutiveAsks >= 1
       ? `${consecutiveAsks} ASK zaredom → preferiraj TEST/FINISH osim decision-critical grane.`
       : "",

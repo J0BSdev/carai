@@ -1,7 +1,5 @@
-import {
-  DIAGNOSTIC_UNAVAILABLE_MESSAGE,
-  getDiagnosticEngine,
-} from "@/lib/diagnosis";
+import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis";
+import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
 import type { DiagnoseRequest, DiagnosticCase } from "@/lib/diagnosis";
 
 function isDiagnosticCase(value: unknown): value is DiagnosticCase {
@@ -65,7 +63,7 @@ export async function POST(request: Request) {
     return Response.json({ error: message }, { status: 400 });
   }
 
-  const engine = getDiagnosticEngine();
+  const engine = new LlmDiagnosticEngine();
 
   if (body.action === "start") {
     const problemText = body.problemText?.trim();
