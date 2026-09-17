@@ -229,6 +229,107 @@ function logAiCall(record: AiCallRecord): void {
   logLine(parts.join(" "));
 }
 
+function textLen(value: unknown): number {
+  return typeof value === "string" ? value.length : 0;
+}
+
+function arrayLen(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+/**
+ * Dev-only shape of a parsed diagnostic Claude draft.
+ * Counts and keys only — never the prompt or raw model text.
+ */
+export function logDiagnosticDraftShape(draft: unknown): void {
+  if (!isDev()) return;
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+    logLine("[AI] diagnostic_output invalid");
+    return;
+  }
+
+  const obj = draft as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  const parts = [
+    `[AI] diagnostic_output actionType=${String(obj.actionType ?? "?")}`,
+    `keys=${keys.join(",") || "∅"}`,
+    `jsonChars=${JSON.stringify(draft).length}`,
+    `contentChars=${textLen(obj.content)}`,
+    `rationaleChars=${textLen(obj.rationale)}`,
+  ];
+
+  const special = new Set([
+    "actionType",
+    "content",
+    "rationale",
+    "semanticUpdate",
+    "askDecision",
+    "hypotheses",
+    "technicalClaims",
+    "safetyPreconditions",
+  ]);
+  for (const key of keys) {
+    if (special.has(key)) continue;
+    const value = obj[key];
+    if (Array.isArray(value)) parts.push(`${key}[]=${value.length}`);
+    else if (value && typeof value === "object") {
+      parts.push(`${key}{}=${Object.keys(value).length}`);
+    }
+  }
+
+  if (obj.semanticUpdate && typeof obj.semanticUpdate === "object") {
+    parts.push(
+      `semanticUpdate=${Object.keys(obj.semanticUpdate as object).join(",") || "∅"}`,
+    );
+  }
+  if (obj.askDecision && typeof obj.askDecision === "object") {
+    const ad = obj.askDecision as Record<string, unknown>;
+    parts.push(
+      `askDecision expectedAnswers=${arrayLen(ad.expectedAnswers)} nextStepByAnswer=${arrayLen(ad.nextStepByAnswer)}`,
+    );
+  }
+  parts.push(`hypotheses=${arrayLen(obj.hypotheses)}`);
+  parts.push(`technicalClaims=${arrayLen(obj.technicalClaims)}`);
+  if (obj.safetyPreconditions && typeof obj.safetyPreconditions === "object") {
+    const sp = obj.safetyPreconditions as Record<string, unknown>;
+    parts.push(
+      `safety warnings=${arrayLen(sp.warnings)} requiredSteps=${arrayLen(sp.requiredSteps)}`,
+    );
+  }
+
+  logLine(parts.join(" "));
+}
+
+/**
+ * Dev-only envelope of a Claude Messages body.
+ * Lengths and stop metadata only — never the raw text.
+ */
+export function logAnthropicJsonEnvelope(params: {
+  rawText: string;
+  extractedJson: string | null;
+  stopReason: string | null;
+  outputTokens: number | null;
+}): void {
+  if (!isDev()) return;
+  const text = params.rawText;
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  const prefixChars = start >= 0 ? start : text.length;
+  const suffixChars =
+    start >= 0 && end > start ? text.length - end - 1 : 0;
+  logLine(
+    [
+      "[AI] anthropic_json",
+      `rawChars=${text.length}`,
+      `jsonChars=${params.extractedJson?.length ?? "?"}`,
+      `prefixChars=${prefixChars}`,
+      `suffixChars=${suffixChars}`,
+      `stopReason=${params.stopReason ?? "?"}`,
+      `outputTokens=${params.outputTokens ?? "?"}`,
+    ].join(" "),
+  );
+}
+
 /** Log which backend guard triggered a diagnostic retry (no prompt/issue dump). */
 export function logGuardRetry(params: {
   stepNumber: number;

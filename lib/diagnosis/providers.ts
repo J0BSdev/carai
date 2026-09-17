@@ -1,4 +1,4 @@
-import { recordAiCall, type AiCallMeta, type AiTokenUsage } from "./ai-telemetry";
+import { recordAiCall, logAnthropicJsonEnvelope, type AiCallMeta, type AiTokenUsage } from "./ai-telemetry";
 
 export type LlmStepPayload = {
   actionType: string;
@@ -122,6 +122,8 @@ async function fetchAnthropicText(params: {
     body: JSON.stringify({
       model: params.model,
       max_tokens: params.maxTokens ?? 2048,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "low" },
       system: params.system,
       messages: [{ role: "user", content: params.user }],
     }),
@@ -217,6 +219,12 @@ export async function callAnthropicJson(params: {
     primary.latencyMs,
     primary.stopReason,
   );
+  logAnthropicJsonEnvelope({
+    rawText: primary.text,
+    extractedJson: extractJsonObject(primary.text),
+    stopReason: primary.stopReason,
+    outputTokens: primary.usage.outputTokens,
+  });
 
   if (primary.stopReason === "max_tokens") {
     throw new Error(

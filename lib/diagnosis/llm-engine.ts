@@ -9,6 +9,7 @@ import { DiagnosticPipelineError } from "./errors";
 import {
   classifyGuardName,
   getActiveAiStep,
+  logDiagnosticDraftShape,
   logGuardRetry,
   runAiStep,
 } from "./ai-telemetry";
@@ -588,6 +589,7 @@ async function draftWithClaude(
   });
 
   const draft = parseJson<LlmStepPayload>(raw, "Claude dijagnostički odgovor");
+  logDiagnosticDraftShape(draft);
   recordSemanticUpdate(turn, diagnosticCase, draft);
   return draft;
 }
