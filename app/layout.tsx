@@ -23,7 +23,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="hr"
       className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} h-full antialiased`}
-      suppressHydrationWarning
     >
       <body className="flex min-h-full flex-col bg-[var(--background)] text-[var(--foreground)]">
         {children}
