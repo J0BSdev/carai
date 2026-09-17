@@ -124,7 +124,13 @@ async function fetchAnthropicText(params: {
       max_tokens: params.maxTokens ?? 2048,
       thinking: { type: "adaptive" },
       output_config: { effort: "low" },
-      system: params.system,
+      system: [
+        {
+          type: "text",
+          text: params.system,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       messages: [{ role: "user", content: params.user }],
     }),
   });
@@ -142,6 +148,8 @@ async function fetchAnthropicText(params: {
     usage?: {
       input_tokens?: number;
       output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
     };
   };
   const latencyMs = Date.now() - started;
@@ -158,6 +166,14 @@ async function fetchAnthropicText(params: {
     typeof data.usage?.output_tokens === "number"
       ? data.usage.output_tokens
       : null;
+  const cacheCreationInputTokens =
+    typeof data.usage?.cache_creation_input_tokens === "number"
+      ? data.usage.cache_creation_input_tokens
+      : null;
+  const cacheReadInputTokens =
+    typeof data.usage?.cache_read_input_tokens === "number"
+      ? data.usage.cache_read_input_tokens
+      : null;
   const usage: AiTokenUsage = {
     inputTokens,
     outputTokens,
@@ -165,6 +181,8 @@ async function fetchAnthropicText(params: {
       inputTokens != null && outputTokens != null
         ? inputTokens + outputTokens
         : null,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
   };
 
   return {
@@ -194,6 +212,8 @@ function emitCall(
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     totalTokens: usage.totalTokens,
+    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    cacheReadInputTokens: usage.cacheReadInputTokens,
     latencyMs,
     retryNumber: meta.retryNumber,
     reasonCalled: meta.reasonCalled,

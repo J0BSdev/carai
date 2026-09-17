@@ -17,6 +17,10 @@ export type AiTokenUsage = {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  /** Anthropic prompt-cache write (uncached prefix written this call). */
+  cacheCreationInputTokens?: number | null;
+  /** Anthropic prompt-cache read (prefix served from cache). */
+  cacheReadInputTokens?: number | null;
 };
 
 export type AiCallRecord = {
@@ -29,6 +33,8 @@ export type AiCallRecord = {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  cacheCreationInputTokens?: number | null;
+  cacheReadInputTokens?: number | null;
   /** Network/API round-trip for this call. */
   latencyMs: number;
   retryNumber: number;
@@ -87,13 +93,21 @@ function estimateCostUsd(
   model: string,
   usage: AiTokenUsage,
 ): number | null {
-  const input = usage.inputTokens;
   const output = usage.outputTokens;
-  if (input == null || output == null) return null;
+  const uncached = usage.inputTokens;
+  const cacheWrite = usage.cacheCreationInputTokens ?? 0;
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  if (output == null) return null;
+  if (uncached == null && cacheWrite === 0 && cacheRead === 0) return null;
 
   const rates = pricingForModel(provider, model);
   if (!rates) return null;
-  return (input * rates.inPerM + output * rates.outPerM) / 1_000_000;
+
+  const inputUsd =
+    (uncached ?? 0) * rates.inPerM +
+    cacheWrite * rates.inPerM * 1.25 +
+    cacheRead * rates.inPerM * 0.1;
+  return (inputUsd + output * rates.outPerM) / 1_000_000;
 }
 
 function pricingForModel(
@@ -188,6 +202,8 @@ export function recordAiCall(
     inputTokens: partial.inputTokens,
     outputTokens: partial.outputTokens,
     totalTokens: partial.totalTokens,
+    cacheCreationInputTokens: partial.cacheCreationInputTokens,
+    cacheReadInputTokens: partial.cacheReadInputTokens,
   };
   const estimatedCost =
     partial.estimatedCost !== undefined
@@ -220,6 +236,15 @@ function logAiCall(record: AiCallRecord): void {
     `cost=${formatCost(record.estimatedCost)}`,
     `latency=${record.latencyMs}ms`,
   );
+  if (
+    record.cacheCreationInputTokens != null ||
+    record.cacheReadInputTokens != null
+  ) {
+    parts.push(
+      `cacheWrite=${record.cacheCreationInputTokens ?? 0}`,
+      `cacheRead=${record.cacheReadInputTokens ?? 0}`,
+    );
+  }
   if (record.retryNumber > 0) {
     parts.push(`retry=${record.retryNumber}`);
   }
