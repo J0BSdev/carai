@@ -105,16 +105,6 @@ function hasHighConfidence(draft: LlmStepPayload): boolean {
   return false;
 }
 
-function looksExpensiveOrRiskyRecommendation(draft: LlmStepPayload): boolean {
-  const n = draftBlob(draft)
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-  return /(zamijeni|zamjeni|zamena|zamjena|replace\b|kupi nov|treba nov|ugradi nov|nova turbina|novi (ecu|pcm|modul|injektor|mjenjac|motor|katalizator)|skupa (popravka|zamjena|dijagnostik)|skupo |overhaul|komplet (turbine|mjenjaca|injektora))/.test(
-    n,
-  );
-}
-
 function hasContradictoryStrongEvidence(draft: LlmStepPayload): boolean {
   const hyps = draft.hypotheses ?? [];
   const active = hyps.filter((h) => {
@@ -152,7 +142,6 @@ type VerifierRouteReason =
   | "reasoning_consistency"
   | "technical_claim_or_spec"
   | "safety_critical"
-  | "expensive_or_risky"
   | "high_confidence"
   | "none";
 
@@ -178,7 +167,6 @@ function shouldCallVerifier(
 
   if (draft.actionType === "TEST") {
     if (isSafetyCriticalTestDraft(draft)) return "safety_critical";
-    if (looksExpensiveOrRiskyRecommendation(draft)) return "expensive_or_risky";
     if (hasHighConfidence(draft)) return "high_confidence";
     return "none";
   }
@@ -204,9 +192,7 @@ function shouldEscalateToStrongVerifier(
   const reasoningStillBroken = Boolean(
     findReasoningConsistencyIssue(diagnosticCase, draft),
   );
-  const safetyOrExpensiveUnclear =
-    isSafetyCriticalTestDraft(draft) ||
-    looksExpensiveOrRiskyRecommendation(draft);
+  const safetyUnclear = isSafetyCriticalTestDraft(draft);
   const contradictory = hasContradictoryStrongEvidence(draft);
 
   if (draft.actionType === "FINISH") {
@@ -215,11 +201,7 @@ function shouldEscalateToStrongVerifier(
   }
 
   if (draft.actionType === "TEST") {
-    return (
-      reasoningStillBroken ||
-      safetyOrExpensiveUnclear ||
-      contradictory
-    );
+    return reasoningStillBroken || safetyUnclear || contradictory;
   }
 
   return false;
