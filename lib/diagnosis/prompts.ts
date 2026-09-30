@@ -423,11 +423,40 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
     .join("\n");
 }
 
+const RETRY_DRAFT_KEYS = [
+  "actionType",
+  "content",
+  "rationale",
+  "diagnosticTarget",
+  "diagnosticGoal",
+  "testMethod",
+  "expectedResultHint",
+  "confirmedFault",
+  "diagnosisCertainty",
+  "diagnosisConfidence",
+  "insufficientEvidence",
+] as const;
+
+function compactRetryDraft(previousDraft: unknown): Record<string, unknown> {
+  if (!previousDraft || typeof previousDraft !== "object" || Array.isArray(previousDraft)) {
+    return {};
+  }
+  const source = previousDraft as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of RETRY_DRAFT_KEYS) {
+    const value = source[key];
+    if (value == null || value === "") continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 export function buildDiagnosticRetryPrompt(
   diagnosticCase: DiagnosticCase,
   previousDraft: unknown,
   issues: string[],
 ): string {
+  const compact = compactCaseStateForPrompt(buildCaseState(diagnosticCase));
   const forceNewGoal = issues.some((i) =>
     /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS|DRUGAČIJI diagnosticGoal|goal eksplicitno odbijen|Guard odbija trenutni diagnosticGoal/i.test(
       i,
@@ -435,16 +464,17 @@ export function buildDiagnosticRetryPrompt(
   );
 
   return [
-    buildDiagnosticUserPrompt(diagnosticCase),
+    "CASE STATE:",
+    JSON.stringify(compact),
     "",
     forceNewGoal
-      ? "Draft odbijen zbog ponavljanja grane — vrati NOVI JSON s DRUGAČIJIM diagnosticGoal."
-      : "Draft odbijen zbog quality/format issuea — vrati ispravljeni JSON. Zadrži isti diagnosticTarget i diagnosticGoal; popravi samo navedene probleme (ne biraj novu granu).",
-    "Problemi:",
+      ? "Draft odbijen zbog ponavljanja grane — vrati NOVI JSON s DRUGAČIJIM diagnosticGoal. Popravi samo navedeni issue."
+      : "Draft odbijen — vrati ispravljeni JSON. Zadrži isti diagnosticTarget i diagnosticGoal; popravi samo navedeni issue (ne biraj novu granu).",
+    "ISSUES:",
     ...issues.map((issue) => `- ${issue}`),
     "",
-    "Odbijeni draft:",
-    JSON.stringify(previousDraft),
+    "PREVIOUS DRAFT:",
+    JSON.stringify(compactRetryDraft(previousDraft)),
   ].join("\n");
 }
 

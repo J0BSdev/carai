@@ -361,6 +361,12 @@ export function logVerifierRoute(reason: string): void {
   logLine(`[AI] ${stepPart}verifier_route reason=${reason}`);
 }
 
+export function logRetryPromptChars(chars: number): void {
+  const step = getActiveAiStep();
+  const stepPart = step ? `step=${step.stepNumber} ` : "";
+  logLine(`[AI] ${stepPart}retryPromptChars=${chars}`);
+}
+
 /** Log which backend guard triggered a diagnostic retry (no prompt/issue dump). */
 export function logGuardRetry(params: {
   stepNumber: number;

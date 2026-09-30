@@ -11,6 +11,7 @@ import {
   getActiveAiStep,
   logDiagnosticDraftShape,
   logGuardRetry,
+  logRetryPromptChars,
   logVerifierRoute,
   runAiStep,
 } from "./ai-telemetry";
@@ -633,10 +634,12 @@ async function regenerateWithClaude(
   });
 
   const turnCase = caseForTurn(turn, diagnosticCase);
+  const retryPrompt = buildDiagnosticRetryPrompt(turnCase, draft, issues);
+  logRetryPromptChars(retryPrompt.length);
   return draftWithClaude(
     turn,
     turnCase,
-    buildDiagnosticRetryPrompt(turnCase, draft, issues),
+    retryPrompt,
     {
       role: "diagnostic_retry",
       reasonCalled,
