@@ -10,6 +10,7 @@ import { findConfirmationGuardIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import { findAlreadyKnownInfoIssue } from "./known-facts-guard";
+import { logCompactCaseState } from "./ai-telemetry";
 import {
   legacyLexicalSameBranch,
   metaFromDraft,
@@ -272,16 +273,80 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
   };
 }
 
+const RECENT_HISTORY_LIMIT = 5;
+const LEDGER_TEXT_MAX = 80;
+
+type CaseStepHistoryRow = ReturnType<
+  typeof buildCaseState
+>["diagnosticStepHistory"][number];
+
+function shortLedgerText(value: string | null | undefined): string | undefined {
+  const t = value?.trim();
+  if (!t) return undefined;
+  if (t.length <= LEDGER_TEXT_MAX) return t;
+  return `${t.slice(0, LEDGER_TEXT_MAX).trimEnd()}…`;
+}
+
+function detailedHistoryRow(s: CaseStepHistoryRow): Record<string, unknown> {
+  const row: Record<string, unknown> = {
+    actionType: s.actionType,
+    content: s.content,
+  };
+  if (s.result != null) row.result = s.result;
+  if (s.resultKind !== "none") row.resultKind = s.resultKind;
+  if (s.diagnosticTarget) row.diagnosticTarget = s.diagnosticTarget;
+  if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
+  if (s.testMethod) row.testMethod = s.testMethod;
+  return row;
+}
+
+/**
+ * Older steps: enough to avoid repeat TEST/ASK branches, without full content.
+ * ASK keeps a short question; answer/result only when skipped or answered.
+ */
+function compactHistoryLedgerRow(s: CaseStepHistoryRow): Record<string, unknown> {
+  const row: Record<string, unknown> = { actionType: s.actionType };
+  if (s.diagnosticTarget) row.diagnosticTarget = s.diagnosticTarget;
+  if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
+  if (s.testMethod) row.testMethod = s.testMethod;
+  if (s.resultKind !== "none") row.resultKind = s.resultKind;
+  const shortResult = shortLedgerText(s.result);
+  if (shortResult) row.result = shortResult;
+
+  if (s.actionType === "ASK") {
+    const decisionRelevant =
+      s.resultKind === "skipped" || Boolean(s.result?.trim());
+    const question = shortLedgerText(s.content);
+    if (question && (decisionRelevant || !s.result)) {
+      row.question = question;
+    }
+  } else if (
+    s.actionType === "TEST" &&
+    !s.diagnosticTarget &&
+    !s.diagnosticGoal &&
+    !s.testMethod
+  ) {
+    // Identity fallback when older TESTs have no meta.
+    const content = shortLedgerText(s.content);
+    if (content) row.content = content;
+  }
+
+  return row;
+}
+
 /**
  * Prompt-only CASE STATE: drop redundant aliases of the same evidence.
  * Full buildCaseState remains for backend guards/verifier.
+ * compactOlderHistory is diagnostic-only — verifier keeps full step rows.
  */
 export function compactCaseStateForPrompt(
   state: ReturnType<typeof buildCaseState>,
+  options?: { compactOlderHistory?: boolean },
 ) {
   const kf = state.knownFacts;
+  const steps = state.diagnosticStepHistory;
   const historyResults = new Set(
-    state.diagnosticStepHistory
+    steps
       .map((s) => s.result?.trim().toLowerCase())
       .filter((r): r is string => Boolean(r)),
   );
@@ -302,27 +367,23 @@ export function compactCaseStateForPrompt(
   if (symptoms.length) knownFactsCompact.symptoms = symptoms;
   if (extraMeasurements.length) knownFactsCompact.measurements = extraMeasurements;
 
-  // history already encodes Q/A + tests; omit null result / none kind noise.
-  const history = state.diagnosticStepHistory.map((s) => {
-    const row: Record<string, unknown> = {
-      actionType: s.actionType,
-      content: s.content,
-    };
-    if (s.result != null) row.result = s.result;
-    if (s.resultKind !== "none") row.resultKind = s.resultKind;
-    if (s.diagnosticTarget) row.diagnosticTarget = s.diagnosticTarget;
-    if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
-    if (s.testMethod) row.testMethod = s.testMethod;
-    return row;
-  });
+  const compactOlder = options?.compactOlderHistory === true;
+  const splitAt = compactOlder
+    ? Math.max(0, steps.length - RECENT_HISTORY_LIMIT)
+    : 0;
+  const older = steps.slice(0, splitAt);
+  const recent = steps.slice(splitAt);
 
   const out: Record<string, unknown> = {
     originalComplaint: state.originalComplaint,
     knownFacts: knownFactsCompact,
-    history,
-    significantEvidenceCount: state.significantEvidenceCount,
-    status: state.status,
   };
+  if (older.length) {
+    out.compactHistory = older.map(compactHistoryLedgerRow);
+  }
+  out.history = recent.map(detailedHistoryRow);
+  out.significantEvidenceCount = state.significantEvidenceCount;
+  out.status = state.status;
 
   if (state.consecutiveAnsweredAsksJustCompleted > 0) {
     out.consecutiveAnsweredAsksJustCompleted =
@@ -371,6 +432,15 @@ export function compactCaseStateForPrompt(
     out.rejectedDiagnoses = state.rejectedDiagnoses;
   }
 
+  if (compactOlder) {
+    logCompactCaseState({
+      fullHistoryCount: steps.length,
+      recentHistoryCount: recent.length,
+      compactHistoryCount: older.length,
+      compactCaseStateChars: JSON.stringify(out).length,
+    });
+  }
+
   return out;
 }
 
@@ -392,15 +462,20 @@ export function countTrailingAnsweredAsks(
 
 export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): string {
   const caseState = buildCaseState(diagnosticCase);
-  const compact = compactCaseStateForPrompt(caseState);
+  const compact = compactCaseStateForPrompt(caseState, {
+    compactOlderHistory: true,
+  });
   const consecutiveAsks = caseState.consecutiveAnsweredAsksJustCompleted;
   const evidence = caseState.significantEvidenceCount;
   const rejected = caseState.rejectedDiagnoses as Array<{ diagnosis: string }>;
   const hasSkipped = caseState.skippedUnavailableTests.length > 0;
+  const hasLedger = Array.isArray(compact.compactHistory);
 
   // Situational nudges only — standing rules live in DIAGNOSTIC_SYSTEM_PROMPT.
   return [
-    "CASE STATE (cijeli state; history=dokazi):",
+    hasLedger
+      ? "CASE STATE (compactHistory=stariji ledger, history=zadnjih 5; oboje=dokazi):"
+      : "CASE STATE (cijeli state; history=dokazi):",
     JSON.stringify(compact),
     "",
     "REEVALUATE → točno jedna ASK|TEST|FINISH → minimalni JSON za taj actionType.",
@@ -456,15 +531,20 @@ export function buildDiagnosticRetryPrompt(
   previousDraft: unknown,
   issues: string[],
 ): string {
-  const compact = compactCaseStateForPrompt(buildCaseState(diagnosticCase));
+  const compact = compactCaseStateForPrompt(buildCaseState(diagnosticCase), {
+    compactOlderHistory: true,
+  });
   const forceNewGoal = issues.some((i) =>
     /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS|DRUGAČIJI diagnosticGoal|goal eksplicitno odbijen|Guard odbija trenutni diagnosticGoal/i.test(
       i,
     ),
   );
+  const hasLedger = Array.isArray(compact.compactHistory);
 
   return [
-    "CASE STATE:",
+    hasLedger
+      ? "CASE STATE (compactHistory=stariji ledger, history=zadnjih 5):"
+      : "CASE STATE:",
     JSON.stringify(compact),
     "",
     forceNewGoal
