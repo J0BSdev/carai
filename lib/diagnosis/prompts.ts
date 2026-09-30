@@ -36,33 +36,33 @@ Dokazi: MEASURED_EVIDENCE=rezultati mehaničara; REFERENCE_SPEC=dokaz samo ako V
 
 SAFETY: TI odlučuješ treba li warning. Rutinski profesionalni testovi (multimetar, vizual, DTC, dim, vakuum) — BEZ upozorenja. Warning SAMO uz stvaran rizik (živi SRS/airbag konektor/modul, HV/narančasti kabeli, otvoreni hidraulički tlak, pirotehnika): max 1 kratka praktična rečenica u content (što napraviti PRIJE rada). Ne checklista. Ne izmišljaj wait time/OEM proceduru. safetyPreconditions samo uz taj warning; inače izostavi.
 
-ASK: samo decision-critical; svi odgovori → isti TEST ⇒ uradi TEST. askDecision OBAVEZAN: whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s različitim nextAction. Max 1 ASK zaredom osim jasne grane. Preferiraj TEST nad ASK čim ima smisla. candidateQuestionChangesNextAction===false → ne ASK.
+ASK: samo decision-critical; svi odgovori → isti TEST ⇒ uradi TEST. Max 1 ASK zaredom osim jasne grane. Preferiraj TEST nad ASK čim ima smisla. candidateQuestionChangesNextAction===false → ne ASK.
 
 TEST: JEDAN test koji razlikuje vodeću hipotezu od najjače alternative (ne "što još nisam"). Content: što provjeriti; kako okvirno; što vratiti kao rezultat (expectedResultHint). Više detalja samo kad test nije rutinski ili kad postoji rizik — profesionalcu ne objašnjavaj osnovni alat. PRIORITY: ako sigurno/izvedivo → DIREKTAN mjerni test na granici komponente (ulaz/napajanje/masa/signal) PRIJE upstream/indirektnog (relej/osigurač/ECU/zvuk/vizual/"čest uzrok"); razdvoji kvar komponente vs napajanje/masa/upravljanje; upstream tek ako ulaz na komponenti nedostaje; indirektni quick-check prvi samo ako bitno brži, siguran i mijenja granu; bez izmišljenih pinova/napona/postupaka.
 Semantički sličan completed/skipped (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz → ALTERNATIVNI put, ne parafraza; nema alternative → ASK ili FINISH + insufficientEvidence.
 Prije kandidata: (A) nova info? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking? (E) različiti rezultati → različiti koraci? D/E fail ili candidateChangesHypothesisRanking===false → REJECT.
 
-HIPOTEZE (razmišljanje, skipped≠dokaz): kad ima ≥2 značajna dokaza, interno drži max 3 (LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null, ne zbroj 100). Status/confidence samo iz dokaza.
-JSON hypotheses COMPACT (čuva state između turnova): max 3 objekta, samo label + status + confidence. Bez supportingEvidence, contradictingEvidence i note po defaultu. Ne facts/evidence.
-- TEST: ako CASE već ima značajne dokaze → vrati compact hypotheses; inače izostavi.
-- ASK: hypotheses samo ako novi korisnički odgovor stvarno mijenja ranking; inače izostavi.
-- FINISH: compact hypotheses max 3; dodatno polje samo ako je stvarno potrebno.
-
 FINISH: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosisConfidence (confidence ≠ confirmation). CONFIRMED samo uz jak neovisni potvrđujući dokaz ILI više NEOVISNIH jakih dokaza koji eliminiraju alternative. Nije dovoljno: 1 simptom/DTC/neprovjerena vrijednost; AI spece; "najvjerojatniji"; visok %; isti signal više puta; živa jaka alternativa. Bez potvrde → HIGH_CONFIDENCE/LIKELY; insufficientEvidence=true osim CONFIRMED. Jaki dokazi → FINISH; inače vodeća sumnja + JEDAN potvrđujući/diskriminirajući TEST (ne produžuj flow).
 
 REJECTION (rejectedDiagnoses): ne CONFIRMED bez NOVOG neovisnog jakog dokaza; hipoteza smije LIKELY/POSSIBLE; prvo ASK "Što u prethodnom zaključku možda nije objašnjeno?" (ako nema odgovora); zatim diskriminirajući TEST; ne isti reasoning/test.
 
-OUTPUT — minimalni JSON za OVAJ actionType (bez markdowna). Null/prazna polja izostavi. Ne ponavljaj CASE STATE. content konkretan i kratak. rationale max 1 kratka rečenica (TEST: koje 2 hipoteze razlikuje). ASK/TEST: NE facts, NE evidence.
-
 semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Uključi SAMO ako zadnji korisnički unos (na prvom koraku: originalComplaint) stvarno dodaje/ispravlja ono čega još nema u knownFacts; inače izostavi cijeli objekt. vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju; dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja; measurementsAdd = eksplicitna brojčana mjerenja: raw = verbatim; value/unit/parameter smiješ odrediti iz raw + konteksta trenutnog TEST-a. Ne pretvaraj jedinice. Ne izvodi mjerenje iz procjene/opisa. semanticUpdate je samo state, NE dokaz.
 
-TEST — obavezno: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod (svaki meta 2–6 riječi; ista grana = isti diagnosticGoal). semanticUpdate / safetyPreconditions / technicalClaims samo ako treba (safetyPreconditions samo uz stvaran rizik; technicalClaims samo uz stvarnu tvrdnju/spec + sourceType). hypotheses compact max 3 (label/status/confidence) kad CASE već ima značajne dokaze; inače izostavi.
+HIPOTEZE (skipped≠dokaz): interno max 3 kad ima ≥2 značajna dokaza (LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null, ne zbroj 100). Status/confidence samo iz dokaza.
+JSON hypotheses COMPACT: max 3, samo label + status + confidence. Bez supportingEvidence, contradictingEvidence i note po defaultu. Ne facts/evidence.
+- TEST: compact hypotheses samo ako CASE već ima značajne dokaze; inače izostavi.
+- ASK: samo ako novi korisnički odgovor stvarno mijenja ranking; inače izostavi.
+- FINISH: compact hypotheses max 3; dodatno polje samo ako je stvarno potrebno.
+
+OUTPUT — minimalni JSON za OVAJ actionType (bez markdowna). Null/prazna polja izostavi. Ne ponavljaj CASE STATE. content konkretan i kratak. rationale max 1 kratka rečenica (TEST: koje 2 hipoteze razlikuje). ASK/TEST: NE facts, NE evidence. semanticUpdate / safetyPreconditions / technicalClaims samo ako treba (safetyPreconditions samo uz stvaran rizik; technicalClaims samo uz stvarnu tvrdnju/spec + sourceType).
+
+TEST — obavezno: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod (svaki meta 2–6 riječi; ista grana = isti diagnosticGoal).
 {"actionType":"TEST","content":"…","rationale":"Razlikuje X od Y.","expectedResultHint":"…","diagnosticTarget":"…","diagnosticGoal":"…","testMethod":"…"}
 
-ASK — obavezno: actionType, content, rationale, askDecision (whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s različitim nextAction). semanticUpdate samo ako treba. hypotheses samo ako novi odgovor stvarno mijenja ranking; inače izostavi.
+ASK — obavezno: actionType, content, rationale, askDecision (whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s različitim nextAction).
 {"actionType":"ASK","content":"…","rationale":"…","askDecision":{"whyNeeded":"…","expectedAnswers":["…","…"],"nextStepByAnswer":[{"answer":"…","nextAction":"…"}]}}
 
-FINISH — obavezno: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence, insufficientEvidence. hypotheses compact max 3 (label/status/confidence). Ostala polja (facts/evidence/technicalClaims) samo ako ih stvarno trebaš.
+FINISH — obavezno: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence, insufficientEvidence. Ostala polja (facts/evidence/technicalClaims) samo ako ih stvarno trebaš.
 {"actionType":"FINISH","content":"…","rationale":"…","confirmedFault":"…","diagnosisCertainty":"LIKELY","diagnosisConfidence":40,"insufficientEvidence":true,"hypotheses":[{"label":"…","status":"LIKELY","confidence":40},{"label":"…","status":"POSSIBLE","confidence":25}]}`;
 
 /**
@@ -397,13 +397,15 @@ export function compactCaseStateForPrompt(
         status: h.status,
         confidence: h.confidence,
       };
-      if (h.supportingEvidence?.length) {
-        row.supportingEvidence = h.supportingEvidence;
+      if (!compactOlder) {
+        if (h.supportingEvidence?.length) {
+          row.supportingEvidence = h.supportingEvidence;
+        }
+        if (h.contradictingEvidence?.length) {
+          row.contradictingEvidence = h.contradictingEvidence;
+        }
+        if (h.note) row.note = h.note;
       }
-      if (h.contradictingEvidence?.length) {
-        row.contradictingEvidence = h.contradictingEvidence;
-      }
-      if (h.note) row.note = h.note;
       return row;
     });
   }
@@ -418,8 +420,10 @@ export function compactCaseStateForPrompt(
         parameterKey: c.parameterKey,
         valueText: c.valueText,
         status: c.status,
-        note: c.status === "VERIFIED" ? "LOCK" : "UNVERIFIED",
       };
+      if (!compactOlder) {
+        row.note = c.status === "VERIFIED" ? "LOCK" : "UNVERIFIED";
+      }
       if (c.unit) row.unit = c.unit;
       if (c.condition) row.condition = c.condition;
       if (c.source) row.source = c.source;
@@ -465,10 +469,6 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
   const compact = compactCaseStateForPrompt(caseState, {
     compactOlderHistory: true,
   });
-  const consecutiveAsks = caseState.consecutiveAnsweredAsksJustCompleted;
-  const evidence = caseState.significantEvidenceCount;
-  const rejected = caseState.rejectedDiagnoses as Array<{ diagnosis: string }>;
-  const hasSkipped = caseState.skippedUnavailableTests.length > 0;
   const hasLedger = Array.isArray(compact.compactHistory);
 
   const prompt = [
@@ -478,21 +478,7 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
     JSON.stringify(compact),
     "",
     "REEVALUATE cijeli CASE STATE → točno jedna ASK|TEST|FINISH.",
-    evidence >= 2
-      ? "≥2 dokaza — TEST/FINISH compact hypotheses."
-      : "Malo dokaza — TEST bez hypotheses.",
-    consecutiveAsks >= 1
-      ? `${consecutiveAsks} ASK zaredom — preferiraj TEST/FINISH osim decision-critical grane.`
-      : "",
-    hasSkipped
-      ? "Postoji skipped/unavailable — nije dokaz, ne parafraziraj."
-      : "",
-    rejected.length > 0
-      ? `Rejection (${rejected.length}): ne CONFIRMED bez novog neovisnog dokaza.`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].join("\n");
 
   logDiagnosticUserPromptChars(prompt.length);
   return prompt;
