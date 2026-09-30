@@ -367,6 +367,12 @@ export function logRetryPromptChars(chars: number): void {
   logLine(`[AI] ${stepPart}retryPromptChars=${chars}`);
 }
 
+export function logDiagnosticUserPromptChars(chars: number): void {
+  const step = getActiveAiStep();
+  const stepPart = step ? `step=${step.stepNumber} ` : "";
+  logLine(`[AI] ${stepPart}diagnosticUserPromptChars=${chars}`);
+}
+
 /** Prompt-only CASE STATE history compression (diagnostic Claude, not verifier). */
 export function logCompactCaseState(params: {
   fullHistoryCount: number;

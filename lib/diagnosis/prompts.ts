@@ -10,7 +10,7 @@ import { findConfirmationGuardIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import { findAlreadyKnownInfoIssue } from "./known-facts-guard";
-import { logCompactCaseState } from "./ai-telemetry";
+import { logCompactCaseState, logDiagnosticUserPromptChars } from "./ai-telemetry";
 import {
   legacyLexicalSameBranch,
   metaFromDraft,
@@ -471,31 +471,31 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
   const hasSkipped = caseState.skippedUnavailableTests.length > 0;
   const hasLedger = Array.isArray(compact.compactHistory);
 
-  // Situational nudges only — standing rules live in DIAGNOSTIC_SYSTEM_PROMPT.
-  return [
+  const prompt = [
     hasLedger
       ? "CASE STATE (compactHistory=stariji ledger, history=zadnjih 5; oboje=dokazi):"
       : "CASE STATE (cijeli state; history=dokazi):",
     JSON.stringify(compact),
     "",
-    "REEVALUATE → točno jedna ASK|TEST|FINISH → minimalni JSON za taj actionType.",
-    "OUTPUT: samo obavezna polja; omit null; bez facts/evidence; rationale 1 rečenica; semanticUpdate/safety/technicalClaims samo ako treba; hypotheses compact (label/status/confidence) po pravilu ispod.",
-    "TEST: obavezno diagnosticTarget + diagnosticGoal + testMethod (kratko). Ne ponavljaj isti diagnosticGoal.",
+    "REEVALUATE cijeli CASE STATE → točno jedna ASK|TEST|FINISH.",
     evidence >= 2
-      ? "≥2 dokaza: TEST/FINISH compact hypotheses max 3. ASK hypotheses samo ako odgovor mijenja ranking. preferiraj LIKELY/HIGH_CONFIDENCE nad lažnim CONFIRMED."
-      : "Malo dokaza — hypotheses na TEST izostavi; na FINISH diagnosisConfidence može biti null.",
+      ? "≥2 dokaza — TEST/FINISH compact hypotheses."
+      : "Malo dokaza — TEST bez hypotheses.",
     consecutiveAsks >= 1
-      ? `${consecutiveAsks} ASK zaredom → preferiraj TEST/FINISH osim decision-critical grane.`
+      ? `${consecutiveAsks} ASK zaredom — preferiraj TEST/FINISH osim decision-critical grane.`
       : "",
     hasSkipped
-      ? "resultKind=skipped ≠ dokaz — alternativni put, ne parafraza."
+      ? "Postoji skipped/unavailable — nije dokaz, ne parafraziraj."
       : "",
     rejected.length > 0
-      ? `Rejection (${rejected.length}): ne CONFIRMED bez novog neovisnog dokaza; ASK razlog ako nema; zatim diskriminirajući TEST.`
+      ? `Rejection (${rejected.length}): ne CONFIRMED bez novog neovisnog dokaza.`
       : "",
   ]
     .filter(Boolean)
     .join("\n");
+
+  logDiagnosticUserPromptChars(prompt.length);
+  return prompt;
 }
 
 const RETRY_DRAFT_KEYS = [
