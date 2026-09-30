@@ -80,10 +80,25 @@ export type LlmStepPayload = {
   testMethod?: string | null;
 };
 
+export type VerifierCorrectionPatch = Partial<
+  Pick<
+    LlmStepPayload,
+    | "content"
+    | "rationale"
+    | "expectedResultHint"
+    | "confirmedFault"
+    | "diagnosisCertainty"
+    | "diagnosisConfidence"
+    | "insufficientEvidence"
+    | "technicalClaims"
+    | "safetyPreconditions"
+  >
+>;
+
 export type VerifierPayload = {
   approved: boolean;
   issues: string[];
-  correctedStep: LlmStepPayload | null;
+  correction: VerifierCorrectionPatch | null;
 };
 
 type AnthropicResult = {

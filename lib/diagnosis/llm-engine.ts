@@ -20,6 +20,7 @@ import {
   callOpenAiJson,
   parseJson,
   type LlmStepPayload,
+  type VerifierCorrectionPatch,
   type VerifierPayload,
 } from "./providers";
 import {
@@ -630,6 +631,64 @@ async function regenerateWithClaude(
   );
 }
 
+function sanitizeVerifierCorrection(
+  raw: unknown,
+): VerifierCorrectionPatch | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const source = raw as Record<string, unknown>;
+  const patch: VerifierCorrectionPatch = {};
+
+  if (typeof source.content === "string") patch.content = source.content;
+  if (typeof source.rationale === "string") patch.rationale = source.rationale;
+  if ("expectedResultHint" in source) {
+    patch.expectedResultHint =
+      source.expectedResultHint == null
+        ? null
+        : String(source.expectedResultHint);
+  }
+  if ("confirmedFault" in source) {
+    patch.confirmedFault =
+      source.confirmedFault == null ? null : String(source.confirmedFault);
+  }
+  if ("diagnosisCertainty" in source) {
+    patch.diagnosisCertainty =
+      source.diagnosisCertainty == null
+        ? null
+        : String(source.diagnosisCertainty);
+  }
+  if ("diagnosisConfidence" in source) {
+    const n = source.diagnosisConfidence;
+    if (n === null) patch.diagnosisConfidence = null;
+    else if (typeof n === "number" && Number.isFinite(n)) {
+      patch.diagnosisConfidence = n;
+    }
+  }
+  if (typeof source.insufficientEvidence === "boolean") {
+    patch.insufficientEvidence = source.insufficientEvidence;
+  }
+  if (source.technicalClaims === null || Array.isArray(source.technicalClaims)) {
+    patch.technicalClaims =
+      source.technicalClaims as LlmStepPayload["technicalClaims"];
+  }
+  if (
+    source.safetyPreconditions === null ||
+    (typeof source.safetyPreconditions === "object" &&
+      !Array.isArray(source.safetyPreconditions))
+  ) {
+    patch.safetyPreconditions =
+      source.safetyPreconditions as LlmStepPayload["safetyPreconditions"];
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function mergeVerifierCorrection(
+  draft: LlmStepPayload,
+  correction: VerifierCorrectionPatch,
+): LlmStepPayload {
+  return { ...draft, ...correction };
+}
+
 async function verifyWithOpenAi(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
@@ -672,27 +731,36 @@ async function verifyWithOpenAi(
       : undefined,
   });
 
-  const parsed = parseJson<VerifierPayload>(raw, "OpenAI verifier odgovor");
-  const verdict: VerifierPayload = {
-    approved: Boolean(parsed.approved),
-    issues: Array.isArray(parsed.issues) ? parsed.issues.map(String) : [],
-    correctedStep: parsed.correctedStep ?? null,
-  };
+  const parsed = parseJson<{
+    approved?: unknown;
+    issues?: unknown;
+    correction?: unknown;
+  }>(raw, "OpenAI verifier odgovor");
+  const approved = Boolean(parsed.approved);
+  const issues = Array.isArray(parsed.issues)
+    ? parsed.issues.map(String).slice(0, 2)
+    : [];
+  const correction = approved
+    ? null
+    : sanitizeVerifierCorrection(parsed.correction);
 
+  const merged = correction
+    ? mergeVerifierCorrection(draft, correction)
+    : draft;
   const contradiction =
     findReasoningConsistencyIssue(turnCase, draft) ??
-    (verdict.correctedStep
-      ? findReasoningConsistencyIssue(turnCase, verdict.correctedStep)
+    (correction
+      ? findReasoningConsistencyIssue(turnCase, merged)
       : null);
   if (contradiction) {
     return {
       approved: false,
-      issues: [contradiction, ...verdict.issues].slice(0, 3),
-      correctedStep: null,
+      issues: [contradiction, ...issues].slice(0, 2),
+      correction: null,
     };
   }
 
-  return verdict;
+  return { approved, issues, correction };
 }
 
 async function applyConfirmationPolicy(
@@ -935,15 +1003,17 @@ async function callVerifiedDiagnosticStep(
 async function applyVerifierCorrection(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
-  corrected: LlmStepPayload,
+  draft: LlmStepPayload,
+  correction: VerifierCorrectionPatch,
 ): Promise<LlmStepPayload> {
+  const merged = mergeVerifierCorrection(draft, correction);
   const correctedIssue = findDraftQualityIssueInTurn(
     turn,
     diagnosticCase,
-    corrected,
+    merged,
   );
-  if (!correctedIssue) return corrected;
-  return ensureDraftPassesQualityGates(turn, diagnosticCase, corrected, [
+  if (!correctedIssue) return merged;
+  return ensureDraftPassesQualityGates(turn, diagnosticCase, merged, [
     correctedIssue,
   ]);
 }
@@ -963,8 +1033,13 @@ async function runSelectiveVerifier(
   });
   if (verdict.approved) return draft;
 
-  if (verdict.correctedStep) {
-    return applyVerifierCorrection(turn, diagnosticCase, verdict.correctedStep);
+  if (verdict.correction) {
+    return applyVerifierCorrection(
+      turn,
+      diagnosticCase,
+      draft,
+      verdict.correction,
+    );
   }
 
   collectedIssues.push(
@@ -997,11 +1072,12 @@ async function runSelectiveVerifier(
       reasonCalled: retryReason,
     });
     if (verdict.approved) return draft;
-    if (verdict.correctedStep) {
+    if (verdict.correction) {
       return applyVerifierCorrection(
         turn,
         diagnosticCase,
-        verdict.correctedStep,
+        draft,
+        verdict.correction,
       );
     }
     collectedIssues.push(
@@ -1045,8 +1121,8 @@ async function runStrongVerifierOnce(
     return draft;
   }
 
-  if (verdict.correctedStep) {
-    const corrected = verdict.correctedStep;
+  if (verdict.correction) {
+    const corrected = mergeVerifierCorrection(draft, verdict.correction);
     const correctedIssue = findDraftQualityIssueInTurn(
       turn,
       diagnosticCase,

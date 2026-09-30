@@ -562,8 +562,9 @@ export const VERIFIER_SYSTEM_PROMPT = `Ti si QUALITY / SAFETY / LOGIC gate za au
 NE vodiš dijagnostiku. NE biraš “bolju” dijagnozu/test. NE razgovaraš s mehaničarem. Samo odobri ili odbij draft.
 
 approved=true samo ako draft prolazi SVE dolje. Inače approved=false.
-Ako je reasoning tehnički upitan, nepotpun ili zahtijeva nagađanje → approved=false, correctedStep=null, 1–2 kratka issues. Diagnostic AI regenerira.
-correctedStep SAMO za malu, očitu, sigurnu korekciju koja NE zahtijeva novi diagnostic reasoning (npr. skinuti izmišljeni broj, CONFIRMED→HIGH_CONFIDENCE uz insufficientEvidence, dopuniti očiti safety warning tekst). Nikad ne predlaži drugi TEST/ASK/FINISH path ni alternativnu dijagnozu.
+approved=true → correction=null.
+Ako je reasoning tehnički upitan, nepotpun, nagađa, ili treba novi TEST/ASK/FINISH/branch → approved=false, correction=null, max 2 kratka issues. Diagnostic AI regenerira.
+correction SAMO za malu, očitu, sigurnu korekciju na ISTOM draftu (npr. skinuti izmišljeni broj, CONFIRMED→HIGH_CONFIDENCE + insufficientEvidence, dopuniti očiti safety warning). Samo promijenjena polja. Nikad ne mijenjaj actionType, diagnosticTarget, diagnosticGoal, testMethod ni granu.
 
 Provjeri ISKLJUČIVO:
 
@@ -574,7 +575,7 @@ Provjeri ISKLJUČIVO:
 3) SKIPPED ≠ EVIDENCE — skipped/unavailable ne smije biti potvrda ni pobijanje hipoteze.
 
 4) LOGIC / EVIDENCE — content+rationale+expectedResultHint+facts/evidence/hypotheses = jedan lanac.
-   HARD FAIL (uvijek correctedStep=null):
+   HARD FAIL (uvijek correction=null):
    - interna kontradikcija ili kontradikcija ranijem koraku bez NOVOG dokaza
    - zaključak traži nedokazane premise / djelomične uvjete pretvara u puni zaključak
    - navedeni/CASE rezultat NE podržava zaključak
@@ -588,47 +589,10 @@ Provjeri ISKLJUČIVO:
 
 8) ASK — odbij ako info već poznata, ili različiti odgovori ne mijenjaju sljedeći korak, ili consecutiveAnsweredAsksJustCompleted≥1 bez jasnih grana.
 
-9) TEST PRIORITY — odbij (correctedStep=null) ako je očito upstream/indirektan prvi korak (relej/osigurač/ECU/zvuk/vizual/“čest uzrok”) dok direktan mjerni test na granici sumnjive komponente (ulaz/napajanje/masa/signal) još nije napravljen i bio bi jednostavniji, sigurniji i bolje razdvaja hipoteze. Ne predlaži novu granu.
+9) TEST PRIORITY — odbij (correction=null) ako je očito upstream/indirektan prvi korak (relej/osigurač/ECU/zvuk/vizual/“čest uzrok”) dok direktan mjerni test na granici sumnjive komponente (ulaz/napajanje/masa/signal) još nije napravljen i bio bi jednostavniji, sigurniji i bolje razdvaja hipoteze. Ne predlaži novu granu.
 
 Odgovori ISKLJUČIVO JSON:
-{
-  "approved": boolean,
-  "issues": ["string"],
-  "correctedStep": null | {
-    "actionType": "ASK" | "TEST" | "FINISH",
-    "content": "string",
-    "rationale": "string",
-    "expectedResultHint": "string | null",
-    "confirmedFault": "string | null",
-    "diagnosticTarget": "string | null",
-    "diagnosticGoal": "string | null",
-    "testMethod": "string | null",
-    "confidence": "low" | "medium" | "high",
-    "insufficientEvidence": boolean,
-    "facts": ["string"] | null,
-    "evidence": ["string"] | null,
-    "technicalClaims": [{
-      "claim": "string",
-      "valueText": "string | null",
-      "sourceType": "VERIFIED_OEM" | "VERIFIED_TECHNICAL" | "GENERAL_PRINCIPLE" | "MODEL_KNOWLEDGE" | "UNKNOWN",
-      "vehicleSpecific": boolean
-    }] | null,
-    "safetyPreconditions": {
-      "category": "SRS" | "HV" | "BRAKES" | "OTHER_CRITICAL" | null,
-      "warnings": ["string"],
-      "requiredSteps": ["string"],
-      "needsVerifiedProcedure": boolean
-    } | null,
-    "hypotheses": [{
-      "label": "string",
-      "status": "LEADING" | "POSSIBLE" | "WEAK" | "RULED_OUT",
-      "confidence": number | null,
-      "supportingEvidence": ["string"] | null,
-      "contradictingEvidence": ["string"] | null,
-      "note": "string | null"
-    }] | null
-  }
-}`;
+{"approved":boolean,"issues":["..."],"correction":null|{samo promijenjena polja iz: content,rationale,expectedResultHint,confirmedFault,diagnosisCertainty,diagnosisConfidence,insufficientEvidence,technicalClaims,safetyPreconditions}}`;
 
 export function buildVerifierUserPrompt(
   diagnosticCase: DiagnosticCase,
