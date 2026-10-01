@@ -82,6 +82,9 @@ export default function EvidenceTimeline({
   const items = buildItems(diagnosticCase);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [inspect, setInspect] = useState<Item | null>(null);
+  const observationCount = new Set(
+    diagnosticCase.observations.map((o) => o.stepId),
+  ).size;
 
   return (
     <section className="anim-in">
@@ -90,7 +93,7 @@ export default function EvidenceTimeline({
           Dijagnostički trag
         </h2>
         <span className="text-xs text-[var(--muted)]">
-          {diagnosticCase.observations.length} unosa
+          {observationCount} unosa
         </span>
       </div>
 

@@ -24,7 +24,7 @@ export type AiTokenUsage = {
   cacheCreationInputTokens?: number | null;
   /** Anthropic prompt-cache read (prefix served from cache). */
   cacheReadInputTokens?: number | null;
-  /** TTL of the cache write, when this call created cache tokens. */
+  /** Configured request cache TTL; present on cache writes and reads for this call. */
   cacheTtl?: PromptCacheTtl;
 };
 
@@ -40,6 +40,7 @@ export type AiCallRecord = {
   totalTokens: number | null;
   cacheCreationInputTokens?: number | null;
   cacheReadInputTokens?: number | null;
+  /** Configured request cache TTL; present on cache writes and reads for this call. */
   cacheTtl?: PromptCacheTtl;
   /** Network/API round-trip for this call. */
   latencyMs: number;
@@ -129,8 +130,11 @@ function pricingForModel(
   if (provider === "anthropic") {
     if (m.includes("haiku")) return { inPerM: 1, outPerM: 5 };
     if (m.includes("opus")) return { inPerM: 15, outPerM: 75 };
-    // sonnet 5: $2/M in, $10/M out; 5m write $2.50, 1h write $4, read $0.20
-    return { inPerM: 2, outPerM: 10 };
+    if (m.includes("sonnet-5") || m.includes("sonnet_5")) {
+      // $2/M in, $10/M out; 5m write $2.50, 1h write $4, read $0.20
+      return { inPerM: 2, outPerM: 10 };
+    }
+    return { inPerM: 3, outPerM: 15 };
   }
   // OpenAI verifier models
   if (m.includes("gpt-4o-mini") || m.includes("mini")) {

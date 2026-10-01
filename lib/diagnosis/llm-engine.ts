@@ -1385,6 +1385,50 @@ function formatStepMessage(
   return `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}${strong}): ${actionType}${suffix}`;
 }
 
+/** Keep the first observation per stepId — matches `find()` first-wins. */
+function dedupeObservationsByStepId(
+  observations: Observation[],
+): Observation[] {
+  const seen = new Set<string>();
+  const out: Observation[] = [];
+  for (const obs of observations) {
+    if (seen.has(obs.stepId)) continue;
+    seen.add(obs.stepId);
+    out.push(obs);
+  }
+  return out;
+}
+
+/**
+ * Idempotent observation write: one Observation per DiagnosticStep.id.
+ * Same trimmed result = replay (no duplicate). Different result = conflict.
+ */
+function writeStepObservation(
+  observations: Observation[],
+  stepId: string,
+  resultText: string,
+): { ok: true; observations: Observation[] } | { ok: false } {
+  const canonical = dedupeObservationsByStepId(observations);
+  const existing = canonical.find((o) => o.stepId === stepId);
+  if (!existing) {
+    return {
+      ok: true,
+      observations: [
+        ...canonical,
+        {
+          stepId,
+          resultText,
+          recordedAt: new Date().toISOString(),
+        },
+      ],
+    };
+  }
+  if (existing.resultText.trim() === resultText) {
+    return { ok: true, observations: canonical };
+  }
+  return { ok: false };
+}
+
 /** Fields scanned for locked technical-spec claims after an accepted step. */
 function stepClaimText(step: DiagnosticStep): string {
   return [step.content, step.rationale, step.confirmedFault]
@@ -1441,7 +1485,12 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
     }
 
-    const currentStep = diagnosticCase.steps[diagnosticCase.steps.length - 1];
+    const incoming: DiagnosticCase = {
+      ...diagnosticCase,
+      observations: dedupeObservationsByStepId(diagnosticCase.observations),
+    };
+
+    const currentStep = incoming.steps[incoming.steps.length - 1];
     if (!currentStep) {
       throw new Error("Slučaj nema aktivni korak za zabilježiti");
     }
@@ -1450,9 +1499,9 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       currentStep.actionType === "FINISH" &&
       (isTechnicianRejection(trimmed) || isContinueAfterFinish(trimmed));
 
-    if (diagnosticCase.status === "completed" && !reopenAfterFinish) {
+    if (incoming.status === "completed" && !reopenAfterFinish) {
       return {
-        case: diagnosticCase,
+        case: incoming,
         nextStep: null,
         message: "Slučaj je već završen.",
       };
@@ -1462,7 +1511,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       if (!reopenAfterFinish) {
         return {
           case: {
-            ...diagnosticCase,
+            ...incoming,
             status: "completed",
             confirmedFault: currentStep.confirmedFault,
           },
@@ -1471,8 +1520,19 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         };
       }
 
+      const written = writeStepObservation(
+        incoming.observations,
+        currentStep.id,
+        trimmed,
+      );
+      if (!written.ok) {
+        throw new Error(
+          `Korak ${currentStep.id} već ima drugačiji rezultat. Izmjena postojećeg observationa nije podržana.`,
+        );
+      }
+
       const rejectedDiagnoses: RejectedDiagnosis[] = [
-        ...(diagnosticCase.rejectedDiagnoses ?? []),
+        ...(incoming.rejectedDiagnoses ?? []),
       ];
       if (isTechnicianRejection(trimmed)) {
         rejectedDiagnoses.push({
@@ -1484,7 +1544,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         });
       }
 
-      const softenedSteps = diagnosticCase.steps.map((s) =>
+      const softenedSteps = incoming.steps.map((s) =>
         s.id === currentStep.id
           ? {
               ...s,
@@ -1494,19 +1554,13 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
           : s,
       );
 
-      const rejectionObservation: Observation = {
-        stepId: currentStep.id,
-        resultText: trimmed,
-        recordedAt: new Date().toISOString(),
-      };
-
       const reopened: DiagnosticCase = {
-        ...diagnosticCase,
+        ...incoming,
         steps: softenedSteps,
         status: "active",
         confirmedFault: undefined,
         rejectedDiagnoses,
-        observations: [...diagnosticCase.observations, rejectionObservation],
+        observations: written.observations,
       };
 
       const nextStep = await callVerifiedDiagnosticStep(reopened);
@@ -1534,15 +1588,20 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       };
     }
 
-    const observation: Observation = {
-      stepId: currentStep.id,
-      resultText: trimmed,
-      recordedAt: new Date().toISOString(),
-    };
+    const written = writeStepObservation(
+      incoming.observations,
+      currentStep.id,
+      trimmed,
+    );
+    if (!written.ok) {
+      throw new Error(
+        `Korak ${currentStep.id} već ima drugačiji rezultat. Izmjena postojećeg observationa nije podržana.`,
+      );
+    }
 
     const caseWithObservation: DiagnosticCase = {
-      ...diagnosticCase,
-      observations: [...diagnosticCase.observations, observation],
+      ...incoming,
+      observations: written.observations,
     };
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);
