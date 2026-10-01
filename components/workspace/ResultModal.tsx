@@ -22,6 +22,13 @@ export default function ResultModal({
   const [text, setText] = useState("");
   const [measure, setMeasure] = useState("");
   const [measure2, setMeasure2] = useState("");
+  const [stepId, setStepId] = useState(step.id);
+  if (step.id !== stepId) {
+    setStepId(step.id);
+    setText("");
+    setMeasure("");
+    setMeasure2("");
+  }
   const numeric = testRequiresNumericValue(step);
   const dual = needsDualMeasurement(step);
 

@@ -311,6 +311,10 @@ function toDiagnosticStep(
       actionType === "TEST"
         ? payload.testMethod?.trim() || undefined
         : undefined,
+    testGuide:
+      actionType === "TEST"
+        ? payload.testGuide?.trim() || undefined
+        : undefined,
   };
 }
 

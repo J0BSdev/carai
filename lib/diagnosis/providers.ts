@@ -78,6 +78,11 @@ export type LlmStepPayload = {
   diagnosticTarget?: string | null;
   diagnosticGoal?: string | null;
   testMethod?: string | null;
+  /**
+   * Optional short how-to for a non-routine TEST. Omit on routine tests.
+   * UI guide only — not evidence.
+   */
+  testGuide?: string | null;
 };
 
 export type VerifierCorrectionPatch = Partial<

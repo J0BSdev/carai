@@ -88,6 +88,7 @@ export interface DiagnosticStep {
   facts?: string[];
   evidence?: string[];
   hypotheses?: Hypothesis[];
+  /** Legacy saved cases only. New TESTs use testGuide; this is never populated. */
   recommendedTest?: RecommendedTest;
   confirmedFault?: string;
   confidence?: "low" | "medium" | "high";
@@ -105,6 +106,11 @@ export interface DiagnosticStep {
   diagnosticTarget?: string;
   diagnosticGoal?: string;
   testMethod?: string;
+  /**
+   * Optional short how-to for a non-routine TEST (UI guide).
+   * Routine tests omit this; legacy cases may still have recommendedTest.howTo.
+   */
+  testGuide?: string;
 }
 
 export interface Observation {

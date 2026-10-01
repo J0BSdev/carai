@@ -54,9 +54,10 @@ JSON hypotheses COMPACT: max 3, samo label + status + confidence. Bez supporting
 - ASK: samo ako novi korisnički odgovor stvarno mijenja ranking; inače izostavi.
 - FINISH: compact hypotheses max 3; dodatno polje samo ako je stvarno potrebno.
 
-OUTPUT — minimalni JSON za OVAJ actionType (bez markdowna). Null/prazna polja izostavi. Ne ponavljaj CASE STATE. content konkretan i kratak. rationale max 1 kratka rečenica (TEST: koje 2 hipoteze razlikuje). ASK/TEST: NE facts, NE evidence. semanticUpdate / safetyPreconditions / technicalClaims samo ako treba (safetyPreconditions samo uz stvaran rizik; technicalClaims samo uz stvarnu tvrdnju/spec + sourceType).
+OUTPUT — minimalni JSON za OVAJ actionType (bez markdowna). Null/prazna polja izostavi. Ne ponavljaj CASE STATE. content konkretan i kratak. rationale max 1 kratka rečenica (TEST: koje 2 hipoteze razlikuje). ASK/TEST: NE facts, NE evidence. semanticUpdate / safetyPreconditions / technicalClaims / testGuide samo ako treba (safetyPreconditions samo uz stvaran rizik; technicalClaims samo uz stvarnu tvrdnju/spec + sourceType; testGuide samo nerutinski TEST).
 
 TEST — obavezno: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod (svaki meta 2–6 riječi; ista grana = isti diagnosticGoal).
+testGuide opcionalan: kratka proceduralna uputa samo za nerutinski test ili kad treba slijed radnji/safety context. Rutinski test — izostavi. Profesionalcu ne objašnjavaj osnovni alat. Bez izmišljenih OEM pinova/speca/procedura.
 {"actionType":"TEST","content":"…","rationale":"Razlikuje X od Y.","expectedResultHint":"…","diagnosticTarget":"…","diagnosticGoal":"…","testMethod":"…"}
 
 ASK — obavezno: actionType, content, rationale, askDecision (whyNeeded; ≥2 expectedAnswers; nextStepByAnswer s različitim nextAction).

@@ -7,14 +7,28 @@ type HowToTestDrawerProps = {
   step: DiagnosticStep | null;
 };
 
+function howToTitle(step: DiagnosticStep): string {
+  const fromContent =
+    step.content.split(/[.\n!?]/)[0]?.trim() || step.content.trim();
+  if (fromContent) return fromContent;
+  return step.testMethod?.trim() || "Test";
+}
+
 export default function HowToTestDrawer({
   open,
   onClose,
   step,
 }: HowToTestDrawerProps) {
-  const howTo = step?.recommendedTest?.howTo;
-  const what = step?.recommendedTest?.whatToRecord;
-  const name = step?.recommendedTest?.name || step?.content;
+  const name = step ? howToTitle(step) : "Test";
+  const procedure =
+    step?.testGuide?.trim() ||
+    step?.recommendedTest?.howTo?.trim() ||
+    step?.content ||
+    "Uputa još nije dostupna.";
+  const expected =
+    step?.expectedResultHint?.trim() ||
+    step?.recommendedTest?.whatToRecord?.trim() ||
+    "Zabilježi što si izmjerio ili vidio.";
 
   return (
     <ResponsiveOverlay
@@ -27,36 +41,18 @@ export default function HowToTestDrawer({
 
       <section className="mt-5">
         <h3 className="text-xs font-medium tracking-wide text-[var(--muted)]">
-          POTREBNI ALATI
-        </h3>
-        <p className="mt-2 text-sm text-[var(--muted-strong)]">
-          Podaci o alatima bit će dostupni kad AI vrati strukturirani guide.
-        </p>
-      </section>
-
-      <section className="mt-5">
-        <h3 className="text-xs font-medium tracking-wide text-[var(--muted)]">
           POSTUPAK
         </h3>
-        {howTo ? (
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--muted-strong)]">
-            {howTo}
-          </p>
-        ) : (
-          <p className="mt-2 text-sm leading-relaxed text-[var(--muted-strong)]">
-            {step?.content ||
-              "Uputa još nije dostupna iz backend responsea. Slijedi opis u sljedećem koraku."}
-          </p>
-        )}
+        <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--muted-strong)]">
+          {procedure}
+        </p>
       </section>
 
       <section className="mt-5">
         <h3 className="text-xs font-medium tracking-wide text-[var(--muted)]">
           OČEKIVANO OPAŽANJE
         </h3>
-        <p className="mt-2 text-sm text-[var(--muted-strong)]">
-          {what || step?.expectedResultHint || "Zabilježi što si izmjerio ili vidio."}
-        </p>
+        <p className="mt-2 text-sm text-[var(--muted-strong)]">{expected}</p>
       </section>
 
       <section className="mt-5">
