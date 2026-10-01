@@ -132,6 +132,7 @@ async function fetchAnthropicText(params: {
     headers: {
       "x-api-key": params.apiKey,
       "anthropic-version": "2023-06-01",
+      "anthropic-beta": "extended-cache-ttl-2025-04-11",
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -143,7 +144,7 @@ async function fetchAnthropicText(params: {
         {
           type: "text",
           text: params.system,
-          cache_control: { type: "ephemeral" },
+          cache_control: { type: "ephemeral", ttl: "1h" },
         },
       ],
       messages: [{ role: "user", content: params.user }],
@@ -198,6 +199,7 @@ async function fetchAnthropicText(params: {
         : null,
     cacheCreationInputTokens,
     cacheReadInputTokens,
+    cacheTtl: "1h",
   };
 
   return {
@@ -229,6 +231,7 @@ function emitCall(
     totalTokens: usage.totalTokens,
     cacheCreationInputTokens: usage.cacheCreationInputTokens,
     cacheReadInputTokens: usage.cacheReadInputTokens,
+    cacheTtl: usage.cacheTtl,
     latencyMs,
     retryNumber: meta.retryNumber,
     reasonCalled: meta.reasonCalled,

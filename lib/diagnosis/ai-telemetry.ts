@@ -13,6 +13,9 @@ export type AiCallRole =
 
 export type AiProvider = "anthropic" | "openai";
 
+/** Anthropic prompt-cache TTL used on the cached system prefix. */
+export type PromptCacheTtl = "5m" | "1h";
+
 export type AiTokenUsage = {
   inputTokens: number | null;
   outputTokens: number | null;
@@ -21,6 +24,8 @@ export type AiTokenUsage = {
   cacheCreationInputTokens?: number | null;
   /** Anthropic prompt-cache read (prefix served from cache). */
   cacheReadInputTokens?: number | null;
+  /** TTL of the cache write, when this call created cache tokens. */
+  cacheTtl?: PromptCacheTtl;
 };
 
 export type AiCallRecord = {
@@ -35,6 +40,7 @@ export type AiCallRecord = {
   totalTokens: number | null;
   cacheCreationInputTokens?: number | null;
   cacheReadInputTokens?: number | null;
+  cacheTtl?: PromptCacheTtl;
   /** Network/API round-trip for this call. */
   latencyMs: number;
   retryNumber: number;
@@ -87,6 +93,11 @@ function logLine(message: string): void {
   console.info(message);
 }
 
+/** 5m cache write is 1.25× input; 1h write is 2× input. */
+function cacheWriteMultiplier(ttl: PromptCacheTtl | undefined): number {
+  return ttl === "1h" ? 2 : 1.25;
+}
+
 /** Rough USD estimates when provider usage is known. */
 function estimateCostUsd(
   provider: AiProvider,
@@ -105,7 +116,7 @@ function estimateCostUsd(
 
   const inputUsd =
     (uncached ?? 0) * rates.inPerM +
-    cacheWrite * rates.inPerM * 1.25 +
+    cacheWrite * rates.inPerM * cacheWriteMultiplier(usage.cacheTtl) +
     cacheRead * rates.inPerM * 0.1;
   return (inputUsd + output * rates.outPerM) / 1_000_000;
 }
@@ -118,8 +129,8 @@ function pricingForModel(
   if (provider === "anthropic") {
     if (m.includes("haiku")) return { inPerM: 1, outPerM: 5 };
     if (m.includes("opus")) return { inPerM: 15, outPerM: 75 };
-    // sonnet / default Claude
-    return { inPerM: 3, outPerM: 15 };
+    // sonnet 5: $2/M in, $10/M out; 5m write $2.50, 1h write $4, read $0.20
+    return { inPerM: 2, outPerM: 10 };
   }
   // OpenAI verifier models
   if (m.includes("gpt-4o-mini") || m.includes("mini")) {
@@ -204,6 +215,7 @@ export function recordAiCall(
     totalTokens: partial.totalTokens,
     cacheCreationInputTokens: partial.cacheCreationInputTokens,
     cacheReadInputTokens: partial.cacheReadInputTokens,
+    cacheTtl: partial.cacheTtl,
   };
   const estimatedCost =
     partial.estimatedCost !== undefined
