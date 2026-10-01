@@ -24,7 +24,7 @@ export type AiTokenUsage = {
   cacheCreationInputTokens?: number | null;
   /** Anthropic prompt-cache read (prefix served from cache). */
   cacheReadInputTokens?: number | null;
-  /** Configured request cache TTL; present on cache writes and reads for this call. */
+   /** Configured request cache TTL; present on cache writes and reads for this call. */
   cacheTtl?: PromptCacheTtl;
 };
 

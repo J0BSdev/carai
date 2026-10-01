@@ -18,4 +18,8 @@ export type {
   VehicleInfo,
 } from "./types";
 
-export { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "./errors";
+export {
+  DIAGNOSTIC_UNAVAILABLE_MESSAGE,
+  OBSERVATION_CONFLICT_MESSAGE,
+  ObservationConflictError,
+} from "./errors";

@@ -5,7 +5,10 @@ import {
   getStrongVerifierModel,
   getVerifierModel,
 } from "./config";
-import { DiagnosticPipelineError } from "./errors";
+import {
+  DiagnosticPipelineError,
+  ObservationConflictError,
+} from "./errors";
 import {
   classifyGuardName,
   getActiveAiStep,
@@ -1389,11 +1392,23 @@ function formatStepMessage(
 function dedupeObservationsByStepId(
   observations: Observation[],
 ): Observation[] {
-  const seen = new Set<string>();
+  const firstByStepId = new Map<string, string>();
   const out: Observation[] = [];
   for (const obs of observations) {
-    if (seen.has(obs.stepId)) continue;
-    seen.add(obs.stepId);
+    const firstText = firstByStepId.get(obs.stepId);
+    if (firstText !== undefined) {
+      if (
+        process.env.NODE_ENV === "development" &&
+        firstText !== obs.resultText.trim()
+      ) {
+        console.warn(
+          "[diagnosis] dropping duplicate observation with different resultText for stepId",
+          obs.stepId,
+        );
+      }
+      continue;
+    }
+    firstByStepId.set(obs.stepId, obs.resultText.trim());
     out.push(obs);
   }
   return out;
@@ -1407,26 +1422,25 @@ function writeStepObservation(
   observations: Observation[],
   stepId: string,
   resultText: string,
-): { ok: true; observations: Observation[] } | { ok: false } {
+): Observation[] {
   const canonical = dedupeObservationsByStepId(observations);
   const existing = canonical.find((o) => o.stepId === stepId);
   if (!existing) {
-    return {
-      ok: true,
-      observations: [
-        ...canonical,
-        {
-          stepId,
-          resultText,
-          recordedAt: new Date().toISOString(),
-        },
-      ],
-    };
+    return [
+      ...canonical,
+      {
+        stepId,
+        resultText,
+        recordedAt: new Date().toISOString(),
+      },
+    ];
   }
   if (existing.resultText.trim() === resultText) {
-    return { ok: true, observations: canonical };
+    return canonical;
   }
-  return { ok: false };
+  throw new ObservationConflictError(
+    `Conflicting second result for step ${stepId}`,
+  );
 }
 
 /** Fields scanned for locked technical-spec claims after an accepted step. */
@@ -1520,16 +1534,11 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         };
       }
 
-      const written = writeStepObservation(
+      const writtenObservations = writeStepObservation(
         incoming.observations,
         currentStep.id,
         trimmed,
       );
-      if (!written.ok) {
-        throw new Error(
-          `Korak ${currentStep.id} već ima drugačiji rezultat. Izmjena postojećeg observationa nije podržana.`,
-        );
-      }
 
       const rejectedDiagnoses: RejectedDiagnosis[] = [
         ...(incoming.rejectedDiagnoses ?? []),
@@ -1560,7 +1569,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         status: "active",
         confirmedFault: undefined,
         rejectedDiagnoses,
-        observations: written.observations,
+        observations: writtenObservations,
       };
 
       const nextStep = await callVerifiedDiagnosticStep(reopened);
@@ -1588,20 +1597,15 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       };
     }
 
-    const written = writeStepObservation(
+    const writtenObservations = writeStepObservation(
       incoming.observations,
       currentStep.id,
       trimmed,
     );
-    if (!written.ok) {
-      throw new Error(
-        `Korak ${currentStep.id} već ima drugačiji rezultat. Izmjena postojećeg observationa nije podržana.`,
-      );
-    }
 
     const caseWithObservation: DiagnosticCase = {
       ...incoming,
-      observations: written.observations,
+      observations: writtenObservations,
     };
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);

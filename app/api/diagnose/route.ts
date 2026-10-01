@@ -1,6 +1,11 @@
-import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis";
+import {
+  DIAGNOSTIC_UNAVAILABLE_MESSAGE,
+  OBSERVATION_CONFLICT_MESSAGE,
+  ObservationConflictError,
+  type DiagnoseRequest,
+  type DiagnosticCase,
+} from "@/lib/diagnosis";
 import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
-import type { DiagnoseRequest, DiagnosticCase } from "@/lib/diagnosis";
 
 function isDiagnosticCase(value: unknown): value is DiagnosticCase {
   if (!value || typeof value !== "object") return false;
@@ -45,6 +50,13 @@ async function runPipeline(run: () => Promise<unknown>): Promise<Response> {
   try {
     return Response.json(await run());
   } catch (error) {
+    if (error instanceof ObservationConflictError) {
+      console.warn("[diagnose] observation conflict", error);
+      return Response.json(
+        { error: OBSERVATION_CONFLICT_MESSAGE },
+        { status: 409 },
+      );
+    }
     console.error("[diagnose] diagnostic pipeline failed", error);
     return Response.json(
       { error: DIAGNOSTIC_UNAVAILABLE_MESSAGE },
