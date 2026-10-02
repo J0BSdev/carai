@@ -38,6 +38,15 @@ export type LlmStepPayload = {
       unit?: string | null;
       parameter?: string | null;
     }> | null;
+    /**
+     * Mechanic stance on the current cause/repair, extracted from the last
+     * result + CASE STATE. Omit when there is no clear confirmation.
+     */
+    technicianOutcome?: {
+      status?: string | null;
+      fault?: string | null;
+      basis?: string | null;
+    } | null;
   } | null;
   /**
    * Required for ASK: decision-critical justification.

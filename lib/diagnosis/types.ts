@@ -43,12 +43,27 @@ export interface ExtractedMeasurement {
   parameter?: string;
 }
 
+/** AI-extracted mechanic stance on the current cause / repair. Backend never infers this from raw text. */
+export type TechnicianOutcomeStatus =
+  | "FAULT_CONFIRMED"
+  | "REPAIR_CONFIRMED"
+  | "NOT_CONFIRMED";
+
+export interface TechnicianOutcome {
+  status: TechnicianOutcomeStatus;
+  /** Cause the mechanic confirmed, when stated or implied by the active step. */
+  fault?: string;
+  /** Short basis from the mechanic's last result. */
+  basis?: string;
+}
+
 export interface ExtractedCaseFacts {
   vehicle?: VehicleInfo;
   symptoms?: string[];
   dtcs?: string[];
   /** Legacy saved cases may hold plain strings here. */
   measurements?: Array<ExtractedMeasurement | string>;
+  technicianOutcome?: TechnicianOutcome;
 }
 
 export interface Hypothesis {

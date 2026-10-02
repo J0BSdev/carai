@@ -15,6 +15,8 @@ export type {
   RecommendedTest,
   RejectedDiagnosis,
   SourceRef,
+  TechnicianOutcome,
+  TechnicianOutcomeStatus,
   VehicleInfo,
 } from "./types";
 

@@ -60,6 +60,8 @@ import type {
   Hypothesis,
   Observation,
   RejectedDiagnosis,
+  TechnicianOutcome,
+  TechnicianOutcomeStatus,
   VehicleInfo,
 } from "./types";
 import { draftBlob } from "./text";
@@ -399,6 +401,37 @@ function measurementKey(m: ExtractedMeasurement | string): string {
   return [m.parameter ?? "", m.raw].join("|").trim().toLowerCase();
 }
 
+const TECHNICIAN_OUTCOME_STATUSES: TechnicianOutcomeStatus[] = [
+  "FAULT_CONFIRMED",
+  "REPAIR_CONFIRMED",
+  "NOT_CONFIRMED",
+];
+
+/** Type-validate only — never infers confirmation from mechanic prose. */
+function parseTechnicianOutcome(raw: unknown): TechnicianOutcome | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as Record<string, unknown>;
+  const statusRaw =
+    typeof row.status === "string"
+      ? row.status.trim().toUpperCase().replace(/[\s-]+/g, "_")
+      : "";
+  if (
+    !TECHNICIAN_OUTCOME_STATUSES.includes(statusRaw as TechnicianOutcomeStatus)
+  ) {
+    return undefined;
+  }
+  const outcome: TechnicianOutcome = {
+    status: statusRaw as TechnicianOutcomeStatus,
+  };
+  if (typeof row.fault === "string" && row.fault.trim()) {
+    outcome.fault = row.fault.trim();
+  }
+  if (typeof row.basis === "string" && row.basis.trim()) {
+    outcome.basis = row.basis.trim();
+  }
+  return outcome;
+}
+
 function dedupeMeasurements(
   values: Array<ExtractedMeasurement | string>,
 ): Array<ExtractedMeasurement | string> {
@@ -426,6 +459,7 @@ function mergeSemanticUpdate(
   let symptoms = [...(prior.symptoms ?? [])];
   let dtcs = [...(prior.dtcs ?? [])];
   let measurements = [...(prior.measurements ?? [])];
+  let technicianOutcome = prior.technicianOutcome;
   let changed = false;
 
   const rawVehicle = update.vehicle;
@@ -502,6 +536,12 @@ function mergeSemanticUpdate(
     }
   }
 
+  const outcome = parseTechnicianOutcome(update.technicianOutcome);
+  if (outcome) {
+    technicianOutcome = outcome;
+    changed = true;
+  }
+
   if (!changed) return null;
 
   return {
@@ -510,6 +550,7 @@ function mergeSemanticUpdate(
     symptoms: symptoms.length ? symptoms : undefined,
     dtcs: dtcs.length ? dtcs : undefined,
     measurements: measurements.length ? measurements : undefined,
+    technicianOutcome,
   };
 }
 
@@ -550,6 +591,54 @@ function persistSemanticUpdate(
   turn: DiagnosticTurn,
 ): void {
   if (turn.extracted) diagnosticCase.extracted = turn.extracted;
+}
+
+/**
+ * If Claude extracted FAULT_CONFIRMED / REPAIR_CONFIRMED, the action is FINISH.
+ * Uses only the typed semantic field — no prose matching.
+ */
+function applyTechnicianOutcomeFinish(
+  turn: DiagnosticTurn,
+  draft: LlmStepPayload,
+): LlmStepPayload {
+  const status =
+    turn.extracted?.technicianOutcome?.status ??
+    parseTechnicianOutcome(draft.semanticUpdate?.technicianOutcome)?.status;
+  if (status !== "FAULT_CONFIRMED" && status !== "REPAIR_CONFIRMED") {
+    return draft;
+  }
+
+  const fault =
+    turn.extracted?.technicianOutcome?.fault?.trim() ||
+    draft.confirmedFault?.trim() ||
+    draft.content.trim();
+
+  if (draft.actionType === "FINISH") {
+    return {
+      ...draft,
+      confirmedFault: fault,
+      diagnosisCertainty: draft.diagnosisCertainty ?? "CONFIRMED",
+      insufficientEvidence: false,
+    };
+  }
+
+  return {
+    ...draft,
+    actionType: "FINISH",
+    content: fault,
+    confirmedFault: fault,
+    diagnosisCertainty: "CONFIRMED",
+    diagnosisConfidence:
+      typeof draft.diagnosisConfidence === "number"
+        ? draft.diagnosisConfidence
+        : 90,
+    insufficientEvidence: false,
+    rationale:
+      draft.rationale?.trim() ||
+      (status === "REPAIR_CONFIRMED"
+        ? "Tehničar je potvrdio da je kvar riješen."
+        : "Tehničar je potvrdio uzrok."),
+  };
 }
 
 /** Guards evaluate the draft against the case including the turn's own facts. */
@@ -1078,6 +1167,7 @@ async function callVerifiedDiagnosticStep(
         buildDiagnosticUserPrompt(diagnosticCase),
         { role: "diagnostic", reasonCalled: "initial", retryNumber: 0 },
       );
+      draft = applyTechnicianOutcomeFinish(turn, draft);
 
       draft = await ensureDraftPassesQualityGates(turn, diagnosticCase, draft);
       draft = await applyConfirmationPolicy(
@@ -1262,6 +1352,7 @@ async function ensureDraftPassesQualityGates(
   extraIssues: string[] = [],
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
+  draft = applyTechnicianOutcomeFinish(turn, draft);
 
   if (draft.actionType === "FINISH") {
     const confIssue = findConfirmationGuardIssue(
@@ -1290,6 +1381,7 @@ async function ensureDraftPassesQualityGates(
     draft,
     buildGuardRetryIssues(draft, issue, pendingExtra),
   );
+  draft = applyTechnicianOutcomeFinish(turn, draft);
   pendingExtra = [];
   issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
 
@@ -1307,6 +1399,7 @@ async function ensureDraftPassesQualityGates(
         "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
       ],
     );
+    draft = applyTechnicianOutcomeFinish(turn, draft);
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
   }
 
@@ -1328,6 +1421,7 @@ async function ensureDraftPassesQualityGates(
         "technicalClaims[]: svaka tvrdnja mora imati ispravan sourceType.",
       ],
     );
+    draft = applyTechnicianOutcomeFinish(turn, draft);
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
   }
 
@@ -1346,6 +1440,7 @@ async function ensureDraftPassesQualityGates(
         "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
       ]),
     );
+    draft = applyTechnicianOutcomeFinish(turn, draft);
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
     if (!issue) return draft;
   }

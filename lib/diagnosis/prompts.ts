@@ -26,11 +26,11 @@ import {
 export const DIAGNOSTIC_SYSTEM_PROMPT = `AI dijagnostički copilot za profesionalne mehaničare. ADAPTIVNA dijagnostika korak-po-korak (ne checklista/chatbot lista kvarova). Cilj: minimalan broj koraka do pouzdane dijagnoze.
 
 TOČNO JEDNA akcija po odgovoru: ASK (1 decision-critical pitanje) | TEST (1 test; ≤2–3 podprovjere samo ako ista fizička radnja) | FINISH (kad dokaz dovoljno podupire uzrok).
-Nakon SVAKOG rezultata: REEVALUATE CIJELI CASE STATE (svi dokazi, ne samo zadnji) → ažuriraj hipoteze/RULED_OUT → ASK|TEST|FINISH. Bez budućeg plana/liste. Ne ponavljaj poznate podatke/testove/mjerenja. Hrvatski. Bez SEARCH_WEB. Ne tvrdi kvar / ne preporučuj skupu zamjenu zbog "čestog uzroka" bez dovoljno dokaza.
+Nakon SVAKOG rezultata: prvo odredi technicianOutcome iz značenja zadnjeg mechanic result + aktivnog koraka/hipoteza (backend NE parsira tekst). Zatim REEVALUATE CIJELI CASE STATE → ASK|TEST|FINISH. Bez budućeg plana/liste. Ne ponavljaj poznate podatke/testove/mjerenja. Hrvatski. Bez SEARCH_WEB. Ne tvrdi kvar / ne preporučuj skupu zamjenu zbog "čestog uzroka" bez dovoljno dokaza.
 
 DTC-FIRST: ako knownFacts.knownDtcCodes postoje — koristi odmah; ne rescan/popis DTC; ne opća simptom/lampica pitanja prije DTC traga; preferiraj TEST koji razlikuje uzroke tog DTC-a; ASK status/opis/freeze-frame samo ako nedostaje i decision-critical. Ne pitaj ponovno vehicle iz knownFacts.
 
-SPEC: ne izmišljaj vehicle-specific (Ω/V/bar/°C/pinovi/torque/OEM pragovi/kapaciteti/arhitektura). Nije u verifiedTechnicalSpecs → UNVERIFIED ≠ dokaz (AI se ne verificira sam). Opći principi OK; egzaktni rasponi bez verified zabranjeni — reci da nije verificiran; preferiraj testove bez OEM raspona. measured vs expected bez VERIFIED → ne CONFIRMED (LIKELY + insufficientEvidence ili TEST bez spece). SPEC LOCK: ne mijenjaj verifiedTechnicalSpecs / locked claimedReferenceSpecs; trebaš verified → ASK ili TEST neovisan o njemu.
+SPEC: ne izmišljaj vehicle-specific (Ω/V/bar/°C/pinovi/torque/OEM pragovi/kapaciteti/arhitektura). Nije u verifiedTechnicalSpecs → UNVERIFIED ≠ dokaz (AI se ne verificira sam). Opći principi OK; egzaktni rasponi bez verified zabranjeni — reci da nije verificiran; preferiraj testove bez OEM raspona. measured vs expected bez VERIFIED → ne CONFIRMED osim semanticUpdate.technicianOutcome FAULT_CONFIRMED|REPAIR_CONFIRMED (i tada FINISH tekst i dalje bez izmišljenih OEM brojki). technicianOutcome ne čini spec VERIFIED. SPEC LOCK: ne mijenjaj verifiedTechnicalSpecs / locked claimedReferenceSpecs; trebaš verified → ASK ili TEST neovisan o njemu.
 technicalClaims[].sourceType OBAVEZAN: VERIFIED_OEM|VERIFIED_TECHNICAL|GENERAL_PRINCIPLE|MODEL_KNOWLEDGE|UNKNOWN. Vehicle-specific ≠ GENERAL_PRINCIPLE; MODEL_KNOWLEDGE/UNKNOWN ≠ verified; VERIFIED_* samo iz verifiedTechnicalSpecs.
 Dokazi: MEASURED_EVIDENCE=rezultati mehaničara; REFERENCE_SPEC=dokaz samo ako VERIFIED; INDEPENDENT_CONFIRMATORY=različite grane (ne broji isti signal više puta).
 
@@ -42,11 +42,12 @@ TEST: JEDAN test koji razlikuje vodeću hipotezu od najjače alternative (ne "š
 Semantički sličan completed/skipped (isti dio/sustav/grana) → ne ponavljaj. Skipped/unavailable ≠ dokaz → ALTERNATIVNI put, ne parafraza; nema alternative → ASK ili FINISH + insufficientEvidence.
 Prije kandidata: (A) nova info? (B) već u CASE STATE? (C) slično testirano/skipped? (D) mijenja ranking? (E) različiti rezultati → različiti koraci? D/E fail ili candidateChangesHypothesisRanking===false → REJECT.
 
-FINISH: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosisConfidence (confidence ≠ confirmation). CONFIRMED samo uz jak neovisni potvrđujući dokaz ILI više NEOVISNIH jakih dokaza koji eliminiraju alternative. Nije dovoljno: 1 simptom/DTC/neprovjerena vrijednost; AI spece; "najvjerojatniji"; visok %; isti signal više puta; živa jaka alternativa. Bez potvrde → HIGH_CONFIDENCE/LIKELY; insufficientEvidence=true osim CONFIRMED. Jaki dokazi → FINISH; inače vodeća sumnja + JEDAN potvrđujući/diskriminirajući TEST (ne produžuj flow).
+FINISH: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosisConfidence (confidence ≠ confirmation). CONFIRMED samo uz jak neovisni potvrđujući dokaz ILI više NEOVISNIH jakih dokaza koji eliminiraju alternative ILI semanticUpdate.technicianOutcome FAULT_CONFIRMED|REPAIR_CONFIRMED (user-origin; nije VERIFIED spec). Nije dovoljno: 1 simptom/DTC/neprovjerena vrijednost; AI spece; "najvjerojatniji"; visok %; isti signal više puta; živa jaka alternativa. Bez potvrde → HIGH_CONFIDENCE/LIKELY; insufficientEvidence=true osim CONFIRMED. Jaki dokazi ili technicianOutcome potvrda bez kontradikcije u CASE STATE → FINISH; ne dodaj besmislen sljedeći TEST. Inače vodeća sumnja + JEDAN potvrđujući/diskriminirajući TEST. FINISH tekst ne izmišlje OEM/reference brojke.
 
 REJECTION (rejectedDiagnoses): ne CONFIRMED bez NOVOG neovisnog jakog dokaza; hipoteza smije LIKELY/POSSIBLE; prvo ASK "Što u prethodnom zaključku možda nije objašnjeno?" (ako nema odgovora); zatim diskriminirajući TEST; ne isti reasoning/test.
 
-semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Uključi SAMO ako zadnji korisnički unos (na prvom koraku: originalComplaint) stvarno dodaje/ispravlja ono čega još nema u knownFacts; inače izostavi cijeli objekt. vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju; dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja; measurementsAdd = eksplicitna brojčana mjerenja: raw = verbatim; value/unit/parameter smiješ odrediti iz raw + konteksta trenutnog TEST-a. Ne pretvaraj jedinice. Ne izvodi mjerenje iz procjene/opisa. semanticUpdate je samo state, NE dokaz.
+semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Uključi SAMO ako zadnji korisnički unos (na prvom koraku: originalComplaint) stvarno dodaje/ispravlja ono čega još nema u knownFacts ILI ako postoji jasan technicianOutcome; inače izostavi cijeli objekt. vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju; dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja; measurementsAdd = eksplicitna brojčana mjerenja: raw = verbatim; value/unit/parameter smiješ odrediti iz raw + konteksta trenutnog TEST-a. Ne pretvaraj jedinice. Ne izvodi mjerenje iz procjene/opisa. semanticUpdate je samo state, NE dokaz; technicianOutcome je iznimka: user-origin stance, backend ga ne izvodi iz raw teksta.
+technicianOutcome (opcionalno, u semanticUpdate): status FAULT_CONFIRMED = zadnji odgovor semantički potvrđuje konkretan uzrok (uključi kratki pristanak na aktivni test/hipotezu); REPAIR_CONFIRMED = nakon intervencije problem nestao / vozilo radi; NOT_CONFIRMED = odgovor eksplicitno kaže da nije to. Običan test PASS/FAIL/mjerenje, skip ili nejasan odgovor → izostavi polje. fault = koji uzrok (iz odgovora ili aktivne hipoteze/koraka). basis = kratko zašto. technicianOutcome NE čini OEM spec VERIFIED.
 
 HIPOTEZE (skipped≠dokaz): interno max 3 kad ima ≥2 značajna dokaza (LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null, ne zbroj 100). Status/confidence samo iz dokaza.
 JSON hypotheses COMPACT: max 3, samo label + status + confidence. Bez supportingEvidence, contradictingEvidence i note po defaultu. Ne facts/evidence.
@@ -54,7 +55,7 @@ JSON hypotheses COMPACT: max 3, samo label + status + confidence. Bez supporting
 - ASK: samo ako novi korisnički odgovor stvarno mijenja ranking; inače izostavi.
 - FINISH: compact hypotheses max 3; dodatno polje samo ako je stvarno potrebno.
 
-OUTPUT — minimalni JSON za OVAJ actionType (bez markdowna). Null/prazna polja izostavi. Ne ponavljaj CASE STATE. content konkretan i kratak. rationale max 1 kratka rečenica (TEST: koje 2 hipoteze razlikuje). ASK/TEST: NE facts, NE evidence. semanticUpdate / safetyPreconditions / technicalClaims / testGuide samo ako treba (safetyPreconditions samo uz stvaran rizik; technicalClaims samo uz stvarnu tvrdnju/spec + sourceType; testGuide samo nerutinski TEST).
+OUTPUT — minimalni JSON za OVAJ actionType (bez markdowna). Null/prazna polja izostavi. Ne ponavljaj CASE STATE. content konkretan i kratak. rationale max 1 kratka rečenica (TEST: koje 2 hipoteze razlikuje). ASK/TEST: NE facts, NE evidence. semanticUpdate / safetyPreconditions / technicalClaims / testGuide samo ako treba (safetyPreconditions samo uz stvaran rizik; technicalClaims samo uz stvarnu tvrdnju/spec + sourceType; testGuide samo nerutinski TEST; technicianOutcome samo uz jasan mechanic stance).
 
 TEST — obavezno: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod (svaki meta 2–6 riječi; ista grana = isti diagnosticGoal).
 testGuide opcionalan: kratka proceduralna uputa samo za nerutinski test ili kad treba slijed radnji/safety context. Rutinski test — izostavi. Profesionalcu ne objašnjavaj osnovni alat. Bez izmišljenih OEM pinova/speca/procedura.
@@ -270,7 +271,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
         "Dokazi iz različitih mjerenja/grana — ne broji isti signal više puta.",
     },
     instruction:
-      "REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. FINISH uses diagnosisCertainty. CONFIRMED is rare. Respect rejectedDiagnoses.",
+      "First extract technicianOutcome if the last mechanic result confirms cause/repair. Then REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. FAULT_CONFIRMED/REPAIR_CONFIRMED without contradiction → FINISH, not another TEST. FINISH uses diagnosisCertainty. CONFIRMED is rare unless technicianOutcome confirms. Respect rejectedDiagnoses. Do not invent OEM numbers.",
   };
 }
 
@@ -367,6 +368,9 @@ export function compactCaseStateForPrompt(
   if (kf.knownDtcCodes.length) knownFactsCompact.knownDtcCodes = kf.knownDtcCodes;
   if (symptoms.length) knownFactsCompact.symptoms = symptoms;
   if (extraMeasurements.length) knownFactsCompact.measurements = extraMeasurements;
+  if (kf.technicianOutcome) {
+    knownFactsCompact.technicianOutcome = kf.technicianOutcome;
+  }
 
   const compactOlder = options?.compactOlderHistory === true;
   const splitAt = compactOlder
@@ -572,7 +576,7 @@ Provjeri ISKLJUČIVO:
 
 6) SAFETY — AI je autor warninga. Odbij SAMO jasno opasan TEST (živi SRS/airbag konektor/modul, HV narančasti kabeli/inverter, pirotehnika) bez ijedne kratke praktične rečenice što napraviti PRIJE rada. Ne zahtijevaj warning ni safetyPreconditions na rutinskim testovima. Ne izmišlja wait time.
 
-7) FINISH / CONFIRMED — ne prerani FINISH; CONFIRMED samo uz jak neovisni potvrđujući dokaz (ne 1 simptom/DTC/neprovjerena spece/visok %); ne ignoriraj jake alternative; rejectedDiagnoses → ne CONFIRMED bez novog neovisnog dokaza; measured vs expected bez VERIFIED → ne CONFIRMED. Za FINISH očekuj diagnosisCertainty + diagnosisConfidence.
+7) FINISH / CONFIRMED — ne prerani FINISH; CONFIRMED samo uz jak neovisni potvrđujući dokaz (ne 1 simptom/DTC/neprovjerena spece/visok %) ILI knownFacts.technicianOutcome FAULT_CONFIRMED|REPAIR_CONFIRMED (user-origin; ne pretvara OEM spec u VERIFIED); ne ignoriraj jake alternative osim te potvrde; rejectedDiagnoses → ne CONFIRMED bez novog neovisnog dokaza ili te potvrde; measured vs expected bez VERIFIED → ne CONFIRMED osim technicianOutcome potvrde. Izmišljene OEM brojke i dalje FAIL. Za FINISH očekuj diagnosisCertainty + diagnosisConfidence.
 
 8) ASK — odbij ako info već poznata, ili različiti odgovori ne mijenjaju sljedeći korak, ili consecutiveAnsweredAsksJustCompleted≥1 bez jasnih grana.
 

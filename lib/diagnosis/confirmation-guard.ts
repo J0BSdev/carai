@@ -7,6 +7,7 @@ import { getVerifiedTechnicalSpecs } from "./spec-guard";
 import { diagnosticEvidenceFamilyKey } from "./diagnostic-meta";
 import { isCompletedTestEvidence } from "./test-result";
 import { normalizeForCompare } from "./text";
+import { hasTechnicianConfirmedOutcome } from "./known-facts";
 
 export type FinishDraft = {
   actionType?: string;
@@ -182,6 +183,8 @@ function hasIndependentConfirmatorySignal(
   diagnosticCase: DiagnosticCase,
   draft: FinishDraft,
 ): boolean {
+  if (hasTechnicianConfirmedOutcome(diagnosticCase)) return true;
+
   const families = countCompletedTestFamilies(diagnosticCase);
   const answers = diagnosticCase.steps.filter((s) => {
     if (s.actionType !== "ASK") return false;
@@ -266,6 +269,8 @@ export function findConfirmationGuardIssue(
 
   const certainty = resolveDiagnosisCertainty(draft);
   if (certainty !== "CONFIRMED") return null;
+
+  if (hasTechnicianConfirmedOutcome(diagnosticCase)) return null;
 
   const diagnosisText =
     draft.confirmedFault?.trim() || draft.content?.trim() || "";

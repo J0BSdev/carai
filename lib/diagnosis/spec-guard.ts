@@ -4,6 +4,7 @@ import type {
   TechnicalSpecClaim,
 } from "./types";
 import { draftBlob } from "./text";
+import { hasTechnicianConfirmedOutcome } from "./known-facts";
 
 export type { SpecVerificationStatus, TechnicalSpecClaim };
 
@@ -315,8 +316,13 @@ export function findSpecGuardIssue(
     }
   }
 
-  // FINISH guard: measured vs expected without verified spec
-  if (draft.actionType === "FINISH") {
+  // FINISH guard: measured vs expected without verified spec.
+  // AI-extracted technician confirmation may close the case without a verified
+  // OEM range; invented/contradictory claims above still block.
+  if (
+    draft.actionType === "FINISH" &&
+    !hasTechnicianConfirmedOutcome(diagnosticCase)
+  ) {
     const finishIssue = findFinishUnverifiedSpecIssue(text, verified, newClaims);
     if (finishIssue) return finishIssue;
   }
