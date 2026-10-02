@@ -1058,11 +1058,31 @@ function buildSafeVerifierFallback(
   };
 }
 
+function isTechnicianOutcomeIssue(issue: string | null | undefined): boolean {
+  return typeof issue === "string" && issue.startsWith("TECHNICIAN OUTCOME");
+}
+
+/** Isolated retry copy — no ASK→TEST / keep-TEST helpers. */
+const TECHNICIAN_OUTCOME_RETRY_ISSUES = [
+  "Current mechanic result je semantički interpretiran kao FAULT_CONFIRMED/REPAIR_CONFIRMED.",
+  "Ponovno evaluiraj cijeli CASE STATE i vrati ispravan FINISH ako ta potvrda i dalje vrijedi.",
+  "Ne vraćaj ASK/TEST samo radi nastavka dijagnostike.",
+  "Ne izmišljaj OEM/spec vrijednosti.",
+  "Ako nakon reevaluacije technicianOutcome nije opravdan, izostavi ga i normalno odaberi ASK|TEST|FINISH.",
+];
+
 function buildGuardRetryIssues(
   draft: LlmStepPayload,
   issue: string | null,
   extraIssues: string[],
 ): string[] {
+  if (
+    isTechnicianOutcomeIssue(issue) ||
+    extraIssues.some((item) => isTechnicianOutcomeIssue(item))
+  ) {
+    return [...TECHNICIAN_OUTCOME_RETRY_ISSUES];
+  }
+
   const askRejected =
     draft.actionType === "ASK" ||
     extraIssues.some((i) => /ASK REJECT/i.test(i)) ||
@@ -1404,7 +1424,7 @@ async function ensureDraftPassesQualityGates(
   if (
     draft.actionType === "ASK" &&
     issue &&
-    !/TECHNICIAN OUTCOME/i.test(issue) &&
+    !isTechnicianOutcomeIssue(issue) &&
     turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES
   ) {
     draft = await regenerateWithClaude(
@@ -1447,13 +1467,15 @@ async function ensureDraftPassesQualityGates(
       turn,
       diagnosticCase,
       draft,
-      buildGuardRetryIssues(draft, issue, [
-        "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
-        "Inače: jedan TEST koji razlikuje LEADING od najjače alternative.",
-        "U rationale navedi koje hipoteze razlikuješ.",
-        "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…) bez verifiedTechnicalSpecs.",
-        "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
-      ]),
+      isTechnicianOutcomeIssue(issue)
+        ? [...TECHNICIAN_OUTCOME_RETRY_ISSUES]
+        : buildGuardRetryIssues(draft, issue, [
+            "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
+            "Inače: jedan TEST koji razlikuje LEADING od najjače alternative.",
+            "U rationale navedi koje hipoteze razlikuješ.",
+            "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…) bez verifiedTechnicalSpecs.",
+            "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
+          ]),
     );
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
     if (!issue) return draft;

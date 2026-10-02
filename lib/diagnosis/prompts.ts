@@ -524,12 +524,27 @@ export function buildDiagnosticRetryPrompt(
   const compact = compactCaseStateForPrompt(buildCaseState(diagnosticCase), {
     compactOlderHistory: true,
   });
-  const forceNewGoal = issues.some((i) =>
-    /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS|DRUGAČIJI diagnosticGoal|goal eksplicitno odbijen|Guard odbija trenutni diagnosticGoal/i.test(
-      i,
-    ),
+  const technicianOutcomeRetry = issues.some(
+    (i) =>
+      i.startsWith("TECHNICIAN OUTCOME") ||
+      i.startsWith(
+        "Current mechanic result je semantički interpretiran",
+      ),
   );
+  const forceNewGoal =
+    !technicianOutcomeRetry &&
+    issues.some((i) =>
+      /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS|DRUGAČIJI diagnosticGoal|goal eksplicitno odbijen|Guard odbija trenutni diagnosticGoal/i.test(
+        i,
+      ),
+    );
   const hasLedger = Array.isArray(compact.compactHistory);
+
+  const retryInstruction = technicianOutcomeRetry
+    ? "Draft odbijen zbog technicianOutcome vs actionType. Ne zadržavaj ASK/TEST ni diagnosticTarget/diagnosticGoal iz previous drafta. Reevaluate CASE STATE. Ako potvrda i dalje vrijedi, vrati FINISH. Popravi samo navedene ISSUES."
+    : forceNewGoal
+      ? "Draft odbijen zbog ponavljanja grane — vrati NOVI JSON s DRUGAČIJIM diagnosticGoal. Popravi samo navedeni issue."
+      : "Draft odbijen — vrati ispravljeni JSON. Zadrži isti diagnosticTarget i diagnosticGoal; popravi samo navedeni issue (ne biraj novu granu).";
 
   return [
     hasLedger
@@ -537,9 +552,7 @@ export function buildDiagnosticRetryPrompt(
       : "CASE STATE:",
     JSON.stringify(compact),
     "",
-    forceNewGoal
-      ? "Draft odbijen zbog ponavljanja grane — vrati NOVI JSON s DRUGAČIJIM diagnosticGoal. Popravi samo navedeni issue."
-      : "Draft odbijen — vrati ispravljeni JSON. Zadrži isti diagnosticTarget i diagnosticGoal; popravi samo navedeni issue (ne biraj novu granu).",
+    retryInstruction,
     "ISSUES:",
     ...issues.map((issue) => `- ${issue}`),
     "",
