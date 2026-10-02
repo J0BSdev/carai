@@ -2,9 +2,10 @@ import type {
   DiagnosticCase,
   SpecVerificationStatus,
   TechnicalSpecClaim,
+  TechnicianOutcome,
 } from "./types";
 import { draftBlob } from "./text";
-import { hasTechnicianConfirmedOutcome } from "./known-facts";
+import { isConfirmedTechnicianOutcome } from "./known-facts";
 
 export type { SpecVerificationStatus, TechnicalSpecClaim };
 
@@ -275,6 +276,7 @@ export function findSpecGuardIssue(
     insufficientEvidence?: boolean | null;
     confidence?: string | null;
   },
+  technicianOutcome?: TechnicianOutcome | null,
 ): string | null {
   const text = draftBlob(draft);
   if (!text.trim()) return null;
@@ -317,11 +319,11 @@ export function findSpecGuardIssue(
   }
 
   // FINISH guard: measured vs expected without verified spec.
-  // AI-extracted technician confirmation may close the case without a verified
-  // OEM range; invented/contradictory claims above still block.
+  // Current-turn technician confirmation may close without a verified OEM range
+  // only when Claude already chose FINISH. Invented/contradictory claims still block.
   if (
     draft.actionType === "FINISH" &&
-    !hasTechnicianConfirmedOutcome(diagnosticCase)
+    !isConfirmedTechnicianOutcome(technicianOutcome)
   ) {
     const finishIssue = findFinishUnverifiedSpecIssue(text, verified, newClaims);
     if (finishIssue) return finishIssue;

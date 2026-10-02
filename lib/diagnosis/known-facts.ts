@@ -18,7 +18,6 @@ export type KnownFactsSnapshot = {
   knownDtcCodes: string[];
   symptoms: string[];
   measurements: string[];
-  technicianOutcome: TechnicianOutcome | null;
   /** Explicit reminder for the model */
   doNotReAsk: string[];
 };
@@ -58,17 +57,18 @@ export function buildKnownFactsSnapshot(
     measurements: (extracted.measurements ?? [])
       .map(measurementText)
       .filter(Boolean),
-    technicianOutcome: extracted.technicianOutcome ?? null,
     doNotReAsk,
   };
 }
 
-/** True when the diagnostic model extracted an explicit mechanic confirmation. */
-export function hasTechnicianConfirmedOutcome(
-  diagnosticCase: DiagnosticCase,
+/** Current-turn AI extraction only — never read from persisted case facts. */
+export function isConfirmedTechnicianOutcome(
+  outcome: TechnicianOutcome | null | undefined,
 ): boolean {
-  const status = diagnosticCase.extracted?.technicianOutcome?.status;
-  return status === "FAULT_CONFIRMED" || status === "REPAIR_CONFIRMED";
+  return (
+    outcome?.status === "FAULT_CONFIRMED" ||
+    outcome?.status === "REPAIR_CONFIRMED"
+  );
 }
 
 export function latestHypotheses(diagnosticCase: DiagnosticCase): Hypothesis[] {

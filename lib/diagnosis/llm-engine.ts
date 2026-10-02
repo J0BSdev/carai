@@ -73,10 +73,14 @@ const MAX_DIAGNOSTIC_RETRIES = 2;
  * Mutable state of one diagnostic turn. The semantic delta belongs to the turn, not
  * to a single draft: a guard retry that omits semanticUpdate must not drop facts an
  * earlier draft of the same turn already extracted.
+ * technicianOutcome is REPLACE-per-draft and never accumulated across retries.
  */
 type DiagnosticTurn = {
   retriesUsed: number;
   extracted: ExtractedCaseFacts | null;
+  technicianOutcome: TechnicianOutcome | null;
+  /** True only on continue after a mechanic result. startCase is always false. */
+  allowTechnicianOutcome: boolean;
 };
 
 const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
@@ -459,7 +463,6 @@ function mergeSemanticUpdate(
   let symptoms = [...(prior.symptoms ?? [])];
   let dtcs = [...(prior.dtcs ?? [])];
   let measurements = [...(prior.measurements ?? [])];
-  let technicianOutcome = prior.technicianOutcome;
   let changed = false;
 
   const rawVehicle = update.vehicle;
@@ -536,21 +539,13 @@ function mergeSemanticUpdate(
     }
   }
 
-  const outcome = parseTechnicianOutcome(update.technicianOutcome);
-  if (outcome) {
-    technicianOutcome = outcome;
-    changed = true;
-  }
-
   if (!changed) return null;
 
   return {
-    ...prior,
     vehicle,
     symptoms: symptoms.length ? symptoms : undefined,
     dtcs: dtcs.length ? dtcs : undefined,
     measurements: measurements.length ? measurements : undefined,
-    technicianOutcome,
   };
 }
 
@@ -563,6 +558,13 @@ function recordSemanticUpdate(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): void {
+  if (turn.allowTechnicianOutcome) {
+    turn.technicianOutcome =
+      parseTechnicianOutcome(draft.semanticUpdate?.technicianOutcome) ?? null;
+  } else {
+    turn.technicianOutcome = null;
+  }
+
   const update = draft.semanticUpdate;
   if (!update || typeof update !== "object") return;
   const merged = mergeSemanticUpdate(
@@ -581,64 +583,36 @@ function caseForTurn(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
 ): DiagnosticCase {
-  if (!turn.extracted) return diagnosticCase;
-  return { ...diagnosticCase, extracted: turn.extracted };
+  const extracted = stripLegacyExtractedTechnicianOutcome(
+    turn.extracted ?? diagnosticCase.extracted,
+  );
+  if (!extracted) return diagnosticCase;
+  return { ...diagnosticCase, extracted };
 }
 
-/** Persist case facts — only once the turn is accepted. */
+/** Old clients may still send extracted.technicianOutcome — never treat it as active. */
+function stripLegacyExtractedTechnicianOutcome(
+  extracted: ExtractedCaseFacts | undefined | null,
+): ExtractedCaseFacts | undefined {
+  if (!extracted) return undefined;
+  if (!("technicianOutcome" in extracted)) return extracted;
+  const rest = { ...extracted };
+  delete (rest as { technicianOutcome?: unknown }).technicianOutcome;
+  return rest;
+}
+
+/** Persist case facts — only once the turn is accepted. Never persist technicianOutcome. */
 function persistSemanticUpdate(
   diagnosticCase: DiagnosticCase,
   turn: DiagnosticTurn,
 ): void {
-  if (turn.extracted) diagnosticCase.extracted = turn.extracted;
-}
-
-/**
- * If Claude extracted FAULT_CONFIRMED / REPAIR_CONFIRMED, the action is FINISH.
- * Uses only the typed semantic field — no prose matching.
- */
-function applyTechnicianOutcomeFinish(
-  turn: DiagnosticTurn,
-  draft: LlmStepPayload,
-): LlmStepPayload {
-  const status =
-    turn.extracted?.technicianOutcome?.status ??
-    parseTechnicianOutcome(draft.semanticUpdate?.technicianOutcome)?.status;
-  if (status !== "FAULT_CONFIRMED" && status !== "REPAIR_CONFIRMED") {
-    return draft;
+  if (turn.extracted) {
+    diagnosticCase.extracted =
+      stripLegacyExtractedTechnicianOutcome(turn.extracted) ?? {};
+  } else if (diagnosticCase.extracted) {
+    diagnosticCase.extracted =
+      stripLegacyExtractedTechnicianOutcome(diagnosticCase.extracted) ?? {};
   }
-
-  const fault =
-    turn.extracted?.technicianOutcome?.fault?.trim() ||
-    draft.confirmedFault?.trim() ||
-    draft.content.trim();
-
-  if (draft.actionType === "FINISH") {
-    return {
-      ...draft,
-      confirmedFault: fault,
-      diagnosisCertainty: draft.diagnosisCertainty ?? "CONFIRMED",
-      insufficientEvidence: false,
-    };
-  }
-
-  return {
-    ...draft,
-    actionType: "FINISH",
-    content: fault,
-    confirmedFault: fault,
-    diagnosisCertainty: "CONFIRMED",
-    diagnosisConfidence:
-      typeof draft.diagnosisConfidence === "number"
-        ? draft.diagnosisConfidence
-        : 90,
-    insufficientEvidence: false,
-    rationale:
-      draft.rationale?.trim() ||
-      (status === "REPAIR_CONFIRMED"
-        ? "Tehničar je potvrdio da je kvar riješen."
-        : "Tehničar je potvrdio uzrok."),
-  };
 }
 
 /** Guards evaluate the draft against the case including the turn's own facts. */
@@ -647,7 +621,11 @@ function findDraftQualityIssueInTurn(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): string | null {
-  return findDraftQualityIssue(caseForTurn(turn, diagnosticCase), draft);
+  return findDraftQualityIssue(
+    caseForTurn(turn, diagnosticCase),
+    draft,
+    turn.technicianOutcome,
+  );
 }
 
 async function draftWithClaude(
@@ -918,6 +896,7 @@ async function verifyWithOpenAi(
     user: buildVerifierUserPrompt(turnCase, draft, {
       previousIssues: options?.previousIssues,
       strongFinal: options?.strongFinal,
+      technicianOutcome: turn.technicianOutcome,
     }),
     telemetry: step
       ? {
@@ -966,9 +945,14 @@ async function verifyWithOpenAi(
 async function applyConfirmationPolicy(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
+  technicianOutcome?: TechnicianOutcome | null,
 ): Promise<LlmStepPayload> {
   if (draft.actionType !== "FINISH") return draft;
-  const issue = findConfirmationGuardIssue(diagnosticCase, draft);
+  const issue = findConfirmationGuardIssue(
+    diagnosticCase,
+    draft,
+    technicianOutcome,
+  );
   if (!issue) {
     const certainty = resolveDiagnosisCertainty(draft);
     return {
@@ -991,6 +975,7 @@ function buildSafeVerifierFallback(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   issues: string[],
+  technicianOutcome?: TechnicianOutcome | null,
 ): LlmStepPayload {
   const issueSummary =
     issues.filter(Boolean).slice(0, 2).join("; ") ||
@@ -1004,7 +989,11 @@ function buildSafeVerifierFallback(
       insufficientEvidence: true,
       confidence: "medium",
     };
-    const confIssue = findConfirmationGuardIssue(diagnosticCase, next);
+    const confIssue = findConfirmationGuardIssue(
+      diagnosticCase,
+      next,
+      technicianOutcome,
+    );
     if (confIssue) {
       next = {
         ...downgradeUnjustifiedConfirmed(next, confIssue),
@@ -1149,10 +1138,16 @@ function buildGuardRetryIssues(
  */
 async function callVerifiedDiagnosticStep(
   diagnosticCase: DiagnosticCase,
+  options?: { allowTechnicianOutcome?: boolean },
 ): Promise<DiagnosticStep> {
   const stepNumber = diagnosticCase.steps.length + 1;
   const stepId = `step-${stepNumber}`;
-  const turn: DiagnosticTurn = { retriesUsed: 0, extracted: null };
+  const turn: DiagnosticTurn = {
+    retriesUsed: 0,
+    extracted: null,
+    technicianOutcome: null,
+    allowTechnicianOutcome: options?.allowTechnicianOutcome === true,
+  };
 
   return runAiStep(
     {
@@ -1167,12 +1162,12 @@ async function callVerifiedDiagnosticStep(
         buildDiagnosticUserPrompt(diagnosticCase),
         { role: "diagnostic", reasonCalled: "initial", retryNumber: 0 },
       );
-      draft = applyTechnicianOutcomeFinish(turn, draft);
 
       draft = await ensureDraftPassesQualityGates(turn, diagnosticCase, draft);
       draft = await applyConfirmationPolicy(
         caseForTurn(turn, diagnosticCase),
         draft,
+        turn.technicianOutcome,
       );
 
       const verifierReason = shouldCallVerifier(
@@ -1192,6 +1187,7 @@ async function callVerifiedDiagnosticStep(
       draft = await applyConfirmationPolicy(
         caseForTurn(turn, diagnosticCase),
         draft,
+        turn.technicianOutcome,
       );
 
       // Turn accepted — only now do the model's case facts reach the real case.
@@ -1293,7 +1289,12 @@ async function runSelectiveVerifier(
     return runStrongVerifierOnce(turn, diagnosticCase, draft, collectedIssues);
   }
 
-  return buildSafeVerifierFallback(turnCase, draft, collectedIssues);
+  return buildSafeVerifierFallback(
+    turnCase,
+    draft,
+    collectedIssues,
+    turn.technicianOutcome,
+  );
 }
 
 async function runStrongVerifierOnce(
@@ -1305,7 +1306,12 @@ async function runStrongVerifierOnce(
   const turnCase = caseForTurn(turn, diagnosticCase);
   const strongModel = getStrongVerifierModel();
   if (!strongModel) {
-    return buildSafeVerifierFallback(turnCase, draft, previousIssues);
+    return buildSafeVerifierFallback(
+      turnCase,
+      draft,
+      previousIssues,
+      turn.technicianOutcome,
+    );
   }
 
   diagnosticCase.strongVerifierUsed = true;
@@ -1330,19 +1336,30 @@ async function runStrongVerifierOnce(
       corrected,
     );
     if (!correctedIssue) {
-      return applyConfirmationPolicy(turnCase, corrected);
+      return applyConfirmationPolicy(
+        turnCase,
+        corrected,
+        turn.technicianOutcome,
+      );
     }
-    return buildSafeVerifierFallback(turnCase, draft, [
-      ...previousIssues,
-      ...verdict.issues,
-      correctedIssue,
-    ]);
+    return buildSafeVerifierFallback(
+      turnCase,
+      draft,
+      [
+        ...previousIssues,
+        ...verdict.issues,
+        correctedIssue,
+      ],
+      turn.technicianOutcome,
+    );
   }
 
-  return buildSafeVerifierFallback(turnCase, draft, [
-    ...previousIssues,
-    ...verdict.issues,
-  ]);
+  return buildSafeVerifierFallback(
+    turnCase,
+    draft,
+    [...previousIssues, ...verdict.issues],
+    turn.technicianOutcome,
+  );
 }
 
 async function ensureDraftPassesQualityGates(
@@ -1352,12 +1369,12 @@ async function ensureDraftPassesQualityGates(
   extraIssues: string[] = [],
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
-  draft = applyTechnicianOutcomeFinish(turn, draft);
 
   if (draft.actionType === "FINISH") {
     const confIssue = findConfirmationGuardIssue(
       caseForTurn(turn, diagnosticCase),
       draft,
+      turn.technicianOutcome,
     );
     if (confIssue) {
       draft = {
@@ -1381,13 +1398,13 @@ async function ensureDraftPassesQualityGates(
     draft,
     buildGuardRetryIssues(draft, issue, pendingExtra),
   );
-  draft = applyTechnicianOutcomeFinish(turn, draft);
   pendingExtra = [];
   issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
 
   if (
     draft.actionType === "ASK" &&
     issue &&
+    !/TECHNICIAN OUTCOME/i.test(issue) &&
     turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES
   ) {
     draft = await regenerateWithClaude(
@@ -1399,7 +1416,6 @@ async function ensureDraftPassesQualityGates(
         "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
       ],
     );
-    draft = applyTechnicianOutcomeFinish(turn, draft);
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
   }
 
@@ -1421,7 +1437,6 @@ async function ensureDraftPassesQualityGates(
         "technicalClaims[]: svaka tvrdnja mora imati ispravan sourceType.",
       ],
     );
-    draft = applyTechnicianOutcomeFinish(turn, draft);
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
   }
 
@@ -1440,7 +1455,6 @@ async function ensureDraftPassesQualityGates(
         "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
       ]),
     );
-    draft = applyTechnicianOutcomeFinish(turn, draft);
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
     if (!issue) return draft;
   }
@@ -1465,6 +1479,7 @@ async function finalizeAfterRetryLimit(
     const softened = await applyConfirmationPolicy(
       caseForTurn(turn, diagnosticCase),
       draft,
+      turn.technicianOutcome,
     );
     if (!findDraftQualityIssueInTurn(turn, diagnosticCase, softened)) {
       return softened;
@@ -1600,6 +1615,8 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const incoming: DiagnosticCase = {
       ...diagnosticCase,
+      extracted:
+        stripLegacyExtractedTechnicianOutcome(diagnosticCase.extracted) ?? {},
       observations: dedupeObservationsByStepId(diagnosticCase.observations),
     };
 
@@ -1671,7 +1688,9 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         observations: writtenObservations,
       };
 
-      const nextStep = await callVerifiedDiagnosticStep(reopened);
+      const nextStep = await callVerifiedDiagnosticStep(reopened, {
+        allowTechnicianOutcome: true,
+      });
       const isFinish = nextStep.actionType === "FINISH";
       const updated: DiagnosticCase = {
         ...reopened,
@@ -1707,7 +1726,9 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       observations: writtenObservations,
     };
 
-    const nextStep = await callVerifiedDiagnosticStep(caseWithObservation);
+    const nextStep = await callVerifiedDiagnosticStep(caseWithObservation, {
+      allowTechnicianOutcome: true,
+    });
     const isFinish = nextStep.actionType === "FINISH";
     const updated: DiagnosticCase = {
       ...caseWithObservation,

@@ -63,7 +63,6 @@ export interface ExtractedCaseFacts {
   dtcs?: string[];
   /** Legacy saved cases may hold plain strings here. */
   measurements?: Array<ExtractedMeasurement | string>;
-  technicianOutcome?: TechnicianOutcome;
 }
 
 export interface Hypothesis {

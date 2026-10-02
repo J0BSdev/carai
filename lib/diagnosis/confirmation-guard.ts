@@ -2,12 +2,13 @@ import type {
   DiagnosticCase,
   DiagnosisCertainty,
   Hypothesis,
+  TechnicianOutcome,
 } from "./types";
 import { getVerifiedTechnicalSpecs } from "./spec-guard";
 import { diagnosticEvidenceFamilyKey } from "./diagnostic-meta";
 import { isCompletedTestEvidence } from "./test-result";
 import { normalizeForCompare } from "./text";
-import { hasTechnicianConfirmedOutcome } from "./known-facts";
+import { isConfirmedTechnicianOutcome } from "./known-facts";
 
 export type FinishDraft = {
   actionType?: string;
@@ -182,8 +183,14 @@ function countCompletedTestFamilies(diagnosticCase: DiagnosticCase): number {
 function hasIndependentConfirmatorySignal(
   diagnosticCase: DiagnosticCase,
   draft: FinishDraft,
+  technicianOutcome?: TechnicianOutcome | null,
 ): boolean {
-  if (hasTechnicianConfirmedOutcome(diagnosticCase)) return true;
+  if (
+    draft.actionType === "FINISH" &&
+    isConfirmedTechnicianOutcome(technicianOutcome)
+  ) {
+    return true;
+  }
 
   const families = countCompletedTestFamilies(diagnosticCase);
   const answers = diagnosticCase.steps.filter((s) => {
@@ -259,40 +266,79 @@ function finishDependsOnUnverifiedSpec(draft: FinishDraft): boolean {
 }
 
 /**
+ * Confirmed mechanic stance on this turn vs Claude's actionType.
+ * Does not parse mechanic prose — only the typed AI extraction.
+ */
+export function findTechnicianOutcomeConsistencyIssue(
+  technicianOutcome: TechnicianOutcome | null | undefined,
+  draft: FinishDraft,
+): string | null {
+  if (!isConfirmedTechnicianOutcome(technicianOutcome)) return null;
+
+  if (draft.actionType === "ASK" || draft.actionType === "TEST") {
+    return (
+      "TECHNICIAN OUTCOME: ovaj mechanic result je FAULT_CONFIRMED/REPAIR_CONFIRMED. " +
+      "actionType mora biti FINISH. Reevaluate kao FINISH, ne ASK/TEST."
+    );
+  }
+
+  if (
+    draft.actionType === "FINISH" &&
+    technicianOutcome?.status === "FAULT_CONFIRMED"
+  ) {
+    const fault =
+      technicianOutcome.fault?.trim() || draft.confirmedFault?.trim();
+    if (!fault) {
+      return (
+        "TECHNICIAN OUTCOME: FAULT_CONFIRMED zahtijeva technicianOutcome.fault ili confirmedFault."
+      );
+    }
+  }
+
+  return null;
+}
+
+/**
  * Blocks unjustified CONFIRMED. Returns issue string or null.
+ * `technicianOutcome` is the current turn extraction only — never persisted case facts.
  */
 export function findConfirmationGuardIssue(
   diagnosticCase: DiagnosticCase,
   draft: FinishDraft,
+  technicianOutcome?: TechnicianOutcome | null,
 ): string | null {
   if (draft.actionType !== "FINISH") return null;
 
   const certainty = resolveDiagnosisCertainty(draft);
   if (certainty !== "CONFIRMED") return null;
 
-  if (hasTechnicianConfirmedOutcome(diagnosticCase)) return null;
+  const turnConfirmed =
+    isConfirmedTechnicianOutcome(technicianOutcome) &&
+    draft.actionType === "FINISH";
 
   const diagnosisText =
     draft.confirmedFault?.trim() || draft.content?.trim() || "";
 
-  if (
-    wasDiagnosisRejected(diagnosticCase, diagnosisText) &&
-    !newIndependentEvidenceSinceRejection(diagnosticCase)
-  ) {
-    return (
-      "RECONFIRMATION GUARD: wasDiagnosisRejected===true i newIndependentConfirmatoryEvidence===false. " +
-      "Ne smiješ vratiti CONFIRMED za odbijenu dijagnozu. Koristi LIKELY/HIGH_CONFIDENCE i diskriminirajući TEST/ASK."
-    );
+  if (!turnConfirmed) {
+    if (
+      wasDiagnosisRejected(diagnosticCase, diagnosisText) &&
+      !newIndependentEvidenceSinceRejection(diagnosticCase)
+    ) {
+      return (
+        "RECONFIRMATION GUARD: wasDiagnosisRejected===true i newIndependentConfirmatoryEvidence===false. " +
+        "Ne smiješ vratiti CONFIRMED za odbijenu dijagnozu. Koristi LIKELY/HIGH_CONFIDENCE i diskriminirajući TEST/ASK."
+      );
+    }
+
+    if (strongAlternativeExists(draft)) {
+      return (
+        "CONFIRMED GUARD: strongAlternativeStillExists===true. " +
+        "Confidence != confirmation. Vrati HIGH_CONFIDENCE ili LIKELY, ne CONFIRMED."
+      );
+    }
   }
 
-  if (strongAlternativeExists(draft)) {
-    return (
-      "CONFIRMED GUARD: strongAlternativeStillExists===true. " +
-      "Confidence != confirmation. Vrati HIGH_CONFIDENCE ili LIKELY, ne CONFIRMED."
-    );
-  }
-
-  if (!hasIndependentConfirmatorySignal(diagnosticCase, draft)) {
+  if (!hasIndependentConfirmatorySignal(diagnosticCase, draft, technicianOutcome)) {
     return (
       "CONFIRMED GUARD: nema dovoljno NEOVISNIH potvrđujućih dokaza. " +
       "Jedan simptom/DTC/lanac povezanih opažanja nije CONFIRMED. Vrati LIKELY ili HIGH_CONFIDENCE."
@@ -300,6 +346,7 @@ export function findConfirmationGuardIssue(
   }
 
   if (
+    !turnConfirmed &&
     finishDependsOnUnverifiedSpec(draft) &&
     getVerifiedTechnicalSpecs(diagnosticCase).length === 0
   ) {
@@ -311,7 +358,12 @@ export function findConfirmationGuardIssue(
 
   // High % alone never justifies CONFIRMED
   const conf = leadingHypothesisConfidence(draft);
-  if (conf != null && conf >= 80 && strongAlternativeExists(draft)) {
+  if (
+    !turnConfirmed &&
+    conf != null &&
+    conf >= 80 &&
+    strongAlternativeExists(draft)
+  ) {
     return (
       "CONFIRMED GUARD: visoki confidence postotak nije potvrda. Status = HIGH_CONFIDENCE."
     );

@@ -39,8 +39,9 @@ export type LlmStepPayload = {
       parameter?: string | null;
     }> | null;
     /**
-     * Mechanic stance on the current cause/repair, extracted from the last
-     * result + CASE STATE. Omit when there is no clear confirmation.
+     * Continue-turn only: mechanic stance extracted from the last result.
+     * Omit on startCase / original complaint, or when there is no clear confirmation.
+     * Backend type-validates and REPLACE-per-draft; never infers from prose.
      */
     technicianOutcome?: {
       status?: string | null;
