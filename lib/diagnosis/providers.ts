@@ -90,30 +90,14 @@ export type LlmStepPayload = {
   testMethod?: string | null;
   /**
    * Optional short how-to for a non-routine TEST. Omit on routine tests.
-   * UI guide only — not evidence.
+   * Shown in the UI and scanned by spec/safety guards. Not diagnostic evidence.
    */
   testGuide?: string | null;
 };
 
-export type VerifierCorrectionPatch = Partial<
-  Pick<
-    LlmStepPayload,
-    | "content"
-    | "rationale"
-    | "expectedResultHint"
-    | "confirmedFault"
-    | "diagnosisCertainty"
-    | "diagnosisConfidence"
-    | "insufficientEvidence"
-    | "technicalClaims"
-    | "safetyPreconditions"
-  >
->;
-
 export type VerifierPayload = {
   approved: boolean;
   issues: string[];
-  correction: VerifierCorrectionPatch | null;
 };
 
 type AnthropicResult = {

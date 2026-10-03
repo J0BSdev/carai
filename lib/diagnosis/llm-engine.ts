@@ -7,6 +7,7 @@ import {
 } from "./config";
 import {
   DiagnosticPipelineError,
+  InvalidObservationError,
   ObservationConflictError,
 } from "./errors";
 import {
@@ -23,7 +24,6 @@ import {
   callOpenAiJson,
   parseJson,
   type LlmStepPayload,
-  type VerifierCorrectionPatch,
   type VerifierPayload,
 } from "./providers";
 import {
@@ -69,11 +69,8 @@ import {
   stripLegacyExtractedTechnicianOutcome,
 } from "./semantic-update";
 import { toDiagnosticStep } from "./step-draft";
-import {
-  parseVerifierIssues,
-  sanitizeVerifierCorrection,
-} from "./verifier-payload";
-import { issue, type GuardIssue } from "./guard-issue";
+import { parseVerifierVerdict } from "./verifier-payload";
+import type { GuardIssue } from "./guard-issue";
 
 /** Max Claude regenerations after the initial draft, per user step. */
 const MAX_DIAGNOSTIC_RETRIES = 2;
@@ -120,37 +117,6 @@ function hasHighConfidence(draft: LlmStepPayload): boolean {
   const certainty = (draft.diagnosisCertainty ?? "").toUpperCase();
   if (certainty === "CONFIRMED" || certainty === "HIGH_CONFIDENCE") return true;
   return false;
-}
-
-function hasContradictoryStrongEvidence(draft: LlmStepPayload): boolean {
-  const hyps = draft.hypotheses ?? [];
-  const active = hyps.filter((h) => {
-    const st = (h.status ?? "").toUpperCase();
-    return (
-      st === "LIKELY" ||
-      st === "LEADING" ||
-      st === "POSSIBLE" ||
-      st === "SUPPORTED" ||
-      (typeof h.confidence === "number" && h.confidence >= 40)
-    );
-  });
-  if (active.length < 2) {
-    return active.some(
-      (h) =>
-        (h.supportingEvidence?.length ?? 0) > 0 &&
-        (h.contradictingEvidence?.length ?? 0) > 0,
-    );
-  }
-  const withSupport = active.filter(
-    (h) => (h.supportingEvidence?.length ?? 0) > 0,
-  );
-  const withContra = active.filter(
-    (h) => (h.contradictingEvidence?.length ?? 0) > 0,
-  );
-  return (
-    withSupport.length >= 2 ||
-    (withSupport.length >= 1 && withContra.length >= 1)
-  );
 }
 
 type VerifierRouteReason =
@@ -202,15 +168,13 @@ function shouldEscalateToStrongVerifier(
   if (draft.actionType === "ASK") return false;
   if (previousIssues.length === 0) return false;
 
-  const safetyUnclear = isSafetyCriticalTestDraft(draft);
-  const contradictory = hasContradictoryStrongEvidence(draft);
-
-  if (draft.actionType === "FINISH") {
-    return true;
-  }
-
+  if (draft.actionType === "FINISH") return true;
   if (draft.actionType === "TEST") {
-    return safetyUnclear || contradictory;
+    return (
+      isSafetyCriticalTestDraft(draft) ||
+      hasTechnicalClaimsOrSpecs(draft) ||
+      hasHighConfidence(draft)
+    );
   }
 
   return false;
@@ -311,13 +275,6 @@ async function regenerateWithClaude(
   );
 }
 
-function mergeVerifierCorrection(
-  draft: LlmStepPayload,
-  correction: VerifierCorrectionPatch,
-): LlmStepPayload {
-  return { ...draft, ...correction };
-}
-
 async function verifyWithOpenAi(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
@@ -364,15 +321,8 @@ async function verifyWithOpenAi(
   const parsed = parseJson<{
     approved?: unknown;
     issues?: unknown;
-    correction?: unknown;
   }>(raw, "OpenAI verifier odgovor");
-  const issues = parseVerifierIssues(parsed.issues);
-  const approved = parsed.approved === true && issues.length === 0;
-  const correction = approved
-    ? null
-    : sanitizeVerifierCorrection(parsed.correction);
-
-  return { approved, issues, correction };
+  return parseVerifierVerdict(parsed);
 }
 
 async function applyConfirmationPolicy(
@@ -409,44 +359,14 @@ function isGuardIssueValue(value: GuardIssue | string | undefined): value is Gua
   return typeof value === "object" && value !== null && "code" in value;
 }
 
-/** Isolated retry copy — structural FINISH invariant, not a new diagnosis. */
-const TECHNICIAN_OUTCOME_RETRY_ISSUES = [
-  "Current mechanic result je semantički interpretiran kao FAULT_CONFIRMED/REPAIR_CONFIRMED.",
-  "Ponovno evaluiraj cijeli CASE STATE i vrati ispravan FINISH ako ta potvrda i dalje vrijedi.",
-  "Ne vraćaj ASK/TEST samo radi nastavka dijagnostike.",
-  "Ne izmišljaj OEM/spec vrijednosti.",
-  "Ako nakon reevaluacije technicianOutcome nije opravdan, izostavi ga i normalno odaberi ASK|TEST|FINISH.",
-];
-
-function technicianOutcomeRetryIssues(): Array<GuardIssue | string> {
-  const [first, ...rest] = TECHNICIAN_OUTCOME_RETRY_ISSUES;
-  return [issue("TECHNICIAN_OUTCOME", first!), ...rest];
-}
-
-function retryIssuesFor(
-  issue: GuardIssue | null,
-  extra: GuardIssue[],
-): Array<GuardIssue | string> {
-  const items: Array<GuardIssue | string> = [
-    ...(issue ? [issue] : []),
-    ...extra,
-  ];
-  if (items.some((item) => isGuardIssueValue(item) && item.code === "TECHNICIAN_OUTCOME")) {
-    return technicianOutcomeRetryIssues();
-  }
-  if (items.some((item) => isGuardIssueValue(item) && item.code === "SAFETY_REJECT")) {
+function retryIssuesFor(issue: GuardIssue): Array<GuardIssue | string> {
+  if (issue.code === "TECHNICIAN_OUTCOME") {
     return [
-      ...items,
-      "Isti TEST. Dodaj 1 kratku praktičnu rečenicu što napraviti PRIJE rada. Ne checklista. Ne izmišljaj wait time.",
+      issue,
+      "Ako potvrda vrijedi, vrati FINISH. Inače izostavi technicianOutcome.",
     ];
   }
-  if (items.some((item) => isGuardIssueValue(item) && item.code === "TEST_META")) {
-    return [
-      ...items,
-      "TEST mora imati diagnosticTarget, diagnosticGoal i testMethod.",
-    ];
-  }
-  return items;
+  return [issue];
 }
 
 async function callVerifiedDiagnosticStep(
@@ -477,11 +397,6 @@ async function callVerifiedDiagnosticStep(
       );
 
       draft = await ensureDraftPassesQualityGates(turn, diagnosticCase, draft);
-      draft = await applyConfirmationPolicy(
-        caseForTurn(turn, diagnosticCase),
-        draft,
-        turn.technicianOutcome,
-      );
 
       const verifierReason = shouldCallVerifier(
         caseForTurn(turn, diagnosticCase),
@@ -509,24 +424,6 @@ async function callVerifiedDiagnosticStep(
   );
 }
 
-async function applyVerifierCorrection(
-  turn: DiagnosticTurn,
-  diagnosticCase: DiagnosticCase,
-  draft: LlmStepPayload,
-  correction: VerifierCorrectionPatch,
-): Promise<LlmStepPayload> {
-  const merged = mergeVerifierCorrection(draft, correction);
-  const correctedIssue = findDraftQualityIssueInTurn(
-    turn,
-    diagnosticCase,
-    merged,
-  );
-  if (!correctedIssue) return merged;
-  return ensureDraftPassesQualityGates(turn, diagnosticCase, merged, [
-    correctedIssue,
-  ]);
-}
-
 async function runSelectiveVerifier(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
@@ -541,15 +438,6 @@ async function runSelectiveVerifier(
     reasonCalled,
   });
   if (verdict.approved) return draft;
-
-  if (verdict.correction) {
-    return applyVerifierCorrection(
-      turn,
-      diagnosticCase,
-      draft,
-      verdict.correction,
-    );
-  }
 
   collectedIssues.push(
     ...(verdict.issues.length
@@ -581,14 +469,6 @@ async function runSelectiveVerifier(
       reasonCalled: retryReason,
     });
     if (verdict.approved) return draft;
-    if (verdict.correction) {
-      return applyVerifierCorrection(
-        turn,
-        diagnosticCase,
-        draft,
-        verdict.correction,
-      );
-    }
     collectedIssues.push(
       ...(verdict.issues.length
         ? verdict.issues
@@ -610,7 +490,6 @@ async function runStrongVerifierOnce(
   draft: LlmStepPayload,
   previousIssues: string[],
 ): Promise<LlmStepPayload> {
-  const turnCase = caseForTurn(turn, diagnosticCase);
   const strongModel = getStrongVerifierModel();
   if (!strongModel) {
     rejectUnapprovedDraft(previousIssues);
@@ -627,28 +506,6 @@ async function runStrongVerifierOnce(
   });
 
   if (verdict.approved) return draft;
-
-  if (verdict.correction) {
-    const corrected = mergeVerifierCorrection(draft, verdict.correction);
-    const correctedIssue = findDraftQualityIssueInTurn(
-      turn,
-      diagnosticCase,
-      corrected,
-    );
-    if (!correctedIssue) {
-      return applyConfirmationPolicy(
-        turnCase,
-        corrected,
-        turn.technicianOutcome,
-      );
-    }
-    rejectUnapprovedDraft([
-      ...previousIssues,
-      ...verdict.issues,
-      correctedIssue.message,
-    ]);
-  }
-
   rejectUnapprovedDraft([...previousIssues, ...verdict.issues]);
 }
 
@@ -656,73 +513,23 @@ async function ensureDraftPassesQualityGates(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   initialDraft: LlmStepPayload,
-  extraIssues: GuardIssue[] = [],
 ): Promise<LlmStepPayload> {
-  let draft = await applyConfirmationPolicy(
-    caseForTurn(turn, diagnosticCase),
-    initialDraft,
-    turn.technicianOutcome,
-  );
-  let pending = [...extraIssues];
-
+  let draft = initialDraft;
   for (;;) {
     const issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
-    if (!issue && pending.length === 0) return draft;
+    if (!issue) return draft;
     if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
-      return finalizeAfterRetryLimit(turn, diagnosticCase, draft, issue);
+      throw new DiagnosticPipelineError(
+        `Draft nije prošao quality guard nakon retry limita: ${issue.message}`,
+      );
     }
     draft = await regenerateWithClaude(
       turn,
       diagnosticCase,
       draft,
-      retryIssuesFor(issue, pending),
-    );
-    pending = [];
-    draft = await applyConfirmationPolicy(
-      caseForTurn(turn, diagnosticCase),
-      draft,
-      turn.technicianOutcome,
+      retryIssuesFor(issue),
     );
   }
-}
-
-/**
- * Retry budget spent. A failing ASK/TEST is never turned into a FINISH.
- * An existing FINISH may only be softened by the confirmation policy.
- */
-async function finalizeAfterRetryLimit(
-  turn: DiagnosticTurn,
-  diagnosticCase: DiagnosticCase,
-  draft: LlmStepPayload,
-  issue: GuardIssue | null,
-): Promise<LlmStepPayload> {
-  if (!issue) return draft;
-
-  if (draft.actionType === "FINISH") {
-    const softened = await applyConfirmationPolicy(
-      caseForTurn(turn, diagnosticCase),
-      draft,
-      turn.technicianOutcome,
-    );
-    if (!findDraftQualityIssueInTurn(turn, diagnosticCase, softened)) {
-      return softened;
-    }
-  }
-
-  throw new DiagnosticPipelineError(
-    `Draft nije prošao quality guard nakon retry limita: ${issue.message}`,
-  );
-}
-
-function formatStepMessage(
-  actionType: string,
-  diagnosticCase: DiagnosticCase,
-  suffix = "",
-): string {
-  const strong = diagnosticCase.strongVerifierUsed
-    ? ` + strong ${getStrongVerifierModel()}`
-    : "";
-  return `AI (${getDiagnosticModel()} + verifier ${getVerifierModel()}${strong}): ${actionType}${suffix}`;
 }
 
 /** Keep the first observation per stepId — matches `find()` first-wins. */
@@ -753,7 +560,7 @@ function dedupeObservationsByStepId(
 
 /** Fields scanned for locked technical-spec claims after an accepted step. */
 function stepClaimText(step: DiagnosticStep): string {
-  return [step.content, step.rationale, step.confirmedFault]
+  return [step.content, step.rationale, step.confirmedFault, step.testGuide]
     .filter(Boolean)
     .join("\n");
 }
@@ -791,11 +598,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       strongVerifierUsed: baseCase.strongVerifierUsed,
     };
 
-    return {
-      case: diagnosticCase,
-      nextStep,
-      message: formatStepMessage(nextStep.actionType, diagnosticCase),
-    };
+    return { case: diagnosticCase, nextStep };
   }
 
   async continueCase(
@@ -826,7 +629,9 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
           `Conflicting second result for step ${currentStep.id}`,
         );
       }
-      return { case: incoming, nextStep: currentStep };
+      throw new InvalidObservationError(
+        "Ovaj korak već ima zabilježen rezultat.",
+      );
     }
 
     const reopen =
@@ -884,17 +689,6 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       strongVerifierUsed: caseWithObservation.strongVerifierUsed,
     };
 
-    const suffix =
-      observation.kind === "REJECT_DIAGNOSIS"
-        ? " (reevaluate after rejection)"
-        : observation.kind === "CONTINUE_AFTER_FINISH"
-          ? " (reevaluate after continue)"
-          : "";
-
-    return {
-      case: updated,
-      nextStep,
-      message: formatStepMessage(nextStep.actionType, updated, suffix),
-    };
+    return { case: updated, nextStep };
   }
 }

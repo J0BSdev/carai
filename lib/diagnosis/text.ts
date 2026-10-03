@@ -14,17 +14,19 @@ type DraftTextFields = {
   rationale?: string | null;
   expectedResultHint?: string | null;
   confirmedFault?: string | null;
+  testGuide?: string | null;
   facts?: string[] | null;
   evidence?: string[] | null;
 };
 
-/** Concatenate the fields guards scan as one blob. */
+/** Concatenate the fields guards scan as one blob. Includes testGuide when the mechanic can see it. */
 export function draftBlob(draft: DraftTextFields): string {
   return [
     draft.content,
     draft.rationale,
     draft.expectedResultHint,
     draft.confirmedFault,
+    draft.testGuide,
     ...(draft.facts ?? []),
     ...(draft.evidence ?? []),
   ]

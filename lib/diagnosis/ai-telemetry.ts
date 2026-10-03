@@ -374,20 +374,6 @@ export function logDiagnosticUserPromptChars(chars: number): void {
   logLine(`[AI] ${stepPart}diagnosticUserPromptChars=${chars}`);
 }
 
-/** Prompt-only CASE STATE history compression (diagnostic Claude, not verifier). */
-export function logCompactCaseState(params: {
-  fullHistoryCount: number;
-  recentHistoryCount: number;
-  compactHistoryCount: number;
-  compactCaseStateChars: number;
-}): void {
-  const step = getActiveAiStep();
-  const stepPart = step ? `step=${step.stepNumber} ` : "";
-  logLine(
-    `[AI] ${stepPart}fullHistoryCount=${params.fullHistoryCount} recentHistoryCount=${params.recentHistoryCount} compactHistoryCount=${params.compactHistoryCount} compactCaseStateChars=${params.compactCaseStateChars}`,
-  );
-}
-
 /** Log which backend guard triggered a diagnostic retry (no prompt/issue dump). */
 export function logGuardRetry(params: {
   stepNumber: number;
