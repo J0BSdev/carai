@@ -7,6 +7,7 @@ import {
 } from "./config";
 import {
   DiagnosticPipelineError,
+  InvalidContinueIntentError,
   ObservationConflictError,
 } from "./errors";
 import {
@@ -1543,35 +1544,94 @@ function dedupeObservationsByStepId(
   return out;
 }
 
+const INTENT_ALLOWED_ON: Record<UserContinueIntent, readonly AiActionType[]> = {
+  SUBMIT_RESULT: ["ASK", "TEST"],
+  SKIP: ["ASK", "TEST"],
+  CANNOT_PERFORM: ["TEST"],
+  REJECT_DIAGNOSIS: ["FINISH"],
+  CONTINUE_AFTER_FINISH: ["FINISH"],
+};
+
+function assertIntentAllowedForStep(
+  intent: UserContinueIntent,
+  actionType: AiActionType,
+): void {
+  if (!INTENT_ALLOWED_ON[intent].includes(actionType)) {
+    throw new InvalidContinueIntentError(
+      `intent ${intent} nije dozvoljen za actionType ${actionType}`,
+    );
+  }
+}
+
+/** Identity for replay vs conflict. Legacy rows (no intent) stay resultText-only. */
+function observationCanonical(obs: {
+  intent?: UserContinueIntent;
+  resultText: string;
+  cannotPerformReason?: string;
+}): string {
+  if (!obs.intent) return `legacy\0${obs.resultText.trim()}`;
+  if (obs.intent === "SUBMIT_RESULT") {
+    return `SUBMIT_RESULT\0${obs.resultText.trim()}`;
+  }
+  if (obs.intent === "CANNOT_PERFORM") {
+    return `CANNOT_PERFORM\0${(obs.cannotPerformReason ?? "").trim()}`;
+  }
+  return obs.intent;
+}
+
+type ObservationWrite =
+  | { status: "created"; observations: Observation[] }
+  | { status: "replay"; observations: Observation[] };
+
 /**
- * Idempotent observation write: one Observation per DiagnosticStep.id.
- * Same trimmed result = replay (no duplicate). Different result = conflict.
+ * One observation per step. Same canonical identity = replay.
+ * Same step with a different identity = conflict. Does not call AI.
  */
 function writeStepObservation(
   observations: Observation[],
   stepId: string,
-  resultText: string,
-  intent?: UserContinueIntent,
-): Observation[] {
+  next: {
+    resultText: string;
+    intent?: UserContinueIntent;
+    cannotPerformReason?: string;
+  },
+): ObservationWrite {
   const canonical = dedupeObservationsByStepId(observations);
   const existing = canonical.find((o) => o.stepId === stepId);
-  if (!existing) {
-    return [
+  if (existing) {
+    if (observationCanonical(existing) === observationCanonical(next)) {
+      return { status: "replay", observations: canonical };
+    }
+    throw new ObservationConflictError(
+      `Conflicting second result for step ${stepId}`,
+    );
+  }
+  return {
+    status: "created",
+    observations: [
       ...canonical,
       {
         stepId,
-        resultText,
+        resultText: next.resultText,
         recordedAt: new Date().toISOString(),
-        ...(intent ? { intent } : {}),
+        ...(next.intent ? { intent: next.intent } : {}),
+        ...(next.intent === "CANNOT_PERFORM"
+          ? { cannotPerformReason: next.cannotPerformReason?.trim() ?? "" }
+          : {}),
       },
-    ];
-  }
-  if (existing.resultText.trim() === resultText) {
-    return canonical;
-  }
-  throw new ObservationConflictError(
-    `Conflicting second result for step ${stepId}`,
-  );
+    ],
+  };
+}
+
+function replayContinueResponse(
+  diagnosticCase: DiagnosticCase,
+): DiagnoseResponse {
+  const last = diagnosticCase.steps[diagnosticCase.steps.length - 1] ?? null;
+  return {
+    case: diagnosticCase,
+    nextStep: last,
+    message: "Postojeći rezultat za ovaj korak.",
+  };
 }
 
 function displayTextForIntent(
@@ -1655,12 +1715,6 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     },
   ): Promise<DiagnoseResponse> {
     const intent = observation.intent;
-    const trimmed = intent
-      ? displayTextForIntent(intent, observation)
-      : observation.resultText?.trim() ?? "";
-    if (!trimmed) {
-      throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
-    }
 
     const incoming: DiagnosticCase = {
       ...diagnosticCase,
@@ -1672,6 +1726,31 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     const currentStep = incoming.steps[incoming.steps.length - 1];
     if (!currentStep) {
       throw new Error("Slučaj nema aktivni korak za zabilježiti");
+    }
+
+    if (intent) {
+      assertIntentAllowedForStep(intent, currentStep.actionType);
+    }
+
+    const trimmed = intent
+      ? displayTextForIntent(intent, observation)
+      : observation.resultText?.trim() ?? "";
+    if (!trimmed) {
+      throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
+    }
+
+    const cannotPerformReason =
+      intent === "CANNOT_PERFORM"
+        ? observation.cannotPerformReason?.trim() ?? ""
+        : undefined;
+
+    const written = writeStepObservation(incoming.observations, currentStep.id, {
+      resultText: trimmed,
+      intent,
+      cannotPerformReason,
+    });
+    if (written.status === "replay") {
+      return replayContinueResponse(incoming);
     }
 
     const reopenAfterFinish =
@@ -1702,12 +1781,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         };
       }
 
-      const writtenObservations = writeStepObservation(
-        incoming.observations,
-        currentStep.id,
-        trimmed,
-        intent,
-      );
+      const writtenObservations = written.observations;
 
       const rejectedDiagnoses: RejectedDiagnosis[] = [
         ...(incoming.rejectedDiagnoses ?? []),
@@ -1771,12 +1845,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       };
     }
 
-    const writtenObservations = writeStepObservation(
-      incoming.observations,
-      currentStep.id,
-      trimmed,
-      intent,
-    );
+    const writtenObservations = written.observations;
 
     const caseWithObservation: DiagnosticCase = {
       ...incoming,

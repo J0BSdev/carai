@@ -129,6 +129,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     content: string;
     result: string | null;
     resultKind: StepResultKind;
+    intent?: UserContinueIntent;
     diagnosticTarget?: string;
     diagnosticGoal?: string;
     testMethod?: string;
@@ -164,6 +165,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       content: stepLabel,
       result,
       resultKind,
+      ...(obs?.intent ? { intent: obs.intent } : {}),
       ...(step.diagnosticTarget
         ? { diagnosticTarget: step.diagnosticTarget }
         : {}),
@@ -283,7 +285,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     instruction:
       diagnosticCase.observations.length === 0
         ? "Start from originalComplaint. Never extract technicianOutcome from the complaint. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. FINISH uses diagnosisCertainty. Do not invent OEM numbers."
-        : "Extract technicianOutcome for THIS turn only from the last mechanic result + active step, then you choose ASK|TEST|FINISH. Backend does not rewrite actionType. FAULT_CONFIRMED/REPAIR_CONFIRMED → FINISH with your own diagnosis text. Then REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. CONFIRMED is rare. Respect rejectedDiagnoses. Do not invent OEM numbers.",
+        : "Extract technicianOutcome for THIS turn only from the last mechanic result + active step, then you choose ASK|TEST|FINISH. Backend does not rewrite actionType. If history.intent is set, that is the structured user action — do not infer SKIP/REJECT/CONTINUE from result text. FAULT_CONFIRMED/REPAIR_CONFIRMED → FINISH with your own diagnosis text. Then REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. CONFIRMED is rare. Respect rejectedDiagnoses. Do not invent OEM numbers.",
   };
 }
 
@@ -308,6 +310,7 @@ function detailedHistoryRow(s: CaseStepHistoryRow): Record<string, unknown> {
   };
   if (s.result != null) row.result = s.result;
   if (s.resultKind !== "none") row.resultKind = s.resultKind;
+  if (s.intent) row.intent = s.intent;
   if (s.diagnosticTarget) row.diagnosticTarget = s.diagnosticTarget;
   if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
   if (s.testMethod) row.testMethod = s.testMethod;
@@ -324,6 +327,7 @@ function compactHistoryLedgerRow(s: CaseStepHistoryRow): Record<string, unknown>
   if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
   if (s.testMethod) row.testMethod = s.testMethod;
   if (s.resultKind !== "none") row.resultKind = s.resultKind;
+  if (s.intent) row.intent = s.intent;
   const shortResult = shortLedgerText(s.result);
   if (shortResult) row.result = shortResult;
 

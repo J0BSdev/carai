@@ -133,6 +133,8 @@ export interface Observation {
   recordedAt: string;
   /** Absent on observations saved before typed intents. */
   intent?: UserContinueIntent;
+  /** Structured reason for CANNOT_PERFORM. Not parsed back out of resultText. */
+  cannotPerformReason?: string;
 }
 
 export type SpecVerificationStatus = "VERIFIED" | "UNVERIFIED";

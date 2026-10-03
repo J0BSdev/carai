@@ -28,3 +28,14 @@ export class ObservationConflictError extends Error {
     this.name = "ObservationConflictError";
   }
 }
+
+/**
+ * Typed continue intent is not legal for the current step.
+ * Message is safe to show to the client. No AI call and no observation write.
+ */
+export class InvalidContinueIntentError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "InvalidContinueIntentError";
+  }
+}

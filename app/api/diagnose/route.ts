@@ -1,5 +1,6 @@
 import {
   DIAGNOSTIC_UNAVAILABLE_MESSAGE,
+  InvalidContinueIntentError,
   OBSERVATION_CONFLICT_MESSAGE,
   ObservationConflictError,
   USER_CONTINUE_INTENTS,
@@ -22,11 +23,11 @@ function isDiagnosticCase(value: unknown): value is DiagnosticCase {
   );
 }
 
-function parseIntent(value: unknown): UserContinueIntent | undefined {
-  if (typeof value !== "string") return undefined;
-  return USER_CONTINUE_INTENTS.includes(value as UserContinueIntent)
-    ? (value as UserContinueIntent)
-    : undefined;
+function parseIntent(value: unknown): UserContinueIntent {
+  if (typeof value !== "string" || !USER_CONTINUE_INTENTS.includes(value as UserContinueIntent)) {
+    throw new Error("observation.intent nije valjan");
+  }
+  return value as UserContinueIntent;
 }
 
 function parseBody(body: unknown): DiagnoseRequest {
@@ -45,15 +46,10 @@ function parseBody(body: unknown): DiagnoseRequest {
     raw.observation && typeof raw.observation === "object"
       ? (raw.observation as Record<string, unknown>)
       : undefined;
-  const intentRaw = observation?.intent;
-  if (
-    intentRaw != null &&
-    typeof intentRaw === "string" &&
-    !parseIntent(intentRaw)
-  ) {
-    throw new Error("observation.intent nije valjan");
-  }
-  const intent = parseIntent(intentRaw);
+  const intent =
+    observation && "intent" in observation
+      ? parseIntent(observation.intent)
+      : undefined;
   const resultText =
     observation && typeof observation.resultText === "string"
       ? observation.resultText
@@ -79,6 +75,9 @@ async function runPipeline(run: () => Promise<unknown>): Promise<Response> {
   try {
     return Response.json(await run());
   } catch (error) {
+    if (error instanceof InvalidContinueIntentError) {
+      return Response.json({ error: error.message }, { status: 400 });
+    }
     if (error instanceof ObservationConflictError) {
       console.warn("[diagnose] observation conflict", error);
       return Response.json(

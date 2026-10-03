@@ -24,6 +24,7 @@ export type {
 export {
   DIAGNOSTIC_UNAVAILABLE_MESSAGE,
   OBSERVATION_CONFLICT_MESSAGE,
+  InvalidContinueIntentError,
   ObservationConflictError,
 } from "./errors";
 
