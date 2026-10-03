@@ -22,17 +22,13 @@ export interface VehicleInfo {
   mileage?: number;
 }
 
-/** AI-extracted mechanic stance on the current cause / repair. Backend never infers this from raw text. */
-export type TechnicianOutcomeStatus =
-  | "FAULT_CONFIRMED"
-  | "REPAIR_CONFIRMED"
-  | "NOT_CONFIRMED";
-
-export interface TechnicianOutcome {
-  status: TechnicianOutcomeStatus;
-  /** Cause the mechanic confirmed, when stated or implied by the active step. */
-  fault?: string;
-}
+/**
+ * Mechanic confirmed a fault or a repair on this turn.
+ * Omit the field when there is no confirmation. The fault text lives on the FINISH step.
+ */
+export type TechnicianOutcome =
+  | { status: "FAULT_CONFIRMED" }
+  | { status: "REPAIR_CONFIRMED" };
 
 export interface ExtractedCaseFacts {
   vehicle?: VehicleInfo;
@@ -46,7 +42,7 @@ export interface Hypothesis {
   label: string;
   status: HypothesisStatus;
   /** Evidence-based ranking estimate (0–100), not statistical probability. */
-  confidence?: number | null;
+  confidence?: number;
 }
 
 /** One AI turn: exactly one primary action (ASK | TEST | FINISH). */
@@ -56,23 +52,12 @@ export interface DiagnosticStep {
   /** Question, test instruction, or finish summary. */
   content: string;
   rationale: string;
-  facts?: string[];
-  evidence?: string[];
   hypotheses?: Hypothesis[];
   confirmedFault?: string;
-  /** Evidence-based ranking 0–100 for the leading diagnosis (FINISH). Display only. */
-  diagnosisConfidence?: number | null;
   /** Strict certainty ladder for FINISH. Not CONFIRMED means evidence is still insufficient. */
   diagnosisCertainty?: DiagnosisCertainty;
   /** What the mechanic should record when answering. */
   expectedResultHint?: string;
-  /**
-   * TEST metadata from the diagnostic model (branch identity).
-   * Optional for backward compatibility with older saved cases.
-   */
-  diagnosticTarget?: string;
-  diagnosticGoal?: string;
-  testMethod?: string;
   /** Optional short how-to for a non-routine TEST (UI guide). */
   testGuide?: string;
 }
@@ -124,11 +109,10 @@ export type TechnicalSourceType =
   | "UNKNOWN";
 
 /** Reference number extracted from a draft, locked so the next turn cannot contradict it. */
+/** Locked reference number. parameterKey is the unit family (voltage, resistance, …). */
 export interface TechnicalSpecClaim {
   parameterKey: string;
-  label: string;
   valueText: string;
-  unit: string;
   low: number | null;
   high: number | null;
 }

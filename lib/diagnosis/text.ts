@@ -15,8 +15,6 @@ type DraftTextFields = {
   expectedResultHint?: string | null;
   confirmedFault?: string | null;
   testGuide?: string | null;
-  facts?: string[] | null;
-  evidence?: string[] | null;
 };
 
 /** Concatenate the fields guards scan as one blob. Includes testGuide when the mechanic can see it. */
@@ -27,8 +25,6 @@ export function draftBlob(draft: DraftTextFields): string {
     draft.expectedResultHint,
     draft.confirmedFault,
     draft.testGuide,
-    ...(draft.facts ?? []),
-    ...(draft.evidence ?? []),
   ]
     .filter(Boolean)
     .join("\n");

@@ -4,35 +4,10 @@ import {
   OBSERVATION_CONFLICT_MESSAGE,
   ObservationConflictError,
   type DiagnoseRequest,
-  type DiagnosticCase,
 } from "@/lib/diagnosis";
+import { parseDiagnosticCase } from "@/lib/diagnosis/case-parse";
 import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
-import {
-  parseObservationInput,
-  parseStoredObservation,
-} from "@/lib/diagnosis/observation";
-
-function isDiagnosticCase(value: unknown): value is DiagnosticCase {
-  if (!value || typeof value !== "object") return false;
-  const c = value as Record<string, unknown>;
-  return (
-    typeof c.id === "string" &&
-    typeof c.createdAt === "string" &&
-    typeof c.problemText === "string" &&
-    Array.isArray(c.observations) &&
-    Array.isArray(c.steps)
-  );
-}
-
-function parseCase(value: unknown): DiagnosticCase {
-  if (!isDiagnosticCase(value)) {
-    throw new Error("case nije valjan");
-  }
-  return {
-    ...value,
-    observations: value.observations.map(parseStoredObservation),
-  };
-}
+import { parseObservationInput } from "@/lib/diagnosis/observation";
 
 function parseBody(body: unknown): DiagnoseRequest {
   if (!body || typeof body !== "object") {
@@ -49,7 +24,7 @@ function parseBody(body: unknown): DiagnoseRequest {
   return {
     action,
     problemText: typeof raw.problemText === "string" ? raw.problemText : undefined,
-    case: raw.case === undefined ? undefined : parseCase(raw.case),
+    case: raw.case === undefined ? undefined : parseDiagnosticCase(raw.case),
     observation:
       raw.observation === undefined
         ? undefined
@@ -85,6 +60,12 @@ export async function POST(request: Request) {
   try {
     body = parseBody(await request.json());
   } catch (error) {
+    if (error instanceof ObservationConflictError) {
+      return Response.json(
+        { error: OBSERVATION_CONFLICT_MESSAGE },
+        { status: 409 },
+      );
+    }
     const message =
       error instanceof Error ? error.message : "Zahtjev nije valjan JSON";
     return Response.json({ error: message }, { status: 400 });

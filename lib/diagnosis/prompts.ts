@@ -1,13 +1,15 @@
-import type { DiagnosticCase, Observation, TechnicianOutcome } from "./types";
+import type { DiagnosticCase, Hypothesis, Observation, TechnicianOutcome } from "./types";
 import { observationResultText } from "./observation";
-import { buildKnownFactsSnapshot, latestHypotheses } from "./known-facts";
 import {
   collectHistoricalReferenceClaims,
   findSpecGuardIssue,
 } from "./spec-guard";
 import { findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
-import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
-import { issue, type GuardIssue } from "./guard-issue";
+import {
+  findLiveDangerIssue,
+  findSafetyAndTechnicalRuleIssue,
+} from "./safety-guard";
+import type { GuardIssue } from "./guard-issue";
 import { logDiagnosticUserPromptChars } from "./ai-telemetry";
 import type { LlmStepPayload } from "./providers";
 
@@ -16,18 +18,19 @@ export const DIAGNOSTIC_SYSTEM_PROMPT = `AI dijagnostički copilot. Ti interpret
 TEST čim ima dovoljno podataka. ASK samo ako odgovor mijenja sljedeći korak.
 DTC-first: knownFacts.knownDtcCodes koristi odmah. Ne rescan, ne opća lampica/simptom pitanja, ne pitaj ponovno vozilo.
 Ako je sigurno i izvedivo, direktno mjerenje na granici komponente (ulaz/napajanje/masa/signal) prije upstream/indirektnog (relej, osigurač, ECU, zvuk, vizual).
-technicianOutcome samo iz trenutnog RESULT.text. SKIP, CANNOT_PERFORM, REJECT_DIAGNOSIS, CONTINUE_AFTER_FINISH i originalComplaint nisu mechanic result — izostavi ga. FAULT_CONFIRMED ili REPAIR_CONFIRMED → FINISH; FAULT_CONFIRMED treba fault ili confirmedFault. Ne čini spec VERIFIED.
+technicianOutcome samo iz trenutnog RESULT.text. SKIP, CANNOT_PERFORM, REJECT_DIAGNOSIS, CONTINUE_AFTER_FINISH i originalComplaint nisu mechanic result — izostavi ga. status je samo FAULT_CONFIRMED ili REPAIR_CONFIRMED i oba traže FINISH. Nema fault polja. Ne čini spec VERIFIED.
 Ne izmišljaj OEM brojke, pinove ni raspone. technicalClaims.sourceType: GENERAL_PRINCIPLE | MODEL_KNOWLEDGE | UNKNOWN. VERIFIED_* nije dozvoljen.
-Safety warning samo uz stvaran rizik (živi SRS, HV, pirotehnika, otvoreni hidraulički tlak): jedna rečenica što napraviti prije rada. Rutinski test bez warninga.
-FINISH nosi diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED i diagnosisConfidence iz ovog drafta. CONFIRMED samo uz neovisan jak dokaz ili ovaj-turn FAULT_CONFIRMED|REPAIR_CONFIRMED. Inače LIKELY ili HIGH_CONFIDENCE. Poštuj rejectedDiagnoses.
+Živi SRS/airbag konektor ili modul, HV/narančasti kabel/inverter, ili pirotehnika: jedna rečenica što napraviti prije rada. Ostali testovi bez warninga.
+FINISH: diagnosisCertainty točno SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED. CONFIRMED samo uz neovisan jak dokaz ili ovaj-turn FAULT_CONFIRMED|REPAIR_CONFIRMED. Poštuj rejectedDiagnoses.
+hypotheses.status točno plausible|supported|weakened|ruled_out. confidence 0-100 opcionalno.
 
 semanticUpdate samo kad RESULT dodaje vehicle, symptoms, DTC ili measurements, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
 
-JSON bez markdowna. Prazna polja izostavi.
-TEST: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod. testGuide samo za nerutinski test.
+JSON bez markdowna. Samo polja iz sheme. Nepoznato polje je nevaljan draft.
+TEST: actionType, content, rationale, expectedResultHint. testGuide samo za nerutinski test.
 ASK: actionType, content, rationale.
-FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence.
-{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","diagnosticTarget":"…","diagnosticGoal":"…","testMethod":"…"}`;
+FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty.
+{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…"}`;
 
 /** Case facts serialized into prompts. Result text is raw; the model interprets it. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
@@ -37,12 +40,16 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     result: string | null;
     kind?: Observation["kind"];
     reason?: string;
-    diagnosticTarget?: string;
-    diagnosticGoal?: string;
-    testMethod?: string;
+    testGuide?: string;
   }> = [];
 
-  const knownFacts = buildKnownFactsSnapshot(diagnosticCase);
+  const extracted = diagnosticCase.extracted ?? {};
+  const knownFacts = {
+    vehicle: extracted.vehicle ?? null,
+    knownDtcCodes: extracted.dtcs ?? [],
+    symptoms: extracted.symptoms ?? [],
+    measurements: (extracted.measurements ?? []).map((m) => m.trim()).filter(Boolean),
+  };
 
   for (const step of diagnosticCase.steps) {
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
@@ -56,11 +63,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       ...(obs?.kind === "CANNOT_PERFORM" && obs.reason
         ? { reason: obs.reason }
         : {}),
-      ...(step.diagnosticTarget
-        ? { diagnosticTarget: step.diagnosticTarget }
-        : {}),
-      ...(step.diagnosticGoal ? { diagnosticGoal: step.diagnosticGoal } : {}),
-      ...(step.testMethod ? { testMethod: step.testMethod } : {}),
+      ...(step.testGuide ? { testGuide: step.testGuide } : {}),
     });
   }
 
@@ -77,7 +80,6 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       (c) => ({
         parameterKey: c.parameterKey,
         valueText: c.valueText,
-        unit: c.unit,
       }),
     ),
     rejectedDiagnoses: rejectedFromObservations(diagnosticCase),
@@ -97,6 +99,14 @@ function rejectedFromObservations(diagnosticCase: DiagnosticCase) {
   return rows;
 }
 
+function latestHypotheses(diagnosticCase: DiagnosticCase): Hypothesis[] {
+  for (let i = diagnosticCase.steps.length - 1; i >= 0; i -= 1) {
+    const hypotheses = diagnosticCase.steps[i]?.hypotheses;
+    if (hypotheses && hypotheses.length > 0) return hypotheses;
+  }
+  return [];
+}
+
 type CaseStepHistoryRow = ReturnType<
   typeof buildCaseState
 >["diagnosticStepHistory"][number];
@@ -109,9 +119,7 @@ function historyRow(s: CaseStepHistoryRow): Record<string, unknown> {
   if (s.result != null) row.result = s.result;
   if (s.kind) row.kind = s.kind;
   if (s.reason) row.reason = s.reason;
-  if (s.diagnosticTarget) row.diagnosticTarget = s.diagnosticTarget;
-  if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
-  if (s.testMethod) row.testMethod = s.testMethod;
+  if (s.testGuide) row.testGuide = s.testGuide;
   return row;
 }
 
@@ -161,13 +169,9 @@ const RETRY_DRAFT_KEYS = [
   "actionType",
   "content",
   "rationale",
-  "diagnosticTarget",
-  "diagnosticGoal",
-  "testMethod",
   "expectedResultHint",
   "confirmedFault",
   "diagnosisCertainty",
-  "diagnosisConfidence",
   "testGuide",
 ] as const;
 
@@ -279,26 +283,8 @@ export function findDraftQualityIssue(
 ): GuardIssue | null {
   return (
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
+    findLiveDangerIssue(draft) ??
     findSafetyAndTechnicalRuleIssue(draft) ??
-    findSpecGuardIssue(diagnosticCase, draft) ??
-    findMissingTestMetaIssue(draft)
-  );
-}
-
-function findMissingTestMetaIssue(draft: {
-  actionType?: string;
-  diagnosticTarget?: string | null;
-  diagnosticGoal?: string | null;
-  testMethod?: string | null;
-}): GuardIssue | null {
-  if (draft.actionType !== "TEST") return null;
-  const missing: string[] = [];
-  if (!draft.diagnosticTarget?.trim()) missing.push("diagnosticTarget");
-  if (!draft.diagnosticGoal?.trim()) missing.push("diagnosticGoal");
-  if (!draft.testMethod?.trim()) missing.push("testMethod");
-  if (missing.length === 0) return null;
-  return issue(
-    "TEST_META",
-    `TEST metadata nedostaje (${missing.join(", ")}). Dodaj diagnosticTarget, diagnosticGoal i testMethod.`,
+    findSpecGuardIssue(diagnosticCase, draft)
   );
 }

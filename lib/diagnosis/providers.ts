@@ -1,67 +1,47 @@
 import { recordAiCall, logAnthropicJsonEnvelope, type AiCallMeta, type AiTokenUsage } from "./ai-telemetry";
+import { AI_REQUEST_TIMEOUT_MS } from "./config";
+import { DiagnosticPipelineError } from "./errors";
+import type {
+  AiActionType,
+  DiagnosisCertainty,
+  Hypothesis,
+  TechnicalSourceType,
+  TechnicianOutcome,
+} from "./types";
+
+/** Already validated by parseDiagnosticDraft. Measurements are raw strings. */
+export type SemanticUpdate = {
+  vehicle?: {
+    make?: string;
+    model?: string;
+    year?: number;
+    engine?: string;
+    mileage?: number;
+  };
+  symptomsAdd?: string[];
+  symptomsRemove?: string[];
+  dtcsAdd?: string[];
+  measurementsAdd?: string[];
+  technicianOutcome?: TechnicianOutcome;
+};
 
 export type LlmStepPayload = {
-  actionType: string;
+  actionType: AiActionType;
   content: string;
   rationale: string;
-  expectedResultHint?: string | null;
-  confirmedFault?: string | null;
-  /** 0–100 evidence ranking for leading diagnosis; not statistical probability. */
-  diagnosisConfidence?: number | null;
-  diagnosisCertainty?: string | null;
-  facts?: string[] | null;
-  evidence?: string[] | null;
-  /**
-   * Explicit semantic case-fact delta from the diagnostic model (same Claude call).
-   * The model is the only semantic extractor for vehicle/symptoms/DTCs/measurements;
-   * the backend validates types, dedupes and merges. It does not interpret mechanic prose.
-   */
-  semanticUpdate?: {
-    vehicle?: {
-      make?: string | null;
-      model?: string | null;
-      year?: number | string | null;
-      engine?: string | null;
-      mileage?: number | null;
-    } | null;
-    symptomsAdd?: string[] | null;
-    symptomsRemove?: string[] | null;
-    /** Fault codes exactly as stated by the mechanic — backend never invents a namespace. */
-    dtcsAdd?: string[] | null;
-    /** Explicit numeric readings the mechanic reported. */
-    measurementsAdd?: Array<{ raw?: string | null }> | null;
-    /**
-     * Continue-turn only: mechanic stance extracted from the last result.
-     * Omit on startCase / original complaint, or when there is no clear confirmation.
-     * Backend type-validates and REPLACE-per-draft; never infers from prose.
-     */
-    technicianOutcome?: {
-      status?: string | null;
-      fault?: string | null;
-    } | null;
-  } | null;
-  /** Technical claims/specs with mandatory sourceType honesty. */
+  expectedResultHint?: string;
+  confirmedFault?: string;
+  diagnosisCertainty?: DiagnosisCertainty;
+  semanticUpdate?: SemanticUpdate;
   technicalClaims?: Array<{
-    claim?: string | null;
-    valueText?: string | null;
-    sourceType?: string | null;
-    vehicleSpecific?: boolean | null;
-  }> | null;
-  hypotheses?: Array<{
-    label?: string;
-    cause?: string;
-    status: string;
-    confidence?: number | null;
-  }> | null;
-  /** TEST branch metadata — required for new TEST drafts. */
-  diagnosticTarget?: string | null;
-  diagnosticGoal?: string | null;
-  testMethod?: string | null;
-  /**
-   * Optional short how-to for a non-routine TEST. Omit on routine tests.
-   * Shown in the UI and scanned by spec/safety guards. Not diagnostic evidence.
-   */
-  testGuide?: string | null;
+    claim: string;
+    valueText?: string;
+    sourceType: TechnicalSourceType;
+    vehicleSpecific?: boolean;
+  }>;
+  hypotheses?: Hypothesis[];
+  /** Optional short how-to for a non-routine TEST. */
+  testGuide?: string;
 };
 
 export type VerifierPayload = {
@@ -75,6 +55,23 @@ type AnthropicResult = {
   latencyMs: number;
   stopReason: string | null;
 };
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new DiagnosticPipelineError(
+        `AI poziv prekinut nakon ${AI_REQUEST_TIMEOUT_MS}ms`,
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function tryParseJsonObject(raw: string): string | null {
   const extracted = extractJsonObject(raw);
@@ -95,7 +92,7 @@ async function fetchAnthropicText(params: {
   maxTokens?: number;
 }): Promise<AnthropicResult> {
   const started = Date.now();
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": params.apiKey,
@@ -252,7 +249,7 @@ export async function callOpenAiJson(params: {
   telemetry?: AiCallMeta;
 }): Promise<string> {
   const started = Date.now();
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${params.apiKey}`,

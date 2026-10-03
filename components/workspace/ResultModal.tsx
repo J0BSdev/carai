@@ -2,8 +2,6 @@
 
 import { useMemo, useState } from "react";
 import type { DiagnosticStep } from "@/lib/diagnosis";
-import { needsDualMeasurement } from "@/lib/diagnosis/ui-helpers";
-import { testRequiresNumericValue } from "@/lib/diagnosis/test-result";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
 
 type ResultModalProps = {
@@ -20,33 +18,21 @@ export default function ResultModal({
   onSubmit,
 }: ResultModalProps) {
   const [text, setText] = useState("");
-  const [measure, setMeasure] = useState("");
-  const [measure2, setMeasure2] = useState("");
   const [stepId, setStepId] = useState(step.id);
   if (step.id !== stepId) {
     setStepId(step.id);
     setText("");
-    setMeasure("");
-    setMeasure2("");
   }
-  const numeric = testRequiresNumericValue(step);
-  const dual = needsDualMeasurement(step);
 
-  const title =
-    step.content.split(/[.\n]/)[0]?.trim() || "Rezultat testa";
+  const title = step.content.split(/[.\n]/)[0]?.trim() || "Rezultat testa";
 
   const quick = useMemo(() => {
-    if (step.actionType === "ASK") {
-      return ["Da", "Ne", "Nisam siguran"];
-    }
-    if (numeric) return [];
+    if (step.actionType === "ASK") return ["Da", "Ne", "Nisam siguran"];
     return ["Ispravno", "Neispravno", "Nisam mogao utvrditi"];
-  }, [step.actionType, numeric]);
+  }, [step.actionType]);
 
   function reset() {
     setText("");
-    setMeasure("");
-    setMeasure2("");
   }
 
   function handleClose() {
@@ -54,24 +40,8 @@ export default function ResultModal({
     onClose();
   }
 
-  function buildPayload(extra?: string): string | null {
-    if (extra) return extra;
-    if (numeric) {
-      if (!measure.trim() || (dual && !measure2.trim())) return null;
-      if (dual) {
-        return `prije: ${measure.trim()} · poslije: ${measure2.trim()}${
-          text.trim() ? ` · napomena: ${text.trim()}` : ""
-        }`;
-      }
-      return `${measure.trim()}${
-        text.trim() ? ` · napomena: ${text.trim()}` : ""
-      }`;
-    }
-    return text.trim() || null;
-  }
-
   function submit(extra?: string) {
-    const payload = buildPayload(extra);
+    const payload = extra ?? (text.trim() || null);
     if (!payload) return;
     onSubmit(payload);
     reset();
@@ -82,54 +52,31 @@ export default function ResultModal({
       <p className="text-sm text-[var(--muted-strong)]">{title}</p>
       <p className="mt-1 text-xs text-[var(--muted)]">Što si pronašao?</p>
 
-      {numeric ? (
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-          <MeasureField
-            label={dual ? "Prije" : "Vrijednost"}
-            value={measure}
-            onChange={setMeasure}
-          />
-          {dual && (
-            <MeasureField
-              label="Poslije"
-              value={measure2}
-              onChange={setMeasure2}
-            />
-          )}
-        </div>
-      ) : null}
-
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={4}
         className="mt-4 w-full resize-y rounded-2xl border border-[var(--border)] bg-black/25 px-3 py-3 text-base outline-none focus:border-[var(--accent)]"
-        placeholder={
-          numeric
-            ? "Opcionalna napomena…"
-            : "Opiši rezultat ili što si primijetio…"
-        }
+        placeholder="Opiši rezultat ili što si primijetio…"
       />
 
-      {quick.length > 0 && (
-        <div className="mt-4">
-          <p className="text-xs font-medium tracking-wide text-[var(--muted)]">
-            BRZI REZULTATI
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {quick.map((q) => (
-              <button
-                key={q}
-                type="button"
-                onClick={() => submit(q)}
-                className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm text-[var(--muted-strong)] transition hover:border-[var(--accent)]/40 hover:text-[var(--foreground)]"
-              >
-                {q}
-              </button>
-            ))}
-          </div>
+      <div className="mt-4">
+        <p className="text-xs font-medium tracking-wide text-[var(--muted)]">
+          BRZI REZULTATI
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {quick.map((q) => (
+            <button
+              key={q}
+              type="button"
+              onClick={() => submit(q)}
+              className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm text-[var(--muted-strong)] transition hover:border-[var(--accent)]/40 hover:text-[var(--foreground)]"
+            >
+              {q}
+            </button>
+          ))}
         </div>
-      )}
+      </div>
 
       <div className="mt-4 flex flex-col gap-2">
         <button
@@ -151,38 +98,11 @@ export default function ResultModal({
       <button
         type="button"
         onClick={() => submit()}
-        disabled={!buildPayload()}
+        disabled={!text.trim()}
         className="mt-5 flex min-h-12 w-full items-center justify-center rounded-2xl bg-[var(--accent)] text-base font-semibold text-[#061018] disabled:opacity-35"
       >
         POŠALJI REZULTAT →
       </button>
     </ResponsiveOverlay>
-  );
-}
-
-function MeasureField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <label className="flex min-w-0 flex-1 flex-col gap-1.5">
-      <span className="text-xs text-[var(--muted)]">{label}</span>
-      <div className="flex min-h-12 overflow-hidden rounded-2xl border border-[var(--border)] bg-black/25 focus-within:border-[var(--accent)]">
-        <input
-          type="number"
-          inputMode="decimal"
-          step="any"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="mono-data min-w-0 flex-1 bg-transparent px-3 text-lg outline-none"
-          placeholder="0"
-        />
-      </div>
-    </label>
   );
 }

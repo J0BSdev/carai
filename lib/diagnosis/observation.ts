@@ -1,4 +1,4 @@
-import { InvalidObservationError } from "./errors";
+import { InvalidObservationError, ObservationConflictError } from "./errors";
 import type { AiActionType, Observation, ObservationInput } from "./types";
 
 const ALLOWED_ON: Record<Observation["kind"], readonly AiActionType[]> = {
@@ -26,6 +26,29 @@ export function assertObservationAllowed(
       `observation ${kind} nije dozvoljen za actionType ${actionType}`,
     );
   }
+}
+
+/**
+ * One observation per step.
+ * Identical duplicates collapse. A different payload on the same step is corrupt.
+ */
+export function assertUniqueObservations(observations: Observation[]): Observation[] {
+  const firstByStepId = new Map<string, Observation>();
+  const out: Observation[] = [];
+  for (const obs of observations) {
+    const first = firstByStepId.get(obs.stepId);
+    if (!first) {
+      firstByStepId.set(obs.stepId, obs);
+      out.push(obs);
+      continue;
+    }
+    if (!sameObservation(first, obs)) {
+      throw new ObservationConflictError(
+        `Conflicting observations for step ${obs.stepId}`,
+      );
+    }
+  }
+  return out;
 }
 
 /** Same step, kind, and payload. recordedAt is not part of identity. */

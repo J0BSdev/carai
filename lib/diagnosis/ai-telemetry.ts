@@ -157,7 +157,7 @@ function formatCost(cost: number | null): string {
 const GUARD_LOG_NAME: Record<GuardIssueCode, string> = {
   TECHNICIAN_OUTCOME: "technician_outcome",
   SPEC: "spec_guard",
-  TEST_META: "test_meta",
+  SAFETY: "safety",
 };
 
 /** Map a backend guard issue to a short guard id for retry logs. */
@@ -374,6 +374,7 @@ export function logGuardRetry(params: {
 }
 
 function endAiStep(step: StepAccumulator): void {
+  if (!isDev()) return;
   const turnLatencyMs = Date.now() - step.turnStartedAt;
   const apiLatencyMs = step.calls.reduce((s, c) => s + c.latencyMs, 0);
   const inputTokens = sumNullable(step.calls.map((c) => c.inputTokens));

@@ -13,7 +13,6 @@ export type {
   Observation,
   ObservationInput,
   TechnicianOutcome,
-  TechnicianOutcomeStatus,
   VehicleInfo,
 } from "./types";
 

@@ -1,8 +1,5 @@
 /** Stable id for guard routing. Never inferred from `message`. */
-export type GuardIssueCode =
-  | "TECHNICIAN_OUTCOME"
-  | "SPEC"
-  | "TEST_META";
+export type GuardIssueCode = "TECHNICIAN_OUTCOME" | "SPEC" | "SAFETY";
 
 export type GuardIssue = {
   code: GuardIssueCode;

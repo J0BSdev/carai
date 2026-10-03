@@ -39,3 +39,11 @@ export class InvalidObservationError extends Error {
     this.name = "InvalidObservationError";
   }
 }
+
+/** Diagnostic model JSON does not match the draft contract. Safe to show the model on retry. */
+export class DraftShapeError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "DraftShapeError";
+  }
+}

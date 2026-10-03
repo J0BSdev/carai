@@ -2,8 +2,6 @@ import type { DiagnosticCase, TechnicalSpecClaim } from "./types";
 import { draftBlob } from "./text";
 import { issueOrNull, type GuardIssue } from "./guard-issue";
 
-export type { TechnicalSpecClaim };
-
 /**
  * Lowercase + strip diacritics. Patterns below are ASCII, so raw Croatian
  * ("očekivani", "tipično") must be folded first or the guard misses it.
@@ -67,12 +65,9 @@ export function extractReferenceSpecClaims(text: string): TechnicalSpecClaim[] {
       if (!looksLikeSpecTable(contextLower)) continue;
     }
 
-    const family = unitFamily(unit);
     claims.push({
-      parameterKey: family,
-      label: family,
+      parameterKey: unitFamily(unit),
       valueText,
-      unit,
       low,
       high,
     });
@@ -145,7 +140,7 @@ function isExplicitlyUnverifiedStatement(text: string): boolean {
   );
 }
 
-export function rangesConflict(
+function rangesConflict(
   a: Pick<TechnicalSpecClaim, "low" | "high">,
   b: Pick<TechnicalSpecClaim, "low" | "high">,
 ): boolean {
@@ -159,6 +154,38 @@ export function rangesConflict(
   );
   const tol = Math.max(5, span * 0.15);
   return Math.abs(a.low - b.low) > tol || Math.abs(a.high - b.high) > tol;
+}
+
+type SpecDraft = {
+  actionType?: string;
+  content?: string | null;
+  rationale?: string | null;
+  expectedResultHint?: string | null;
+  confirmedFault?: string | null;
+  testGuide?: string | null;
+  technicalClaims?: Array<{
+    claim?: string | null;
+    valueText?: string | null;
+    sourceType?: string | null;
+    vehicleSpecific?: boolean | null;
+  }> | null;
+};
+
+/** True when this draft carries a reference number or a risky technical claim. */
+export function draftHasSpecRisk(draft: SpecDraft): boolean {
+  if (extractReferenceSpecClaims(draftBlob(draft)).length > 0) return true;
+  for (const claim of draft.technicalClaims ?? []) {
+    if (claim.vehicleSpecific === true) return true;
+    const source = claim.sourceType;
+    if (source === "VERIFIED_OEM" || source === "VERIFIED_TECHNICAL") return true;
+    if (
+      (source === "MODEL_KNOWLEDGE" || source === "UNKNOWN") &&
+      /\d/.test(`${claim.valueText ?? ""} ${claim.claim ?? ""}`)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Collect reference claims already present in case history (locked for consistency). */
@@ -178,32 +205,14 @@ export function collectHistoricalReferenceClaims(
  */
 export function findSpecGuardIssue(
   diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    rationale?: string;
-    expectedResultHint?: string | null;
-    confirmedFault?: string | null;
-    facts?: string[] | null;
-    evidence?: string[] | null;
-    confidence?: string | null;
-  },
+  draft: SpecDraft,
 ): GuardIssue | null {
   return issueOrNull("SPEC", specGuardMessage(diagnosticCase, draft));
 }
 
 function specGuardMessage(
   diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    rationale?: string;
-    expectedResultHint?: string | null;
-    confirmedFault?: string | null;
-    facts?: string[] | null;
-    evidence?: string[] | null;
-    confidence?: string | null;
-  },
+  draft: SpecDraft,
 ): string | null {
   const text = draftBlob(draft);
   if (!text.trim()) return null;
@@ -228,7 +237,7 @@ function specGuardMessage(
     }
     if (assertsSpecAsFact(text, claim) || draft.actionType === "FINISH") {
       return (
-        `UNVERIFIED SPEC: navedena je neprovjerena referentna vrijednost "${claim.valueText}" (${claim.label}). ` +
+        `UNVERIFIED SPEC: navedena je neprovjerena referentna vrijednost "${claim.valueText}" (${claim.parameterKey}). ` +
         'Reci: "Točan referentni raspon za ovo vozilo nije verificiran." ' +
         "Ne navodi izmišljen OEM raspon."
       );

@@ -7,6 +7,7 @@ import {
 } from "./config";
 import {
   DiagnosticPipelineError,
+  DraftShapeError,
   InvalidObservationError,
   ObservationConflictError,
 } from "./errors";
@@ -34,8 +35,7 @@ import {
   buildVerifierUserPrompt,
   findDraftQualityIssue,
 } from "./prompts";
-import { extractReferenceSpecClaims } from "./spec-guard";
-import { resolveDiagnosisCertainty } from "./confirmation-guard";
+import { draftHasSpecRisk } from "./spec-guard";
 import type {
   DiagnosticCase,
   DiagnosticEngine,
@@ -43,22 +43,21 @@ import type {
   DiagnoseResponse,
   DiagnosisCertainty,
   ExtractedCaseFacts,
-  Observation,
   ObservationInput,
   TechnicianOutcome,
 } from "./types";
 import {
   assertObservationAllowed,
+  assertUniqueObservations,
   sameObservation,
   stampObservation,
 } from "./observation";
-import { draftBlob } from "./text";
 import {
   caseForTurn,
   persistSemanticUpdate,
   recordSemanticUpdate,
 } from "./semantic-update";
-import { toDiagnosticStep } from "./step-draft";
+import { parseDiagnosticDraft, toDiagnosticStep } from "./step-draft";
 import { parseVerifierVerdict } from "./verifier-payload";
 import type { GuardIssue } from "./guard-issue";
 
@@ -79,67 +78,26 @@ type DiagnosticTurn = {
   allowTechnicianOutcome: boolean;
 };
 
-function hasTechnicalClaimsOrSpecs(draft: LlmStepPayload): boolean {
-  const claims = Array.isArray(draft.technicalClaims) ? draft.technicalClaims : [];
-  for (const c of claims) {
-    const st = (c.sourceType ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
-    // GENERAL_PRINCIPLE fluff on ordinary ASK/TEST must not force verifier.
-    if (c.vehicleSpecific === true) return true;
-    if (st === "VERIFIED_OEM" || st === "VERIFIED_TECHNICAL") return true;
-    if (
-      (st === "MODEL_KNOWLEDGE" || st === "UNKNOWN") &&
-      /\d/.test(`${c.valueText ?? ""} ${c.claim ?? ""}`)
-    ) {
-      return true;
-    }
-  }
-  return extractReferenceSpecClaims(draftBlob(draft)).length > 0;
-}
-
-function hasHighConfidence(draft: LlmStepPayload): boolean {
-  const certainty = (draft.diagnosisCertainty ?? "").toUpperCase();
-  return certainty === "CONFIRMED" || certainty === "HIGH_CONFIDENCE";
-}
-
 type VerifierRouteReason =
   | "finish"
   | "rejected_diagnosis"
-  | "technical_claim_or_spec"
-  | "high_confidence"
+  | "spec_risk"
   | "none";
 
-/**
- * OpenAI verifier only for high-risk drafts.
- * Ordinary ASK/TEST that pass backend guards go straight to UI (including first step).
- */
+/** Verifier only for FINISH, a rejected diagnosis, or a spec-risk draft. */
 function shouldCallVerifier(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): VerifierRouteReason {
   if (draft.actionType === "FINISH") return "finish";
-  if (
-    diagnosticCase.observations.some((obs) => obs.kind === "REJECT_DIAGNOSIS")
-  ) {
+  if (diagnosticCase.observations.some((obs) => obs.kind === "REJECT_DIAGNOSIS")) {
     return "rejected_diagnosis";
   }
-  if (hasTechnicalClaimsOrSpecs(draft)) return "technical_claim_or_spec";
-
-  // Ordinary ASK (incl. first step): never call OpenAI after guards.
-  if (draft.actionType === "ASK") return "none";
-
-  if (draft.actionType === "TEST") {
-    if (hasHighConfidence(draft)) return "high_confidence";
-    return "none";
-  }
-
+  if (draftHasSpecRisk(draft)) return "spec_risk";
   return "none";
 }
 
-/**
- * Strong verifier only when the case is truly stuck after primary+retry.
- * Never on normal ASK; never on ordinary TEST without stuck signals.
- * Max 1× per case (enforced via strongVerifierUsed).
- */
+/** Strong verifier once, after the primary verifier rejected a high-risk draft. */
 function shouldEscalateToStrongVerifier(
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
@@ -147,15 +105,8 @@ function shouldEscalateToStrongVerifier(
 ): boolean {
   if (diagnosticCase.strongVerifierUsed) return false;
   if (!getStrongVerifierModel()) return false;
-  if (draft.actionType === "ASK") return false;
   if (previousIssues.length === 0) return false;
-
-  if (draft.actionType === "FINISH") return true;
-  if (draft.actionType === "TEST") {
-    return hasTechnicalClaimsOrSpecs(draft) || hasHighConfidence(draft);
-  }
-
-  return false;
+  return shouldCallVerifier(diagnosticCase, draft) !== "none";
 }
 
 function findDraftQualityIssueInTurn(
@@ -203,16 +154,30 @@ async function draftWithClaude(
       : undefined,
   });
 
-  const draft = parseJson<LlmStepPayload>(raw, "Claude dijagnostički odgovor");
-  logDiagnosticDraftShape(draft);
-  recordSemanticUpdate(turn, diagnosticCase, draft);
-  return draft;
+  try {
+    const draft = parseDiagnosticDraft(raw);
+    logDiagnosticDraftShape(draft);
+    recordSemanticUpdate(turn, diagnosticCase, draft);
+    return draft;
+  } catch (error) {
+    if (!(error instanceof DraftShapeError)) throw error;
+    if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
+      throw new DiagnosticPipelineError(error.message);
+    }
+    return regenerateWithClaude(
+      turn,
+      diagnosticCase,
+      {},
+      [error.message],
+      "draft_shape",
+    );
+  }
 }
 
 async function regenerateWithClaude(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
-  draft: LlmStepPayload,
+  draft: unknown,
   issues: Array<GuardIssue | string>,
   reasonCalled: string = "quality_gate",
 ): Promise<LlmStepPayload> {
@@ -233,7 +198,7 @@ async function regenerateWithClaude(
       : reasonCalled;
   logGuardRetry({
     stepNumber: step?.stepNumber ?? diagnosticCase.steps.length + 1,
-    guard: primaryGuard ? classifyGuardName(primaryGuard) : "verifier",
+    guard: primaryGuard ? classifyGuardName(primaryGuard) : reasonCalled,
     retryNumber: turn.retriesUsed,
     issueSummary,
   });
@@ -303,15 +268,6 @@ async function verifyWithOpenAi(
   return parseVerifierVerdict(parsed);
 }
 
-function applyConfirmationPolicy(draft: LlmStepPayload): LlmStepPayload {
-  if (draft.actionType !== "FINISH") return draft;
-  const certainty = resolveDiagnosisCertainty(draft);
-  return {
-    ...draft,
-    diagnosisCertainty: certainty,
-  };
-}
-
 function rejectUnapprovedDraft(issues: string[]): never {
   const summary = issues.filter(Boolean).slice(0, 2).join("; ") || "odbijen";
   throw new DiagnosticPipelineError(`Verifier nije odobrio draft: ${summary}`);
@@ -373,8 +329,6 @@ async function callVerifiedDiagnosticStep(
           verifierReason,
         );
       }
-
-      draft = applyConfirmationPolicy(draft);
 
       persistSemanticUpdate(diagnosticCase, turn);
       return toDiagnosticStep(draft, stepId);
@@ -490,33 +444,6 @@ async function ensureDraftPassesQualityGates(
   }
 }
 
-/** Keep the first observation per stepId — matches `find()` first-wins. */
-function dedupeObservationsByStepId(
-  observations: Observation[],
-): Observation[] {
-  const firstByStepId = new Map<string, Observation>();
-  const out: Observation[] = [];
-  for (const obs of observations) {
-    const first = firstByStepId.get(obs.stepId);
-    if (first) {
-      if (
-        process.env.NODE_ENV === "development" &&
-        !sameObservation(first, obs)
-      ) {
-        console.warn(
-          "[diagnosis] dropping duplicate observation for stepId",
-          obs.stepId,
-        );
-      }
-      continue;
-    }
-    firstByStepId.set(obs.stepId, obs);
-    out.push(obs);
-  }
-  return out;
-}
-
-/** Fields scanned for locked technical-spec claims after an accepted step. */
 export class LlmDiagnosticEngine implements DiagnosticEngine {
   async startCase(problemText: string): Promise<DiagnoseResponse> {
     const trimmed = problemText.trim();
@@ -552,7 +479,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     const incoming: DiagnosticCase = {
       ...diagnosticCase,
       extracted: diagnosticCase.extracted ?? {},
-      observations: dedupeObservationsByStepId(diagnosticCase.observations),
+      observations: assertUniqueObservations(diagnosticCase.observations),
     };
 
     const currentStep = incoming.steps[incoming.steps.length - 1];

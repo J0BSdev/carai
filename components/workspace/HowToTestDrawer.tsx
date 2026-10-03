@@ -10,8 +10,7 @@ type HowToTestDrawerProps = {
 function howToTitle(step: DiagnosticStep): string {
   const fromContent =
     step.content.split(/[.\n!?]/)[0]?.trim() || step.content.trim();
-  if (fromContent) return fromContent;
-  return step.testMethod?.trim() || "Test";
+  return fromContent || "Test";
 }
 
 export default function HowToTestDrawer({

@@ -34,14 +34,6 @@ export default function DiagnosisCompletion({
   const meta = certaintyLabel(step.diagnosisCertainty);
   const confirmed = meta.tone === "confirmed";
   const title = step.confirmedFault ?? step.content;
-  const evidence = [...(step.evidence ?? []), ...(step.facts ?? [])];
-  const pct =
-    typeof step.diagnosisConfidence === "number"
-      ? step.diagnosisConfidence
-      : step.hypotheses
-          ?.map((h) => h.confidence)
-          .filter((c): c is number => typeof c === "number")
-          .sort((a, b) => b - a)[0];
 
   const shell =
     meta.tone === "confirmed"
@@ -64,7 +56,6 @@ export default function DiagnosisCompletion({
       </p>
       <p className={`mt-2 text-sm font-semibold tracking-wide ${toneColor}`}>
         {meta.text}
-        {typeof pct === "number" ? ` — ${pct}%` : ""}
       </p>
 
       <h2 className="mt-3 text-2xl font-semibold leading-snug tracking-tight">
@@ -77,20 +68,6 @@ export default function DiagnosisCompletion({
             ? "Visoka pouzdanost prema trenutnim dokazima, ali još nije potvrđeno — alternative nisu potpuno eliminirane ili nedostaje neovisni potvrđujući dokaz."
             : "Potrebna je dodatna potvrda prije zamjene skupih dijelova."}
         </p>
-      )}
-
-      {evidence.length > 0 && (
-        <div className="mt-5">
-          <p className="text-xs tracking-wide text-[var(--muted)]">DOKAZI</p>
-          <ul className="mt-2 space-y-2">
-            {evidence.map((e) => (
-              <li key={e} className="flex gap-2 text-sm text-[var(--muted-strong)]">
-                <span className="text-[var(--accent)]">✓</span>
-                <span>{e}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
       )}
 
       {step.hypotheses && step.hypotheses.length > 0 && (

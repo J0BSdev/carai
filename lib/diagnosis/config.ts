@@ -42,3 +42,6 @@ export function getStrongVerifierModel(): string | undefined {
   const raw = process.env.STRONG_VERIFIER_MODEL?.trim();
   return raw || undefined;
 }
+
+/** Abort a single Claude or OpenAI HTTP call after this long. */
+export const AI_REQUEST_TIMEOUT_MS = 60_000;

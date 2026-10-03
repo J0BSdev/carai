@@ -2,6 +2,7 @@ import type {
   AiActionType,
   DiagnosticCase,
   DiagnosticStep,
+  Hypothesis,
   HypothesisStatus,
 } from "./types";
 
@@ -102,17 +103,10 @@ export function hypothesisToKind(status: HypothesisStatus): EvidenceKind {
   }
 }
 
-export { latestHypotheses } from "./known-facts";
-
-export function needsDualMeasurement(step: DiagnosticStep): boolean {
-  const blob = [step.content, step.expectedResultHint, step.testGuide]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return (
-    (blob.includes("prije") && blob.includes("poslije")) ||
-    (blob.includes("before") && blob.includes("after")) ||
-    blob.includes("prije/poslije") ||
-    blob.includes("prije i poslije")
-  );
+export function latestHypotheses(diagnosticCase: DiagnosticCase): Hypothesis[] {
+  for (let i = diagnosticCase.steps.length - 1; i >= 0; i -= 1) {
+    const hypotheses = diagnosticCase.steps[i]?.hypotheses;
+    if (hypotheses && hypotheses.length > 0) return hypotheses;
+  }
+  return [];
 }

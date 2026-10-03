@@ -30,7 +30,7 @@ function normalizeSourceType(raw: string | null | undefined): TechnicalSourceTyp
 function looksVehicleSpecificClaim(text: string): boolean {
   const n = normalizeForCompare(text);
   return (
-    /(za ovo vozilo|na ovom vozilu|oem|tvornick|tvorničk|specifikac|pin\s*\d|pinout|moment|torque|cekaj \d|čekaj \d|\d+\s*(min|sek|s)\b)/.test(
+    /(za ovo vozilo|na ovom vozilu|oem|tvornick|tvorničk|specifikac|pin\s*\d|pinout|moment|torque)/.test(
       n,
     ) || extractReferenceSpecClaims(text).length > 0
   );
@@ -49,8 +49,7 @@ export function findTechnicalSourceTypeIssue(
     rationale?: string;
     expectedResultHint?: string | null;
     confirmedFault?: string | null;
-    facts?: string[] | null;
-    evidence?: string[] | null;
+    testGuide?: string | null;
     technicalClaims?: TechnicalClaimPayload[] | null;
   },
 ): string | null {
@@ -140,7 +139,46 @@ export function findTechnicalSourceTypeIssue(
   return null;
 }
 
-/** Source-type honesty. Safety wording stays with the model and the verifier. */
+/**
+ * Obvious live SRS connector/module work, HV / orange-cable / inverter work,
+ * or pyrotechnic work, with no basic safety sentence.
+ */
+export function findLiveDangerIssue(
+  draft: Parameters<typeof findTechnicalSourceTypeIssue>[0],
+): GuardIssue | null {
+  if (draft.actionType !== "TEST") return null;
+  const text = draftBlob(draft);
+  if (!isObviousLiveDanger(text) || hasBasicSafetyWording(text)) return null;
+  return issue(
+    "SAFETY",
+    "SAFETY: živi SRS, HV ili pirotehnika traži jednu rečenicu što napraviti prije rada.",
+  );
+}
+
+function isObviousLiveDanger(text: string): boolean {
+  const n = normalizeForCompare(text);
+  const srs =
+    /\b(srs|airbag|zracni jastuk)\b/.test(n) &&
+    /\b(konektor|connector|modul|module|pin|otpor|sond)\b/.test(n);
+  const hv =
+    /\b(narancasti kabel|narancast kabel|orange cable)\b/.test(n) ||
+    (/\b(hv|visokonaponsk|visoki napon|inverter)\b/.test(n) &&
+      /\b(kabel|konektor|inverter|orange|naranc)\b/.test(n));
+  const pyro =
+    /\bpiroteh/.test(n) ||
+    (/\b(pretenzor|pretensioner)\b/.test(n) &&
+      /\b(konektor|connector|pin|otpor|modul|module)\b/.test(n));
+  return srs || hv || pyro;
+}
+
+function hasBasicSafetyWording(text: string): boolean {
+  const n = normalizeForCompare(text);
+  return /\b(iskljuc|odspoj|akumulator|baterij|ne diraj|ne spajaj|cekaj|upozoren|safety)\b/.test(
+    n,
+  );
+}
+
+/** Source-type honesty for technical claims. */
 export function findSafetyAndTechnicalRuleIssue(
   draft: Parameters<typeof findTechnicalSourceTypeIssue>[0],
 ): GuardIssue | null {
