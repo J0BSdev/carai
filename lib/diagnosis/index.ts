@@ -1,6 +1,5 @@
 export type {
   AiActionType,
-  CaseStatus,
   DiagnoseAction,
   DiagnoseRequest,
   DiagnoseResponse,
@@ -13,7 +12,6 @@ export type {
   HypothesisStatus,
   Observation,
   ObservationInput,
-  RejectedDiagnosis,
   TechnicianOutcome,
   TechnicianOutcomeStatus,
   VehicleInfo,

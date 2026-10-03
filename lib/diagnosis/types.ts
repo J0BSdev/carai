@@ -1,5 +1,3 @@
-export type CaseStatus = "active" | "completed";
-
 /** Primary AI action for one diagnostic turn (product spec). */
 export type AiActionType = "ASK" | "TEST" | "FINISH";
 
@@ -15,13 +13,6 @@ export type DiagnosisCertainty =
   | "LIKELY"
   | "HIGH_CONFIDENCE"
   | "CONFIRMED";
-
-export interface RejectedDiagnosis {
-  diagnosis: string;
-  rejectedAtStep: string;
-  reason: "technician_rejected";
-  rejectedAt: string;
-}
 
 export interface VehicleInfo {
   make?: string;
@@ -41,8 +32,6 @@ export interface TechnicianOutcome {
   status: TechnicianOutcomeStatus;
   /** Cause the mechanic confirmed, when stated or implied by the active step. */
   fault?: string;
-  /** Short basis from the mechanic's last result. */
-  basis?: string;
 }
 
 export interface ExtractedCaseFacts {
@@ -56,11 +45,8 @@ export interface ExtractedCaseFacts {
 export interface Hypothesis {
   label: string;
   status: HypothesisStatus;
-  note?: string;
   /** Evidence-based ranking estimate (0–100), not statistical probability. */
   confidence?: number | null;
-  supportingEvidence?: string[];
-  contradictingEvidence?: string[];
 }
 
 /** One AI turn: exactly one primary action (ASK | TEST | FINISH). */
@@ -74,11 +60,10 @@ export interface DiagnosticStep {
   evidence?: string[];
   hypotheses?: Hypothesis[];
   confirmedFault?: string;
-  /** Evidence-based ranking 0–100 for the leading diagnosis (FINISH). */
+  /** Evidence-based ranking 0–100 for the leading diagnosis (FINISH). Display only. */
   diagnosisConfidence?: number | null;
-  /** Strict certainty ladder for FINISH. CONFIRMED is rare. */
+  /** Strict certainty ladder for FINISH. Not CONFIRMED means evidence is still insufficient. */
   diagnosisCertainty?: DiagnosisCertainty;
-  insufficientEvidence?: boolean;
   /** What the mechanic should record when answering. */
   expectedResultHint?: string;
   /**
@@ -130,9 +115,7 @@ export type ObservationInput = {
   >;
 }[Observation["kind"]];
 
-export type SpecVerificationStatus = "VERIFIED" | "UNVERIFIED";
-
-/** Provenance of a technical claim/spec — required honesty label for AI claims. */
+/** Provenance label the model may attach to a technical claim. VERIFIED_* is always rejected. */
 export type TechnicalSourceType =
   | "VERIFIED_OEM"
   | "VERIFIED_TECHNICAL"
@@ -140,7 +123,7 @@ export type TechnicalSourceType =
   | "MODEL_KNOWLEDGE"
   | "UNKNOWN";
 
-/** Locked vehicle-specific reference specification claim. */
+/** Reference number extracted from a draft, locked so the next turn cannot contradict it. */
 export interface TechnicalSpecClaim {
   parameterKey: string;
   label: string;
@@ -148,12 +131,6 @@ export interface TechnicalSpecClaim {
   unit: string;
   low: number | null;
   high: number | null;
-  condition: string | null;
-  status: SpecVerificationStatus;
-  /** Honesty label; VERIFIED_* only when backed by verifiedTechnicalSpecs. */
-  sourceType?: TechnicalSourceType;
-  source?: string;
-  vehicleEngineMatch?: string;
 }
 
 export interface DiagnosticCase {
@@ -164,18 +141,10 @@ export interface DiagnosticCase {
   extracted?: ExtractedCaseFacts;
   observations: Observation[];
   steps: DiagnosticStep[];
-  status: CaseStatus;
-  confirmedFault?: string;
   /**
-   * Locked technical reference specs for this case.
-   * VERIFIED entries may only come from an external source mechanism (not the model).
+   * Strong verifier at most once per case. The client carries the case between
+   * requests, so this flag cannot live only on the current turn.
    */
-  verifiedTechnicalSpecs?: TechnicalSpecClaim[];
-  /** Previously stated reference claims (locked for consistency; still UNVERIFIED unless also verified). */
-  technicalSpecClaims?: TechnicalSpecClaim[];
-  /** Diagnoses rejected by the technician ("Dijagnoza ne izgleda točno"). */
-  rejectedDiagnoses?: RejectedDiagnosis[];
-  /** Strong verifier may run at most once per case (routing flag). */
   strongVerifierUsed?: boolean;
 }
 

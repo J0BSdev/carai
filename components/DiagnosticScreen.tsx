@@ -148,9 +148,7 @@ export default function DiagnosticScreen() {
     !loading;
 
   const applyResponse = useCallback((data: DiagnoseResponse) => {
-    const finished =
-      data.case.status === "completed" ||
-      data.nextStep?.actionType === "FINISH";
+    const finished = data.nextStep?.actionType === "FINISH";
     const finish = lastFinishStep(data.case, data.nextStep);
 
     setDiagnosticCase(data.case);
@@ -483,7 +481,6 @@ export default function DiagnosticScreen() {
             {phase === "completed" && finishStep && (
               <DiagnosisCompletion
                 step={finishStep}
-                confirmedFault={diagnosticCase.confirmedFault}
                 onComplete={resetCase}
                 onKeepDiagnosing={() =>
                   reopenAndContinue("CONTINUE_AFTER_FINISH")

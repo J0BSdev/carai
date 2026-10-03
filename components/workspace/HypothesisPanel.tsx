@@ -85,7 +85,6 @@ function HypothesisRow({ h }: { h: Hypothesis }) {
         )}
       </div>
       <p className="mt-2 text-sm font-medium">{h.label}</p>
-      {h.note && <p className="mt-1 text-xs text-[var(--muted)]">{h.note}</p>}
     </li>
   );
 }

@@ -36,10 +36,7 @@ export function diagnosticStatusLabel(
     if (finish?.diagnosisCertainty === "CONFIRMED") {
       return "DIJAGNOZA POTVRĐENA";
     }
-    if (finish?.insufficientEvidence || finish?.diagnosisCertainty) {
-      return "VJEROJATAN UZROK";
-    }
-    return "DIJAGNOZA POTVRĐENA";
+    return "VJEROJATAN UZROK";
   }
 
   const answered = diagnosticCase?.observations.length ?? 0;

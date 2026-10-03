@@ -1,4 +1,4 @@
-import type { DiagnosticCase, TechnicalSourceType } from "./types";
+import type { TechnicalSourceType } from "./types";
 import { extractReferenceSpecClaims } from "./spec-guard";
 import { draftBlob, normalizeForCompare } from "./text";
 import { issue, type GuardIssue } from "./guard-issue";
@@ -8,13 +8,6 @@ export type TechnicalClaimPayload = {
   valueText?: string | null;
   sourceType?: string | null;
   vehicleSpecific?: boolean | null;
-};
-
-export type SafetyPreconditionsPayload = {
-  category?: string | null;
-  warnings?: string[] | null;
-  requiredSteps?: string[] | null;
-  needsVerifiedProcedure?: boolean | null;
 };
 
 const SOURCE_TYPES = new Set<TechnicalSourceType>([
@@ -47,10 +40,9 @@ function looksVehicleSpecificClaim(text: string): boolean {
  * Enforce sourceType honesty for technical claims/specs.
  * Vehicle-specific values cannot be GENERAL_PRINCIPLE.
  * MODEL_KNOWLEDGE / UNKNOWN cannot be treated as verified specs.
- * AI cannot self-label VERIFIED_* without case verifiedTechnicalSpecs.
+ * VERIFIED_* is never accepted. There is no external spec source.
  */
 export function findTechnicalSourceTypeIssue(
-  diagnosticCase: DiagnosticCase,
   draft: {
     actionType?: string;
     content?: string;
@@ -66,8 +58,6 @@ export function findTechnicalSourceTypeIssue(
   const claims = Array.isArray(draft.technicalClaims)
     ? draft.technicalClaims
     : [];
-  const hasCaseVerified =
-    (diagnosticCase.verifiedTechnicalSpecs?.length ?? 0) > 0;
 
   for (const claim of claims) {
     const sourceType = normalizeSourceType(claim.sourceType);
@@ -93,17 +83,14 @@ export function findTechnicalSourceTypeIssue(
     if (vehicleSpecific && sourceType === "GENERAL_PRINCIPLE") {
       return (
         "TECH SOURCE GUARD: vehicle-specific vrijednost ne smije biti označena kao GENERAL_PRINCIPLE. " +
-        "Koristi VERIFIED_OEM/VERIFIED_TECHNICAL ili UNKNOWN/MODEL_KNOWLEDGE (bez tretiranja kao verified)."
+        "Koristi UNKNOWN ili MODEL_KNOWLEDGE. VERIFIED_* nije dozvoljen."
       );
     }
 
-    if (
-      (sourceType === "VERIFIED_OEM" || sourceType === "VERIFIED_TECHNICAL") &&
-      !hasCaseVerified
-    ) {
+    if (sourceType === "VERIFIED_OEM" || sourceType === "VERIFIED_TECHNICAL") {
       return (
-        "TECH SOURCE GUARD: AI ne smije označiti sourceType kao VERIFIED_OEM/VERIFIED_TECHNICAL " +
-        "kad CASE STATE.verifiedTechnicalSpecs nema taj podatak. Koristi UNKNOWN ili MODEL_KNOWLEDGE."
+        "TECH SOURCE GUARD: VERIFIED_OEM/VERIFIED_TECHNICAL nije dozvoljen. " +
+        "Koristi UNKNOWN ili MODEL_KNOWLEDGE."
       );
     }
 
@@ -119,13 +106,8 @@ export function findTechnicalSourceTypeIssue(
     }
   }
 
-  // Implicit vehicle-specific numeric claims in text without honest source typing
   const implicitClaims = extractReferenceSpecClaims(text);
   if (implicitClaims.length > 0) {
-    const hasVerifiedTyped = claims.some((c) => {
-      const st = normalizeSourceType(c.sourceType);
-      return st === "VERIFIED_OEM" || st === "VERIFIED_TECHNICAL";
-    });
     const hasHonestUnknown = claims.some((c) => {
       const st = normalizeSourceType(c.sourceType);
       return st === "UNKNOWN" || st === "MODEL_KNOWLEDGE";
@@ -142,17 +124,15 @@ export function findTechnicalSourceTypeIssue(
       );
     }
 
-    // If asserting concrete numeric OEM-like fact without verified source typing → reject
     if (
-      !hasVerifiedTyped &&
       !hasHonestUnknown &&
       /(mora biti|trebalo bi|ocekivan|očekivan|oem|za ovo vozilo|na ovom vozilu)/i.test(
         text,
       )
     ) {
       return (
-        "TECH SOURCE GUARD: tehnička tvrdnja/spec mora imati sourceType. " +
-        "MODEL_KNOWLEDGE/UNKNOWN nisu verified; bez VERIFIED_OEM/VERIFIED_TECHNICAL ne tvrdi vehicle-specific vrijednost."
+        "TECH SOURCE GUARD: tehnička tvrdnja/spec mora imati sourceType UNKNOWN ili MODEL_KNOWLEDGE. " +
+        "Ne tvrdi vehicle-specific vrijednost kao verified."
       );
     }
   }
@@ -160,195 +140,11 @@ export function findTechnicalSourceTypeIssue(
   return null;
 }
 
-type SafetyCategory = "SRS" | "HV" | "BRAKES" | "OTHER_CRITICAL" | null;
-
-function detectSafetyCategory(normalized: string): SafetyCategory {
-  if (
-    /(srs|airbag|jastuk|pyrotechn|pretension|napinjac|napinjač|clockspring|spiralni kabel)/.test(
-      normalized,
-    )
-  ) {
-    return "SRS";
-  }
-  if (
-    /(high voltage|\bhv\b|visoki napon|hibrid|hybrid|inverter|traction battery|ev battery|orange cable|narancast|narančast)/.test(
-      normalized,
-    )
-  ) {
-    return "HV";
-  }
-  if (
-    /(kocnic|kočnic|brake|abs modulator|hidraulic|hidrauli)/.test(normalized) &&
-    /(otvori|rastavi|skini|zamijeni|bleed|odzraci|odzrači|tlak|linij)/.test(
-      normalized,
-    )
-  ) {
-    return "BRAKES";
-  }
-  if (
-    /(pyrotechn|eksploziv|gas generator|seatbelt tensioner)/.test(normalized)
-  ) {
-    return "OTHER_CRITICAL";
-  }
-  return null;
-}
-
-function involvesConnectorOrModuleWork(normalized: string): boolean {
-  return /(konektor|connector|modul|ecu|unit|uticnica|utikač|pin|snop|zica|žica)/.test(
-    normalized,
-  );
-}
-
-function inventsVehicleSpecificWaitOrProcedure(normalized: string): boolean {
-  const inventsWait =
-    /(pricekaj|pričekaj|cekaj|čekaj|wait)\s+\d+\s*(min|minut|sek|s|second)/.test(
-      normalized,
-    ) || /\d+\s*(min|minut)\s*(prije|before|odspoj|nakon)/.test(normalized);
-  const admitsUnverified =
-    /(verificiran(a|u)? procedur|verified procedure|nije verificiran|tocan postupak nije|točan postupak nije|provjeri oem)/.test(
-      normalized,
-    );
-  return inventsWait && !admitsUnverified;
-}
-
-/** Any short practical caution — AI owns the wording. */
-function hasAnySafetyLanguage(normalized: string): boolean {
-  return /(odspoji|deaktiv|iskljuc|isključ|ppe|rukavic|izol|service plug|service disconnect|prije rada|napajan.*prije|baterij.*prije|akumulator.*prije|verificiran\w* procedur|needs verified procedure)/.test(
-    normalized,
-  );
-}
-
-function isClearlyLiveSrsWork(normalized: string): boolean {
-  const category = detectSafetyCategory(normalized);
-  return (
-    (category === "SRS" || category === "OTHER_CRITICAL") &&
-    involvesConnectorOrModuleWork(normalized)
-  );
-}
-
-function isClearlyLiveHvWork(normalized: string): boolean {
-  if (detectSafetyCategory(normalized) !== "HV") return false;
-  return /(orange cable|narancast|narančast|inverter|service plug|service disconnect|traction battery|visokonaponsk)/.test(
-    normalized,
-  );
-}
-
-/** Scan / live data / visual — not physical work on a live high-energy assembly. */
-function looksLikeScanOrInspectionOnly(normalized: string): boolean {
-  const scanOrInspect =
-    /(ocitaj|ocitati|procitaj|skenir|scan|live data|pid\b|freeze|dtc|kodov|vizual|pregled|logiraj)/.test(
-      normalized,
-    );
-  if (!scanOrInspect) return false;
-  const physical =
-    /(konektor|connector|uticnica|utikač|rastavi|skini|odspoji|odspoj|service plug|service disconnect|orange cable|narancast|narančast|snop|zica|žica)/.test(
-      normalized,
-    );
-  return !physical;
-}
-
-function draftSafetyBlob(draft: {
-  content?: string;
-  rationale?: string;
-  expectedResultHint?: string | null;
-  safetyPreconditions?: SafetyPreconditionsPayload | null;
-}): string {
-  return normalizeForCompare(
-    [
-      draftBlob(draft),
-      draft.safetyPreconditions?.category,
-      ...(draft.safetyPreconditions?.warnings ?? []),
-      ...(draft.safetyPreconditions?.requiredSteps ?? []),
-      draft.safetyPreconditions?.needsVerifiedProcedure
-        ? "needs verified procedure"
-        : "",
-    ]
-      .filter(Boolean)
-      .join(" "),
-  );
-}
-
-/**
- * Light fail-safe only: clearly live high-energy TESTs with no caution at all,
- * or invented numeric wait times. AI owns whether/how to warn on ordinary tests.
- */
-export function findSafetyCriticalTestIssue(draft: {
-  actionType?: string;
-  content?: string;
-  rationale?: string;
-  expectedResultHint?: string | null;
-  safetyPreconditions?: SafetyPreconditionsPayload | null;
-}): string | null {
-  if (draft.actionType !== "TEST") return null;
-
-  const normalized = normalizeForCompare(draftBlob(draft));
-  if (inventsVehicleSpecificWaitOrProcedure(normalized)) {
-    return (
-      "SAFETY REJECT: ne izmišljaj vehicle-specific wait/OEM postupak. " +
-      "Jedna rečenica da treba verificiranu proceduru — bez izmišljenih minuta."
-    );
-  }
-
-  const safetyBlob = draftSafetyBlob(draft);
-  if (hasAnySafetyLanguage(safetyBlob)) return null;
-
-  if (isClearlyLiveSrsWork(normalized)) {
-    return (
-      "SAFETY REJECT: živi SRS/airbag rad na konektoru/modulu treba 1 kratku praktičnu rečenicu " +
-      "(odspoji napajanje prije rada). Bez checklisti i bez izmišljenog wait time."
-    );
-  }
-
-  if (isClearlyLiveHvWork(normalized)) {
-    return (
-      "SAFETY REJECT: živi HV rad treba 1 kratku praktičnu rečenicu " +
-      "(izolacija / odspajanje prije rada). Ne izmišljaj OEM wait."
-    );
-  }
-
-  return null;
-}
-
-/**
- * Selective verifier routing: only actually high-energy physical work.
- * Keyword-only SRS/HV/brake TESTs (DTC read, scan, visual, ordinary metering)
- * must not force OpenAI.
- */
-export function isSafetyCriticalTestDraft(draft: {
-  actionType?: string;
-  content?: string;
-  rationale?: string;
-  expectedResultHint?: string | null;
-  confirmedFault?: string | null;
-  facts?: string[] | null;
-  evidence?: string[] | null;
-}): boolean {
-  if (draft.actionType !== "TEST") return false;
-  const normalized = normalizeForCompare(draftBlob(draft));
-  if (looksLikeScanOrInspectionOnly(normalized)) return false;
-  return (
-    isClearlyLiveSrsWork(normalized) || isClearlyLiveHvWork(normalized)
-  );
-}
-
-/** Combined safety + technical source guard. */
+/** Source-type honesty. Safety wording stays with the model and the verifier. */
 export function findSafetyAndTechnicalRuleIssue(
-  diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    rationale?: string;
-    expectedResultHint?: string | null;
-    confirmedFault?: string | null;
-    facts?: string[] | null;
-    evidence?: string[] | null;
-    technicalClaims?: TechnicalClaimPayload[] | null;
-    safetyPreconditions?: SafetyPreconditionsPayload | null;
-  },
+  draft: Parameters<typeof findTechnicalSourceTypeIssue>[0],
 ): GuardIssue | null {
-  const technical = findTechnicalSourceTypeIssue(diagnosticCase, draft);
-  if (technical) return issue("SPEC", technical);
-  const safety = findSafetyCriticalTestIssue(draft);
-  if (safety) return issue("SAFETY_REJECT", safety);
-  return null;
+  const technical = findTechnicalSourceTypeIssue(draft);
+  if (!technical) return null;
+  return issue("SPEC", technical);
 }

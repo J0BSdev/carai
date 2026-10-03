@@ -156,7 +156,6 @@ function formatCost(cost: number | null): string {
 
 const GUARD_LOG_NAME: Record<GuardIssueCode, string> = {
   TECHNICIAN_OUTCOME: "technician_outcome",
-  SAFETY_REJECT: "safety_guard",
   SPEC: "spec_guard",
   TEST_META: "test_meta",
 };
@@ -290,7 +289,6 @@ export function logDiagnosticDraftShape(draft: unknown): void {
     "semanticUpdate",
     "hypotheses",
     "technicalClaims",
-    "safetyPreconditions",
   ]);
   for (const key of keys) {
     if (special.has(key)) continue;
@@ -308,12 +306,6 @@ export function logDiagnosticDraftShape(draft: unknown): void {
   }
   parts.push(`hypotheses=${arrayLen(obj.hypotheses)}`);
   parts.push(`technicalClaims=${arrayLen(obj.technicalClaims)}`);
-  if (obj.safetyPreconditions && typeof obj.safetyPreconditions === "object") {
-    const sp = obj.safetyPreconditions as Record<string, unknown>;
-    parts.push(
-      `safety warnings=${arrayLen(sp.warnings)} requiredSteps=${arrayLen(sp.requiredSteps)}`,
-    );
-  }
 
   logLine(parts.join(" "));
 }

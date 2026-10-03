@@ -20,8 +20,7 @@ function isDiagnosticCase(value: unknown): value is DiagnosticCase {
     typeof c.createdAt === "string" &&
     typeof c.problemText === "string" &&
     Array.isArray(c.observations) &&
-    Array.isArray(c.steps) &&
-    (c.status === "active" || c.status === "completed")
+    Array.isArray(c.steps)
   );
 }
 

@@ -6,7 +6,6 @@ export type FinishDraft = {
   actionType?: string;
   confirmedFault?: string | null;
   diagnosisCertainty?: string | null;
-  insufficientEvidence?: boolean | null;
 };
 
 /** Accept only the certainty enum. Aliases fold; anything else is not CONFIRMED. */

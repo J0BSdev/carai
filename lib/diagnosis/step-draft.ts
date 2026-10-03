@@ -30,10 +30,7 @@ function parseHypotheses(
     parsed.push({
       label,
       status: mapHypothesisUiStatus(h.status ?? "POSSIBLE"),
-      note: h.note ?? undefined,
       confidence,
-      supportingEvidence: h.supportingEvidence?.filter(Boolean),
-      contradictingEvidence: h.contradictingEvidence?.filter(Boolean),
     });
   }
   return parsed.length > 0 ? parsed : undefined;
@@ -64,12 +61,10 @@ export function toDiagnosticStep(
 
   const actionType = payload.actionType as AiActionType;
   let diagnosisCertainty: DiagnosisCertainty | undefined;
-  let insufficientEvidence = payload.insufficientEvidence ?? undefined;
   let diagnosisConfidence = parseDiagnosisConfidence(payload.diagnosisConfidence);
 
   if (actionType === "FINISH") {
     diagnosisCertainty = resolveDiagnosisCertainty(payload);
-    insufficientEvidence = diagnosisCertainty !== "CONFIRMED";
     if (
       diagnosisConfidence === undefined &&
       payload.hypotheses &&
@@ -95,7 +90,6 @@ export function toDiagnosticStep(
         : undefined,
     diagnosisCertainty,
     diagnosisConfidence,
-    insufficientEvidence,
     facts: payload.facts ?? undefined,
     evidence: payload.evidence ?? undefined,
     hypotheses: parseHypotheses(payload.hypotheses),

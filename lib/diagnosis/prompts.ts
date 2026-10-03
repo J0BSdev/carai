@@ -4,7 +4,6 @@ import { buildKnownFactsSnapshot, latestHypotheses } from "./known-facts";
 import {
   collectHistoricalReferenceClaims,
   findSpecGuardIssue,
-  getVerifiedTechnicalSpecs,
 } from "./spec-guard";
 import { findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
@@ -18,16 +17,16 @@ TEST čim ima dovoljno podataka. ASK samo ako odgovor mijenja sljedeći korak.
 DTC-first: knownFacts.knownDtcCodes koristi odmah. Ne rescan, ne opća lampica/simptom pitanja, ne pitaj ponovno vozilo.
 Ako je sigurno i izvedivo, direktno mjerenje na granici komponente (ulaz/napajanje/masa/signal) prije upstream/indirektnog (relej, osigurač, ECU, zvuk, vizual).
 technicianOutcome samo iz trenutnog RESULT.text. SKIP, CANNOT_PERFORM, REJECT_DIAGNOSIS, CONTINUE_AFTER_FINISH i originalComplaint nisu mechanic result — izostavi ga. FAULT_CONFIRMED ili REPAIR_CONFIRMED → FINISH; FAULT_CONFIRMED treba fault ili confirmedFault. Ne čini spec VERIFIED.
-Ne izmišljaj OEM brojke, pinove ni raspone. Nije u verifiedTechnicalSpecs → nije dokaz. technicalClaims.sourceType: VERIFIED_OEM | VERIFIED_TECHNICAL | GENERAL_PRINCIPLE | MODEL_KNOWLEDGE | UNKNOWN. VERIFIED_* samo iz verifiedTechnicalSpecs.
+Ne izmišljaj OEM brojke, pinove ni raspone. technicalClaims.sourceType: GENERAL_PRINCIPLE | MODEL_KNOWLEDGE | UNKNOWN. VERIFIED_* nije dozvoljen.
 Safety warning samo uz stvaran rizik (živi SRS, HV, pirotehnika, otvoreni hidraulički tlak): jedna rečenica što napraviti prije rada. Rutinski test bez warninga.
-FINISH nosi diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED i diagnosisConfidence iz ovog drafta. CONFIRMED samo uz neovisan jak dokaz ili ovaj-turn FAULT_CONFIRMED|REPAIR_CONFIRMED. Inače insufficientEvidence=true. Poštuj rejectedDiagnoses.
+FINISH nosi diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED i diagnosisConfidence iz ovog drafta. CONFIRMED samo uz neovisan jak dokaz ili ovaj-turn FAULT_CONFIRMED|REPAIR_CONFIRMED. Inače LIKELY ili HIGH_CONFIDENCE. Poštuj rejectedDiagnoses.
 
 semanticUpdate samo kad RESULT dodaje vehicle, symptoms, DTC ili measurements, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
 
 JSON bez markdowna. Prazna polja izostavi.
 TEST: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod. testGuide samo za nerutinski test.
 ASK: actionType, content, rationale.
-FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence, insufficientEvidence.
+FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence.
 {"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","diagnosticTarget":"…","diagnosticGoal":"…","testMethod":"…"}`;
 
 /** Case facts serialized into prompts. Result text is raw; the model interprets it. */
@@ -72,26 +71,30 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       hypothesis: h.label,
       status: h.status,
       confidence: h.confidence ?? null,
-      supportingEvidence: h.supportingEvidence ?? [],
-      contradictingEvidence: h.contradictingEvidence ?? [],
-      note: h.note ?? null,
     })),
     diagnosticStepHistory: stepHistory,
-    status: diagnosticCase.status,
-    verifiedTechnicalSpecs: getVerifiedTechnicalSpecs(diagnosticCase),
     claimedReferenceSpecs: collectHistoricalReferenceClaims(diagnosticCase).map(
       (c) => ({
         parameterKey: c.parameterKey,
         valueText: c.valueText,
         unit: c.unit,
-        condition: c.condition,
-        status: c.status,
-        source: c.source ?? null,
-        vehicleEngineMatch: c.vehicleEngineMatch ?? null,
       }),
     ),
-    rejectedDiagnoses: diagnosticCase.rejectedDiagnoses ?? [],
+    rejectedDiagnoses: rejectedFromObservations(diagnosticCase),
   };
+}
+
+/** Rebuilt from REJECT_DIAGNOSIS observations and the FINISH step they point at. */
+function rejectedFromObservations(diagnosticCase: DiagnosticCase) {
+  const rows: Array<{ diagnosis: string; rejectedAtStep: string }> = [];
+  for (const obs of diagnosticCase.observations) {
+    if (obs.kind !== "REJECT_DIAGNOSIS") continue;
+    const step = diagnosticCase.steps.find((s) => s.id === obs.stepId);
+    const diagnosis = step?.confirmedFault?.trim() || step?.content.trim();
+    if (!diagnosis) continue;
+    rows.push({ diagnosis, rejectedAtStep: obs.stepId });
+  }
+  return rows;
 }
 
 type CaseStepHistoryRow = ReturnType<
@@ -127,44 +130,14 @@ export function compactCaseStateForPrompt(
     originalComplaint: state.originalComplaint,
     knownFacts: knownFactsCompact,
     history: state.diagnosticStepHistory.map(historyRow),
-    status: state.status,
   };
 
   if (state.currentHypotheses.length) {
-    out.currentHypotheses = state.currentHypotheses.map((h) => {
-      const row: Record<string, unknown> = {
-        hypothesis: h.hypothesis,
-        status: h.status,
-        confidence: h.confidence,
-      };
-      if (h.supportingEvidence?.length) {
-        row.supportingEvidence = h.supportingEvidence;
-      }
-      if (h.contradictingEvidence?.length) {
-        row.contradictingEvidence = h.contradictingEvidence;
-      }
-      if (h.note) row.note = h.note;
-      return row;
-    });
-  }
-
-  if (state.verifiedTechnicalSpecs.length) {
-    out.verifiedTechnicalSpecs = state.verifiedTechnicalSpecs;
+    out.currentHypotheses = state.currentHypotheses;
   }
 
   if (state.claimedReferenceSpecs.length) {
-    out.claimedReferenceSpecs = state.claimedReferenceSpecs.map((c) => {
-      const row: Record<string, unknown> = {
-        parameterKey: c.parameterKey,
-        valueText: c.valueText,
-        status: c.status,
-      };
-      if (c.unit) row.unit = c.unit;
-      if (c.condition) row.condition = c.condition;
-      if (c.source) row.source = c.source;
-      if (c.vehicleEngineMatch) row.vehicleEngineMatch = c.vehicleEngineMatch;
-      return row;
-    });
+    out.claimedReferenceSpecs = state.claimedReferenceSpecs;
   }
 
   if (state.rejectedDiagnoses.length) {
@@ -195,7 +168,6 @@ const RETRY_DRAFT_KEYS = [
   "confirmedFault",
   "diagnosisCertainty",
   "diagnosisConfidence",
-  "insufficientEvidence",
   "testGuide",
 ] as const;
 
@@ -241,7 +213,7 @@ export function buildDiagnosticRetryPrompt(
 
 export const VERIFIER_SYSTEM_PROMPT = `Quality gate. Ne vodi dijagnostiku i ne prepravlja draft. Samo approved i do 2 issues.
 
-Odbij ako draft nije točno jedna ASK|TEST|FINISH, ponavlja poznato, tretira skipped kao dokaz, ne prati CASE STATE, izmišlja OEM brojku ili pin izvan verifiedTechnicalSpecs, ili opasan TEST (živi SRS, HV, pirotehnika) nema jednu praktičnu rečenicu prije rada.
+Odbij ako draft nije točno jedna ASK|TEST|FINISH, ponavlja poznato, tretira skipped kao dokaz, ne prati CASE STATE, izmišlja OEM brojku ili pin, ili opasan TEST (živi SRS, HV, pirotehnika) nema jednu praktičnu rečenicu prije rada.
 CONFIRMED samo uz neovisan jak dokaz ili currentTurn.technicianOutcome FAULT_CONFIRMED|REPAIR_CONFIRMED na FINISH. technicianOutcome nije trusted fact: raw RESULT i aktivni korak moraju ga podupirati. rejectedDiagnoses su u CASE STATE.
 
 {"approved":boolean,"issues":["..."]}`;
@@ -307,8 +279,8 @@ export function findDraftQualityIssue(
 ): GuardIssue | null {
   return (
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
-    findSafetyAndTechnicalRuleIssue(diagnosticCase, draft) ??
-    findSpecGuardIssue(diagnosticCase, draft, technicianOutcome) ??
+    findSafetyAndTechnicalRuleIssue(draft) ??
+    findSpecGuardIssue(diagnosticCase, draft) ??
     findMissingTestMetaIssue(draft)
   );
 }

@@ -1,23 +1,8 @@
-import type {
-  DiagnosticCase,
-  SpecVerificationStatus,
-  TechnicalSpecClaim,
-  TechnicianOutcome,
-} from "./types";
+import type { DiagnosticCase, TechnicalSpecClaim } from "./types";
 import { draftBlob } from "./text";
-import { isConfirmedTechnicianOutcome } from "./known-facts";
 import { issueOrNull, type GuardIssue } from "./guard-issue";
 
-export type { SpecVerificationStatus, TechnicalSpecClaim };
-
-/** Verified specs may only come from an external/technical source mechanism (none yet). */
-export function getVerifiedTechnicalSpecs(
-  diagnosticCase: DiagnosticCase,
-): TechnicalSpecClaim[] {
-  return (diagnosticCase.verifiedTechnicalSpecs ?? []).filter(
-    (s) => s.status === "VERIFIED",
-  );
-}
+export type { TechnicalSpecClaim };
 
 /**
  * Lowercase + strip diacritics. Patterns below are ASCII, so raw Croatian
@@ -49,7 +34,6 @@ export function extractReferenceSpecClaims(text: string): TechnicalSpecClaim[] {
     const after = normalized.slice(idx, Math.min(normalized.length, idx + match[0].length + 24));
     const context = `${before} ${after}`;
     const contextLower = fold(context);
-    const beforeLower = fold(before);
 
     // Skip measured evidence phrasing
     if (isMeasuredEvidenceContext(contextLower)) continue;
@@ -83,25 +67,14 @@ export function extractReferenceSpecClaims(text: string): TechnicalSpecClaim[] {
       if (!looksLikeSpecTable(contextLower)) continue;
     }
 
-    const condition = detectCondition(beforeLower);
-    const subject = detectSubject(
-      `${contextLower} ${fold(normalized).slice(0, 200)}`,
-    );
-    const parameterKey = [
-      unitFamily(unit),
-      subject,
-      condition ?? "nominal",
-    ].join(":");
-
+    const family = unitFamily(unit);
     claims.push({
-      parameterKey,
-      label: `${subject}${condition ? ` (${condition})` : ""}`,
+      parameterKey: family,
+      label: family,
       valueText,
       unit,
       low,
       high,
-      condition,
-      status: "UNVERIFIED",
     });
   }
 
@@ -153,41 +126,6 @@ function looksLikeSpecTable(contextLower: string): boolean {
   );
 }
 
-function detectCondition(beforeLower: string): string | null {
-  const patterns: Array<{ cond: string; re: RegExp }> = [
-    { cond: "empty", re: /prazan|prazno|\bempty\b|\bmin\b|0\s*%/gi },
-    { cond: "full", re: /\bpun\b|punog|\bfull\b|\bmax\b|100\s*%/gi },
-    { cond: "cold", re: /\bhladn|\bcold\b/gi },
-    { cond: "hot", re: /\btopl|\bhot\b|radn(?:oj|a|i)?\s+temp/gi },
-  ];
-
-  let best: { cond: string; idx: number } | null = null;
-  for (const { cond, re } of patterns) {
-    re.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(beforeLower)) !== null) {
-      if (!best || m.index >= best.idx) {
-        best = { cond, idx: m.index };
-      }
-    }
-  }
-  return best?.cond ?? null;
-}
-
-function detectSubject(contextLower: string): string {
-  if (/davac|davač|sender|plovak|fuel\s*level|razine goriva|nivo.*goriv/.test(contextLower)) {
-    return "fuel_sender";
-  }
-  if (/instrument|kazaljk|pokazivac|cluster|mjera[cč]/.test(contextLower)) {
-    return "gauge_cluster";
-  }
-  if (/senzor|sensor/.test(contextLower)) return "sensor";
-  if (/pump/.test(contextLower)) return "pump";
-  if (/osigurac|fuse/.test(contextLower)) return "fuse";
-  if (/konektor|connector|pin/.test(contextLower)) return "connector";
-  return "component";
-}
-
 function dedupeClaims(claims: TechnicalSpecClaim[]): TechnicalSpecClaim[] {
   const map = new Map<string, TechnicalSpecClaim>();
   for (const c of claims) {
@@ -207,18 +145,6 @@ function isExplicitlyUnverifiedStatement(text: string): boolean {
   );
 }
 
-function claimCoveredByVerified(
-  claim: TechnicalSpecClaim,
-  verified: TechnicalSpecClaim[],
-): boolean {
-  return verified.some(
-    (v) =>
-      v.status === "VERIFIED" &&
-      v.parameterKey === claim.parameterKey &&
-      !rangesConflict(v, claim),
-  );
-}
-
 export function rangesConflict(
   a: Pick<TechnicalSpecClaim, "low" | "high">,
   b: Pick<TechnicalSpecClaim, "low" | "high">,
@@ -235,29 +161,15 @@ export function rangesConflict(
   return Math.abs(a.low - b.low) > tol || Math.abs(a.high - b.high) > tol;
 }
 
-function claimsAreSameParameter(
-  a: TechnicalSpecClaim,
-  b: TechnicalSpecClaim,
-): boolean {
-  if (a.parameterKey === b.parameterKey) return true;
-  const [familyA, subjectA, condA] = a.parameterKey.split(":");
-  const [familyB, subjectB, condB] = b.parameterKey.split(":");
-  if (familyA !== familyB || condA !== condB) return false;
-  if (subjectA === subjectB) return true;
-  // "component" is a weak subject — still align when unit+condition match
-  return subjectA === "component" || subjectB === "component";
-}
-
 /** Collect reference claims already present in case history (locked for consistency). */
 export function collectHistoricalReferenceClaims(
   diagnosticCase: DiagnosticCase,
 ): TechnicalSpecClaim[] {
-  const fromField = diagnosticCase.technicalSpecClaims ?? [];
   const fromSteps: TechnicalSpecClaim[] = [];
   for (const step of diagnosticCase.steps) {
     fromSteps.push(...extractReferenceSpecClaims(draftBlob(step)));
   }
-  return dedupeClaims([...fromField, ...fromSteps]);
+  return dedupeClaims(fromSteps);
 }
 
 /**
@@ -274,15 +186,10 @@ export function findSpecGuardIssue(
     confirmedFault?: string | null;
     facts?: string[] | null;
     evidence?: string[] | null;
-    insufficientEvidence?: boolean | null;
     confidence?: string | null;
   },
-  technicianOutcome?: TechnicianOutcome | null,
 ): GuardIssue | null {
-  return issueOrNull(
-    "SPEC",
-    specGuardMessage(diagnosticCase, draft, technicianOutcome),
-  );
+  return issueOrNull("SPEC", specGuardMessage(diagnosticCase, draft));
 }
 
 function specGuardMessage(
@@ -295,60 +202,37 @@ function specGuardMessage(
     confirmedFault?: string | null;
     facts?: string[] | null;
     evidence?: string[] | null;
-    insufficientEvidence?: boolean | null;
     confidence?: string | null;
   },
-  technicianOutcome?: TechnicianOutcome | null,
 ): string | null {
   const text = draftBlob(draft);
   if (!text.trim()) return null;
 
-  const verified = getVerifiedTechnicalSpecs(diagnosticCase);
   const historical = collectHistoricalReferenceClaims(diagnosticCase);
   const newClaims = extractReferenceSpecClaims(text);
 
-  // Consistency: contradicting a previously stated claim for same parameter
   for (const neu of newClaims) {
-    const prev = historical.find((h) => claimsAreSameParameter(h, neu));
+    const prev = historical.find((h) => h.parameterKey === neu.parameterKey);
     if (prev && rangesConflict(prev, neu)) {
       return (
         `CONSISTENCY: kontradiktorna referentna specifikacija za ${neu.parameterKey}. ` +
         `PREVIOUS: ${prev.valueText}; NEW: ${neu.valueText}. ` +
-        "Ne smiješ mijenjati tehničke referentne vrijednosti unutar istog slučaja. " +
-        "Ako raspon nije u verifiedTechnicalSpecs, nemoj ga uopće navoditi kao činjenicu."
+        "Ne mijenjaj tehničke referentne vrijednosti unutar istog slučaja."
       );
     }
   }
 
-  // Invented reference specs (not verified, not explicitly disclaimed)
   for (const claim of newClaims) {
-    if (claimCoveredByVerified(claim, verified)) continue;
-
-    // Allow sentences that only say the spec is unknown — but not if they also assert a concrete range as fact
     if (isExplicitlyUnverifiedStatement(text) && !assertsSpecAsFact(text, claim)) {
       continue;
     }
-
     if (assertsSpecAsFact(text, claim) || draft.actionType === "FINISH") {
       return (
-        `UNVERIFIED SPEC: navedena je neprovjerena vehicle-specific referentna vrijednost "${claim.valueText}" (${claim.label}). ` +
-        "specStatus=UNVERIFIED. AI se ne smije sam verificirati. " +
+        `UNVERIFIED SPEC: navedena je neprovjerena referentna vrijednost "${claim.valueText}" (${claim.label}). ` +
         'Reci: "Točan referentni raspon za ovo vozilo nije verificiran." ' +
-        "Koristi kvalitativni test (npr. kontinuirana promjena signala kroz hod) umjesto izmišljenog OEM raspona. " +
-        "UNVERIFIED SPEC nije dokaz."
+        "Ne navodi izmišljen OEM raspon."
       );
     }
-  }
-
-  // FINISH guard: measured vs expected without verified spec.
-  // Current-turn technician confirmation may close without a verified OEM range
-  // only when Claude already chose FINISH. Invented/contradictory claims still block.
-  if (
-    draft.actionType === "FINISH" &&
-    !isConfirmedTechnicianOutcome(technicianOutcome)
-  ) {
-    const finishIssue = findFinishUnverifiedSpecIssue(text, verified, newClaims);
-    if (finishIssue) return finishIssue;
   }
 
   return null;
@@ -362,55 +246,5 @@ function assertsSpecAsFact(text: string, claim: TechnicalSpecClaim): boolean {
   }
   return /mora biti|trebalo bi|trebao bi|trebala bi|ocekivan|normalno|tipicno|oem|za ovo vozilo|na ovom|definitiv|dokaz|potvrd/.test(
     n,
-  ) || looksLikeSpecTable(n);
-}
-
-function findFinishUnverifiedSpecIssue(
-  text: string,
-  verified: TechnicalSpecClaim[],
-  claimsInDraft: TechnicalSpecClaim[],
-): string | null {
-  const n = text.toLowerCase();
-  const requiresExactSpec =
-    /(trebalo bi biti|mora biti|ocekivan|očekivan|normalno (je|bi)|tipicno|tipično|oem|referentni|umjesto \d|a trebalo|specifikac|raspon.*Ω|raspon.*ohm)/i.test(
-      text,
-    ) || claimsInDraft.length > 0;
-
-  if (!requiresExactSpec) return null;
-
-  const hasVerified = verified.length > 0 && claimsInDraft.some((c) => claimCoveredByVerified(c, verified));
-
-  if (hasVerified) return null;
-
-  // Confirmed diagnosis hinging on unverified Y
-  const claimsConfirmed =
-    /potvrd|confirmed|definitiv|nedvosmislen|dokaz.*Ω|Ω.*dokaz|zna[cč]i kvar/i.test(
-      text,
-    ) && !/likely|needs confirmation|nedostaje potvrda|insufficient|nije verificiran/i.test(n);
-
-  if (claimsInDraft.length > 0 || claimsConfirmed) {
-    return (
-      "FINISH GUARD: requiresExactSpec===true ali verifiedSpec===false. " +
-      "Ne smiješ potvrditi dijagnozu usporedbom measuredValue vs expectedSpecification bez VERIFIED specifikacije. " +
-      "Vrati FINISH s insufficientEvidence=true kao LIKELY / NEEDS CONFIRMATION bez izmišljenih brojeva, " +
-      "ILI nastavi TEST metodom koja ne zahtijeva nepoznatu OEM specifikaciju."
-    );
-  }
-
-  return null;
-}
-
-/** Merge newly stated claims into case lock list (always UNVERIFIED unless already verified). */
-export function mergeTechnicalSpecClaims(
-  diagnosticCase: DiagnosticCase,
-  draftText: string,
-): TechnicalSpecClaim[] {
-  const verified = getVerifiedTechnicalSpecs(diagnosticCase);
-  const existing = collectHistoricalReferenceClaims(diagnosticCase);
-  const extracted = extractReferenceSpecClaims(draftText).map((c) => {
-    const match = verified.find((v) => v.parameterKey === c.parameterKey);
-    if (match) return { ...match };
-    return { ...c, status: "UNVERIFIED" as const };
-  });
-  return dedupeClaims([...existing, ...extracted]);
+  )   || looksLikeSpecTable(n);
 }

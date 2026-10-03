@@ -2,19 +2,16 @@ import type { DiagnosisCertainty, DiagnosticStep } from "@/lib/diagnosis";
 
 type DiagnosisCompletionProps = {
   step: DiagnosticStep;
-  confirmedFault?: string;
   onComplete: () => void;
   onKeepDiagnosing: () => void;
   onReject: () => void;
 };
 
-function certaintyLabel(certainty: DiagnosisCertainty | undefined, insufficient?: boolean): {
+function certaintyLabel(certainty: DiagnosisCertainty | undefined): {
   text: string;
   tone: "confirmed" | "high" | "likely" | "suspected";
 } {
-  const c =
-    certainty ??
-    (insufficient === false ? "HIGH_CONFIDENCE" : "LIKELY");
+  const c = certainty ?? "LIKELY";
   switch (c) {
     case "CONFIRMED":
       return { text: "POTVRĐENO", tone: "confirmed" };
@@ -30,14 +27,13 @@ function certaintyLabel(certainty: DiagnosisCertainty | undefined, insufficient?
 
 export default function DiagnosisCompletion({
   step,
-  confirmedFault,
   onComplete,
   onKeepDiagnosing,
   onReject,
 }: DiagnosisCompletionProps) {
-  const meta = certaintyLabel(step.diagnosisCertainty, step.insufficientEvidence);
+  const meta = certaintyLabel(step.diagnosisCertainty);
   const confirmed = meta.tone === "confirmed";
-  const title = confirmedFault ?? step.confirmedFault ?? step.content;
+  const title = step.confirmedFault ?? step.content;
   const evidence = [...(step.evidence ?? []), ...(step.facts ?? [])];
   const pct =
     typeof step.diagnosisConfidence === "number"

@@ -97,9 +97,6 @@ function parseTechnicianOutcome(raw: unknown): TechnicianOutcome | undefined {
   if (typeof row.fault === "string" && row.fault.trim()) {
     outcome.fault = row.fault.trim();
   }
-  if (typeof row.basis === "string" && row.basis.trim()) {
-    outcome.basis = row.basis.trim();
-  }
   return outcome;
 }
 

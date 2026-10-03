@@ -34,11 +34,7 @@ import {
   buildVerifierUserPrompt,
   findDraftQualityIssue,
 } from "./prompts";
-import {
-  extractReferenceSpecClaims,
-  mergeTechnicalSpecClaims,
-} from "./spec-guard";
-import { isSafetyCriticalTestDraft } from "./safety-guard";
+import { extractReferenceSpecClaims } from "./spec-guard";
 import { resolveDiagnosisCertainty } from "./confirmation-guard";
 import type {
   DiagnosticCase,
@@ -49,7 +45,6 @@ import type {
   ExtractedCaseFacts,
   Observation,
   ObservationInput,
-  RejectedDiagnosis,
   TechnicianOutcome,
 } from "./types";
 import {
@@ -102,23 +97,14 @@ function hasTechnicalClaimsOrSpecs(draft: LlmStepPayload): boolean {
 }
 
 function hasHighConfidence(draft: LlmStepPayload): boolean {
-  // Do NOT treat confidence:"high" alone — Claude often sets it on ordinary ASK/TEST.
-  if (
-    typeof draft.diagnosisConfidence === "number" &&
-    draft.diagnosisConfidence >= 80
-  ) {
-    return true;
-  }
   const certainty = (draft.diagnosisCertainty ?? "").toUpperCase();
-  if (certainty === "CONFIRMED" || certainty === "HIGH_CONFIDENCE") return true;
-  return false;
+  return certainty === "CONFIRMED" || certainty === "HIGH_CONFIDENCE";
 }
 
 type VerifierRouteReason =
   | "finish"
   | "rejected_diagnosis"
   | "technical_claim_or_spec"
-  | "safety_critical"
   | "high_confidence"
   | "none";
 
@@ -131,7 +117,9 @@ function shouldCallVerifier(
   draft: LlmStepPayload,
 ): VerifierRouteReason {
   if (draft.actionType === "FINISH") return "finish";
-  if ((diagnosticCase.rejectedDiagnoses?.length ?? 0) > 0) {
+  if (
+    diagnosticCase.observations.some((obs) => obs.kind === "REJECT_DIAGNOSIS")
+  ) {
     return "rejected_diagnosis";
   }
   if (hasTechnicalClaimsOrSpecs(draft)) return "technical_claim_or_spec";
@@ -140,7 +128,6 @@ function shouldCallVerifier(
   if (draft.actionType === "ASK") return "none";
 
   if (draft.actionType === "TEST") {
-    if (isSafetyCriticalTestDraft(draft)) return "safety_critical";
     if (hasHighConfidence(draft)) return "high_confidence";
     return "none";
   }
@@ -165,11 +152,7 @@ function shouldEscalateToStrongVerifier(
 
   if (draft.actionType === "FINISH") return true;
   if (draft.actionType === "TEST") {
-    return (
-      isSafetyCriticalTestDraft(draft) ||
-      hasTechnicalClaimsOrSpecs(draft) ||
-      hasHighConfidence(draft)
-    );
+    return hasTechnicalClaimsOrSpecs(draft) || hasHighConfidence(draft);
   }
 
   return false;
@@ -326,7 +309,6 @@ function applyConfirmationPolicy(draft: LlmStepPayload): LlmStepPayload {
   return {
     ...draft,
     diagnosisCertainty: certainty,
-    insufficientEvidence: certainty !== "CONFIRMED",
   };
 }
 
@@ -535,12 +517,6 @@ function dedupeObservationsByStepId(
 }
 
 /** Fields scanned for locked technical-spec claims after an accepted step. */
-function stepClaimText(step: DiagnosticStep): string {
-  return [step.content, step.rationale, step.confirmedFault, step.testGuide]
-    .filter(Boolean)
-    .join("\n");
-}
-
 export class LlmDiagnosticEngine implements DiagnosticEngine {
   async startCase(problemText: string): Promise<DiagnoseResponse> {
     const trimmed = problemText.trim();
@@ -556,21 +532,13 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       extracted: {},
       observations: [],
       steps: [],
-      status: "active",
     };
 
     const nextStep = await callVerifiedDiagnosticStep(baseCase);
-    const isFinish = nextStep.actionType === "FINISH";
     const diagnosticCase: DiagnosticCase = {
       ...baseCase,
       extracted: baseCase.extracted,
       steps: [nextStep],
-      status: isFinish ? "completed" : "active",
-      confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
-      technicalSpecClaims: mergeTechnicalSpecClaims(
-        baseCase,
-        stepClaimText(nextStep),
-      ),
       strongVerifierUsed: baseCase.strongVerifierUsed,
     };
 
@@ -612,18 +580,6 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     const reopen =
       observation.kind === "REJECT_DIAGNOSIS" ||
       observation.kind === "CONTINUE_AFTER_FINISH";
-    const rejectedDiagnoses: RejectedDiagnosis[] = [
-      ...(incoming.rejectedDiagnoses ?? []),
-    ];
-    if (observation.kind === "REJECT_DIAGNOSIS") {
-      rejectedDiagnoses.push({
-        diagnosis:
-          currentStep.confirmedFault?.trim() || currentStep.content.trim(),
-        rejectedAtStep: currentStep.id,
-        reason: "technician_rejected",
-        rejectedAt: new Date().toISOString(),
-      });
-    }
 
     const caseWithObservation: DiagnosticCase = {
       ...incoming,
@@ -635,13 +591,9 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
                 ? {
                     ...step,
                     diagnosisCertainty: "LIKELY" as DiagnosisCertainty,
-                    insufficientEvidence: true,
                   }
                 : step,
             ),
-            status: "active" as const,
-            confirmedFault: undefined,
-            rejectedDiagnoses,
           }
         : {}),
     };
@@ -649,18 +601,9 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation, {
       allowTechnicianOutcome: observation.kind === "RESULT",
     });
-    const isFinish = nextStep.actionType === "FINISH";
     const updated: DiagnosticCase = {
       ...caseWithObservation,
       steps: [...caseWithObservation.steps, nextStep],
-      status: isFinish ? "completed" : "active",
-      confirmedFault: isFinish
-        ? nextStep.confirmedFault
-        : caseWithObservation.confirmedFault,
-      technicalSpecClaims: mergeTechnicalSpecClaims(
-        caseWithObservation,
-        stepClaimText(nextStep),
-      ),
       strongVerifierUsed: caseWithObservation.strongVerifierUsed,
     };
 

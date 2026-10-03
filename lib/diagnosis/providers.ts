@@ -9,7 +9,6 @@ export type LlmStepPayload = {
   /** 0–100 evidence ranking for leading diagnosis; not statistical probability. */
   diagnosisConfidence?: number | null;
   diagnosisCertainty?: string | null;
-  insufficientEvidence?: boolean | null;
   facts?: string[] | null;
   evidence?: string[] | null;
   /**
@@ -39,7 +38,6 @@ export type LlmStepPayload = {
     technicianOutcome?: {
       status?: string | null;
       fault?: string | null;
-      basis?: string | null;
     } | null;
   } | null;
   /** Technical claims/specs with mandatory sourceType honesty. */
@@ -49,21 +47,11 @@ export type LlmStepPayload = {
     sourceType?: string | null;
     vehicleSpecific?: boolean | null;
   }> | null;
-  /** Mandatory for safety-critical TESTs (SRS/HV/brakes…). */
-  safetyPreconditions?: {
-    category?: string | null;
-    warnings?: string[] | null;
-    requiredSteps?: string[] | null;
-    needsVerifiedProcedure?: boolean | null;
-  } | null;
   hypotheses?: Array<{
     label?: string;
     cause?: string;
     status: string;
-    note?: string | null;
     confidence?: number | null;
-    supportingEvidence?: string[] | null;
-    contradictingEvidence?: string[] | null;
   }> | null;
   /** TEST branch metadata — required for new TEST drafts. */
   diagnosticTarget?: string | null;
