@@ -6,7 +6,7 @@ import {
   findSpecGuardIssue,
   getVerifiedTechnicalSpecs,
 } from "./spec-guard";
-import { findConfirmationGuardIssue, findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
+import { findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import { issue, type GuardIssue } from "./guard-issue";
 import { logDiagnosticUserPromptChars } from "./ai-telemetry";
@@ -26,7 +26,7 @@ semanticUpdate samo kad RESULT dodaje vehicle, symptoms, DTC ili measurements, i
 
 JSON bez markdowna. Prazna polja izostavi.
 TEST: actionType, content, rationale, expectedResultHint, diagnosticTarget, diagnosticGoal, testMethod. testGuide samo za nerutinski test.
-ASK: actionType, content, rationale, askDecision.
+ASK: actionType, content, rationale.
 FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence, insufficientEvidence.
 {"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","diagnosticTarget":"…","diagnosticGoal":"…","testMethod":"…"}`;
 
@@ -48,14 +48,10 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
   for (const step of diagnosticCase.steps) {
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
     const result = observationResultText(obs);
-    const stepLabel =
-      step.actionType === "TEST"
-        ? step.recommendedTest?.name?.trim() || step.content
-        : step.content;
 
     stepHistory.push({
       actionType: step.actionType,
-      content: stepLabel,
+      content: step.content,
       result,
       ...(obs ? { kind: obs.kind } : {}),
       ...(obs?.kind === "CANNOT_PERFORM" && obs.reason
@@ -313,7 +309,6 @@ export function findDraftQualityIssue(
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
     findSafetyAndTechnicalRuleIssue(diagnosticCase, draft) ??
     findSpecGuardIssue(diagnosticCase, draft, technicianOutcome) ??
-    findConfirmationGuardIssue(diagnosticCase, draft, technicianOutcome) ??
     findMissingTestMetaIssue(draft)
   );
 }

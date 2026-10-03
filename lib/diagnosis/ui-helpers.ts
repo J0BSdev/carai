@@ -108,11 +108,7 @@ export function hypothesisToKind(status: HypothesisStatus): EvidenceKind {
 export { latestHypotheses } from "./known-facts";
 
 export function needsDualMeasurement(step: DiagnosticStep): boolean {
-  const blob = [
-    step.content,
-    step.expectedResultHint,
-    step.recommendedTest?.whatToRecord,
-  ]
+  const blob = [step.content, step.expectedResultHint, step.testGuide]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();

@@ -19,11 +19,9 @@ export type DiagnosisCertainty =
 export interface RejectedDiagnosis {
   diagnosis: string;
   rejectedAtStep: string;
-  reason: "technician_rejected" | string;
+  reason: "technician_rejected";
   rejectedAt: string;
 }
-
-export type SourceAuthority = "oem" | "tsb" | "manual" | "forum" | "other";
 
 export interface VehicleInfo {
   make?: string;
@@ -31,16 +29,6 @@ export interface VehicleInfo {
   year?: number;
   engine?: string;
   mileage?: number;
-}
-
-/** Explicit measurement reported by the mechanic, as extracted by the diagnostic AI. */
-export interface ExtractedMeasurement {
-  /** Verbatim span the mechanic wrote ("12,4 V"). */
-  raw: string;
-  value?: number;
-  unit?: string;
-  /** What was measured ("napon akumulatora"), when the AI states it. */
-  parameter?: string;
 }
 
 /** AI-extracted mechanic stance on the current cause / repair. Backend never infers this from raw text. */
@@ -61,8 +49,8 @@ export interface ExtractedCaseFacts {
   vehicle?: VehicleInfo;
   symptoms?: string[];
   dtcs?: string[];
-  /** Legacy saved cases may hold plain strings here. */
-  measurements?: Array<ExtractedMeasurement | string>;
+  /** Verbatim readings extracted by the diagnostic model. */
+  measurements?: string[];
 }
 
 export interface Hypothesis {
@@ -75,23 +63,6 @@ export interface Hypothesis {
   contradictingEvidence?: string[];
 }
 
-export interface SourceRef {
-  url: string;
-  title: string;
-  authority: SourceAuthority;
-}
-
-export interface RecommendedTest {
-  name: string;
-  howTo?: string;
-  whatToRecord?: string;
-  specs?: {
-    value: string;
-    verified: boolean;
-    source?: SourceRef;
-  };
-}
-
 /** One AI turn: exactly one primary action (ASK | TEST | FINISH). */
 export interface DiagnosticStep {
   id: string;
@@ -102,10 +73,7 @@ export interface DiagnosticStep {
   facts?: string[];
   evidence?: string[];
   hypotheses?: Hypothesis[];
-  /** Legacy saved cases only. New TESTs use testGuide; this is never populated. */
-  recommendedTest?: RecommendedTest;
   confirmedFault?: string;
-  confidence?: "low" | "medium" | "high";
   /** Evidence-based ranking 0–100 for the leading diagnosis (FINISH). */
   diagnosisConfidence?: number | null;
   /** Strict certainty ladder for FINISH. CONFIRMED is rare. */
@@ -120,10 +88,7 @@ export interface DiagnosticStep {
   diagnosticTarget?: string;
   diagnosticGoal?: string;
   testMethod?: string;
-  /**
-   * Optional short how-to for a non-routine TEST (UI guide).
-   * Routine tests omit this; legacy cases may still have recommendedTest.howTo.
-   */
+  /** Optional short how-to for a non-routine TEST (UI guide). */
   testGuide?: string;
 }
 
@@ -228,7 +193,6 @@ export interface DiagnoseResponse {
   case: DiagnosticCase;
   /** Current open step; null when case is completed after FINISH. */
   nextStep: DiagnosticStep | null;
-  message?: string;
 }
 
 export interface DiagnosticEngine {

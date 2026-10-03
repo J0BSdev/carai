@@ -6,7 +6,6 @@ export type LlmStepPayload = {
   rationale: string;
   expectedResultHint?: string | null;
   confirmedFault?: string | null;
-  confidence?: "low" | "medium" | "high" | null;
   /** 0–100 evidence ranking for leading diagnosis; not statistical probability. */
   diagnosisConfidence?: number | null;
   diagnosisCertainty?: string | null;
@@ -16,8 +15,7 @@ export type LlmStepPayload = {
   /**
    * Explicit semantic case-fact delta from the diagnostic model (same Claude call).
    * The model is the only semantic extractor for vehicle/symptoms/DTCs/measurements;
-   * the backend just validates types, dedupes and merges. Never evidence authority —
-   * guards still decide what counts as evidence, skipped/ambiguous, CONFIRMED, safety.
+   * the backend validates types, dedupes and merges. It does not interpret mechanic prose.
    */
   semanticUpdate?: {
     vehicle?: {
@@ -32,12 +30,7 @@ export type LlmStepPayload = {
     /** Fault codes exactly as stated by the mechanic — backend never invents a namespace. */
     dtcsAdd?: string[] | null;
     /** Explicit numeric readings the mechanic reported. */
-    measurementsAdd?: Array<{
-      raw?: string | null;
-      value?: number | string | null;
-      unit?: string | null;
-      parameter?: string | null;
-    }> | null;
+    measurementsAdd?: Array<{ raw?: string | null }> | null;
     /**
      * Continue-turn only: mechanic stance extracted from the last result.
      * Omit on startCase / original complaint, or when there is no clear confirmation.
@@ -48,18 +41,6 @@ export type LlmStepPayload = {
       fault?: string | null;
       basis?: string | null;
     } | null;
-  } | null;
-  /**
-   * Required for ASK: decision-critical justification.
-   * Backend rejects ASK without this (or equivalent branch proof in rationale).
-   */
-  askDecision?: {
-    whyNeeded?: string | null;
-    expectedAnswers?: string[] | null;
-    nextStepByAnswer?: Array<{
-      answer?: string;
-      nextAction?: string;
-    }> | null;
   } | null;
   /** Technical claims/specs with mandatory sourceType honesty. */
   technicalClaims?: Array<{

@@ -33,16 +33,13 @@ export default function ResultModal({
   const dual = needsDualMeasurement(step);
 
   const title =
-    step.recommendedTest?.name?.trim() ||
-    step.content.split(/[.\n]/)[0]?.trim() ||
-    "Rezultat testa";
+    step.content.split(/[.\n]/)[0]?.trim() || "Rezultat testa";
 
   const quick = useMemo(() => {
     if (step.actionType === "ASK") {
       return ["Da", "Ne", "Nisam siguran"];
     }
     if (numeric) return [];
-    // Wording must resolve to PASS/FAIL in interpretTestResult, not AMBIGUOUS.
     return ["Ispravno", "Neispravno", "Nisam mogao utvrditi"];
   }, [step.actionType, numeric]);
 

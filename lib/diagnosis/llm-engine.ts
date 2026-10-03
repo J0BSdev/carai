@@ -39,11 +39,7 @@ import {
   mergeTechnicalSpecClaims,
 } from "./spec-guard";
 import { isSafetyCriticalTestDraft } from "./safety-guard";
-import {
-  downgradeUnjustifiedConfirmed,
-  findConfirmationGuardIssue,
-  resolveDiagnosisCertainty,
-} from "./confirmation-guard";
+import { resolveDiagnosisCertainty } from "./confirmation-guard";
 import type {
   DiagnosticCase,
   DiagnosticEngine,
@@ -66,7 +62,6 @@ import {
   caseForTurn,
   persistSemanticUpdate,
   recordSemanticUpdate,
-  stripLegacyExtractedTechnicianOutcome,
 } from "./semantic-update";
 import { toDiagnosticStep } from "./step-draft";
 import { parseVerifierVerdict } from "./verifier-payload";
@@ -325,29 +320,14 @@ async function verifyWithOpenAi(
   return parseVerifierVerdict(parsed);
 }
 
-async function applyConfirmationPolicy(
-  diagnosticCase: DiagnosticCase,
-  draft: LlmStepPayload,
-  technicianOutcome?: TechnicianOutcome | null,
-): Promise<LlmStepPayload> {
+function applyConfirmationPolicy(draft: LlmStepPayload): LlmStepPayload {
   if (draft.actionType !== "FINISH") return draft;
-  const issue = findConfirmationGuardIssue(
-    diagnosticCase,
-    draft,
-    technicianOutcome,
-  );
-  if (!issue) {
-    const certainty = resolveDiagnosisCertainty(draft);
-    return {
-      ...draft,
-      diagnosisCertainty: certainty,
-      insufficientEvidence: certainty !== "CONFIRMED",
-    };
-  }
+  const certainty = resolveDiagnosisCertainty(draft);
   return {
-    ...downgradeUnjustifiedConfirmed(draft, issue),
-    actionType: "FINISH",
-  } as LlmStepPayload;
+    ...draft,
+    diagnosisCertainty: certainty,
+    insufficientEvidence: certainty !== "CONFIRMED",
+  };
 }
 
 function rejectUnapprovedDraft(issues: string[]): never {
@@ -412,11 +392,7 @@ async function callVerifiedDiagnosticStep(
         );
       }
 
-      draft = await applyConfirmationPolicy(
-        caseForTurn(turn, diagnosticCase),
-        draft,
-        turn.technicianOutcome,
-      );
+      draft = applyConfirmationPolicy(draft);
 
       persistSemanticUpdate(diagnosticCase, turn);
       return toDiagnosticStep(draft, stepId);
@@ -607,8 +583,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
   ): Promise<DiagnoseResponse> {
     const incoming: DiagnosticCase = {
       ...diagnosticCase,
-      extracted:
-        stripLegacyExtractedTechnicianOutcome(diagnosticCase.extracted) ?? {},
+      extracted: diagnosticCase.extracted ?? {},
       observations: dedupeObservationsByStepId(diagnosticCase.observations),
     };
 

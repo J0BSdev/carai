@@ -62,7 +62,7 @@ function buildItems(c: DiagnosticCase): Item[] {
     items.push({
       key: `${step.id}-act`,
       kind: step.actionType === "ASK" ? "PITANJE" : "TEST",
-      title: step.recommendedTest?.name || step.content,
+      title: step.content,
       detail: step.rationale,
       step,
     });

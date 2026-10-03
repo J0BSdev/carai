@@ -2,7 +2,6 @@ import type { LlmStepPayload } from "./providers";
 import type {
   DiagnosticCase,
   ExtractedCaseFacts,
-  ExtractedMeasurement,
   TechnicianOutcome,
   TechnicianOutcomeStatus,
   VehicleInfo,
@@ -58,42 +57,19 @@ function normalizeAiDtcList(values: unknown): string[] {
   return out;
 }
 
-function parseAiNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const n = Number(value.trim().replace(",", "."));
-    if (Number.isFinite(n)) return n;
-  }
-  return undefined;
-}
-
 /** Type validation only — `raw` stays verbatim, nothing is re-parsed from prose. */
-function normalizeAiMeasurementList(values: unknown): ExtractedMeasurement[] {
+function normalizeAiMeasurementList(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
-  const out: ExtractedMeasurement[] = [];
+  const out: string[] = [];
   for (const v of values) {
     if (!v || typeof v !== "object") continue;
-    const row = v as Record<string, unknown>;
-    const raw = typeof row.raw === "string" ? row.raw.trim() : "";
-    if (!raw || raw.length > 120) continue;
-
-    const measurement: ExtractedMeasurement = { raw };
-    const value = parseAiNumber(row.value);
-    if (value !== undefined) measurement.value = value;
-    if (typeof row.unit === "string" && row.unit.trim()) {
-      measurement.unit = row.unit.trim();
-    }
-    if (typeof row.parameter === "string" && row.parameter.trim()) {
-      measurement.parameter = row.parameter.trim();
-    }
-    out.push(measurement);
+    const raw = (v as { raw?: unknown }).raw;
+    if (typeof raw !== "string") continue;
+    const text = raw.trim();
+    if (!text || text.length > 120) continue;
+    out.push(text);
   }
   return out;
-}
-
-function measurementKey(m: ExtractedMeasurement | string): string {
-  if (typeof m === "string") return m.trim().toLowerCase();
-  return [m.parameter ?? "", m.raw].join("|").trim().toLowerCase();
 }
 
 const TECHNICIAN_OUTCOME_STATUSES: TechnicianOutcomeStatus[] = [
@@ -125,20 +101,6 @@ function parseTechnicianOutcome(raw: unknown): TechnicianOutcome | undefined {
     outcome.basis = row.basis.trim();
   }
   return outcome;
-}
-
-function dedupeMeasurements(
-  values: Array<ExtractedMeasurement | string>,
-): Array<ExtractedMeasurement | string> {
-  const out: Array<ExtractedMeasurement | string> = [];
-  const seen = new Set<string>();
-  for (const v of values) {
-    const key = measurementKey(v);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(v);
-  }
-  return out;
 }
 
 /**
@@ -223,7 +185,7 @@ function mergeSemanticUpdate(
 
   const measurementsToAdd = normalizeAiMeasurementList(update.measurementsAdd);
   if (measurementsToAdd.length) {
-    const merged = dedupeMeasurements([...measurements, ...measurementsToAdd]);
+    const merged = dedupeSymptoms([...measurements, ...measurementsToAdd]);
     if (merged.length !== measurements.length) {
       measurements = merged;
       changed = true;
@@ -274,22 +236,9 @@ export function caseForTurn(
   turn: TurnFacts,
   diagnosticCase: DiagnosticCase,
 ): DiagnosticCase {
-  const extracted = stripLegacyExtractedTechnicianOutcome(
-    turn.extracted ?? diagnosticCase.extracted,
-  );
+  const extracted = turn.extracted ?? diagnosticCase.extracted;
   if (!extracted) return diagnosticCase;
   return { ...diagnosticCase, extracted };
-}
-
-/** Old clients may still send extracted.technicianOutcome — never treat it as active. */
-export function stripLegacyExtractedTechnicianOutcome(
-  extracted: ExtractedCaseFacts | undefined | null,
-): ExtractedCaseFacts | undefined {
-  if (!extracted) return undefined;
-  if (!("technicianOutcome" in extracted)) return extracted;
-  const rest = { ...extracted };
-  delete (rest as { technicianOutcome?: unknown }).technicianOutcome;
-  return rest;
 }
 
 /** Persist case facts — only once the turn is accepted. Never persist technicianOutcome. */
@@ -297,13 +246,5 @@ export function persistSemanticUpdate(
   diagnosticCase: DiagnosticCase,
   turn: TurnFacts,
 ): void {
-  if (turn.extracted) {
-    diagnosticCase.extracted =
-      stripLegacyExtractedTechnicianOutcome(turn.extracted) ?? {};
-  } else if (diagnosticCase.extracted) {
-    diagnosticCase.extracted =
-      stripLegacyExtractedTechnicianOutcome(diagnosticCase.extracted) ?? {};
-  }
+  if (turn.extracted) diagnosticCase.extracted = turn.extracted;
 }
-
-/** Guards evaluate the draft against the case including the turn's own facts. */

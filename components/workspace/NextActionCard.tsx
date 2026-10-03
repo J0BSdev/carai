@@ -15,9 +15,6 @@ type NextActionCardProps = {
 };
 
 function shortTitle(step: DiagnosticStep): string {
-  const named = step.recommendedTest?.name?.trim();
-  if (named) return named.length > 72 ? `${named.slice(0, 69).trimEnd()}…` : named;
-
   const first =
     step.content.split(/[.\n!?]/)[0]?.trim() || step.content.trim();
   if (first.length <= 72) return first;

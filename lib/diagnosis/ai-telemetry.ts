@@ -158,7 +158,6 @@ const GUARD_LOG_NAME: Record<GuardIssueCode, string> = {
   TECHNICIAN_OUTCOME: "technician_outcome",
   SAFETY_REJECT: "safety_guard",
   SPEC: "spec_guard",
-  CONFIRMATION: "confirmation_guard",
   TEST_META: "test_meta",
 };
 
@@ -289,7 +288,6 @@ export function logDiagnosticDraftShape(draft: unknown): void {
     "content",
     "rationale",
     "semanticUpdate",
-    "askDecision",
     "hypotheses",
     "technicalClaims",
     "safetyPreconditions",
@@ -306,12 +304,6 @@ export function logDiagnosticDraftShape(draft: unknown): void {
   if (obj.semanticUpdate && typeof obj.semanticUpdate === "object") {
     parts.push(
       `semanticUpdate=${Object.keys(obj.semanticUpdate as object).join(",") || "∅"}`,
-    );
-  }
-  if (obj.askDecision && typeof obj.askDecision === "object") {
-    const ad = obj.askDecision as Record<string, unknown>;
-    parts.push(
-      `askDecision expectedAnswers=${arrayLen(ad.expectedAnswers)} nextStepByAnswer=${arrayLen(ad.nextStepByAnswer)}`,
     );
   }
   parts.push(`hypotheses=${arrayLen(obj.hypotheses)}`);

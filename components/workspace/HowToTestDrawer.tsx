@@ -21,14 +21,9 @@ export default function HowToTestDrawer({
 }: HowToTestDrawerProps) {
   const name = step ? howToTitle(step) : "Test";
   const procedure =
-    step?.testGuide?.trim() ||
-    step?.recommendedTest?.howTo?.trim() ||
-    step?.content ||
-    "Uputa još nije dostupna.";
+    step?.testGuide?.trim() || step?.content || "Uputa još nije dostupna.";
   const expected =
-    step?.expectedResultHint?.trim() ||
-    step?.recommendedTest?.whatToRecord?.trim() ||
-    "Zabilježi što si izmjerio ili vidio.";
+    step?.expectedResultHint?.trim() || "Zabilježi što si izmjerio ili vidio.";
 
   return (
     <ResponsiveOverlay

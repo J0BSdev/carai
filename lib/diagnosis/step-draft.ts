@@ -93,7 +93,6 @@ export function toDiagnosticStep(
       actionType === "FINISH"
         ? payload.confirmedFault?.trim() || payload.content.trim()
         : undefined,
-    confidence: payload.confidence ?? undefined,
     diagnosisCertainty,
     diagnosisConfidence,
     insufficientEvidence,
