@@ -1,0 +1,59 @@
+---
+description: Diagnostic authority — AI owns semantics, backend owns structure, typed control flow, structured UI intent
+alwaysApply: true
+---
+
+# Diagnostic authority
+
+These four rules override convenience. Do not violate them.
+
+## 1. AI owns semantics
+
+The diagnostic model interprets free-form mechanic text (complaint, result, confirmation).
+The backend does not infer meaning from that prose, except a minimal deterministic legacy fail-safe when a stored observation has no typed intent.
+
+```ts
+// BAD — backend decides the mechanic confirmed a fault
+if (/potvrđeno|to je to|riješeno/i.test(resultText)) actionType = "FINISH";
+
+// GOOD — model returns technicianOutcome; backend only type-checks the enum
+turn.technicianOutcome = parseTechnicianOutcome(draft.semanticUpdate?.technicianOutcome) ?? null;
+```
+
+## 2. Backend owns structure and invariants
+
+State, enums, evidence provenance, retry limits, and safety/spec guards stay in the backend.
+The backend validates types, merges case facts, and rejects drafts that break invariants.
+It does not rewrite ASK/TEST into FINISH or invent confirmedFault, rationale, or confidence.
+
+## 3. Internal control flow uses typed codes
+
+Never branch on your own issue or error strings (`startsWith`, `includes`, regex).
+
+```ts
+// BAD
+if (issue.startsWith("TECHNICIAN OUTCOME")) { ... }
+if (/ASK REJECT/i.test(issue)) { ... }
+
+// GOOD
+if (issue.code === "TECHNICIAN_OUTCOME") { ... }
+if (issue.code === "ASK_REJECT") { ... }
+```
+
+Set `code` where the issue is created. `message` is for the model and logs only.
+
+## 4. UI intent is structured
+
+A button click sends an intent enum. Do not turn a click into a fake free-text observation that the backend then parses.
+
+```ts
+// BAD
+onSkip={() => continue("Preskočeno za sada.")}
+onReject={() => continue("TECHNICIAN_REJECTED_DIAGNOSIS: ...")}
+
+// GOOD
+onSkip={() => continue({ intent: "SKIP" })}
+onReject={() => continue({ intent: "REJECT_DIAGNOSIS" })}
+```
+
+`SUBMIT_RESULT` is the only intent that carries mechanic prose. The model interprets that prose.

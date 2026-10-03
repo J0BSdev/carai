@@ -131,6 +131,8 @@ export interface Observation {
   stepId: string;
   resultText: string;
   recordedAt: string;
+  /** Absent on observations saved before typed intents. */
+  intent?: UserContinueIntent;
 }
 
 export type SpecVerificationStatus = "VERIFIED" | "UNVERIFIED";
@@ -185,12 +187,30 @@ export interface DiagnosticCase {
 /** HTTP API body action (start/continue case), not AI actionType. */
 export type DiagnoseAction = "start" | "continue";
 
+/** Why the mechanic continued. Button clicks use an enum, not fake prose. */
+export type UserContinueIntent =
+  | "SUBMIT_RESULT"
+  | "SKIP"
+  | "CANNOT_PERFORM"
+  | "REJECT_DIAGNOSIS"
+  | "CONTINUE_AFTER_FINISH";
+
+export const USER_CONTINUE_INTENTS: UserContinueIntent[] = [
+  "SUBMIT_RESULT",
+  "SKIP",
+  "CANNOT_PERFORM",
+  "REJECT_DIAGNOSIS",
+  "CONTINUE_AFTER_FINISH",
+];
+
 export interface DiagnoseRequest {
   action: DiagnoseAction;
   problemText?: string;
   case?: DiagnosticCase;
   observation?: {
-    resultText: string;
+    intent?: UserContinueIntent;
+    resultText?: string;
+    cannotPerformReason?: string;
   };
 }
 
@@ -205,6 +225,10 @@ export interface DiagnosticEngine {
   startCase(problemText: string): Promise<DiagnoseResponse>;
   continueCase(
     diagnosticCase: DiagnosticCase,
-    resultText: string,
+    observation: {
+      intent?: UserContinueIntent;
+      resultText?: string;
+      cannotPerformReason?: string;
+    },
   ): Promise<DiagnoseResponse>;
 }

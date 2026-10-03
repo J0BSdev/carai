@@ -4,6 +4,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { GuardIssue, GuardIssueCode } from "./guard-issue";
 
 export type AiCallRole =
   | "diagnostic"
@@ -153,36 +154,28 @@ function formatCost(cost: number | null): string {
   return `$${cost.toFixed(3)}`;
 }
 
-/**
- * Map a backend guard issue string to a short guard id for retry logs.
- */
-export function classifyGuardName(issue: string | null | undefined): string {
-  if (!issue) return "unknown";
-  const t = issue.toUpperCase();
-  if (/REASONING|CONSISTENCY/.test(t)) return "reasoning_consistency";
-  if (/ALREADY KNOWN|KNOWN FACT|VEĆ POZNAT|PITANJE VEĆ/.test(t)) {
-    return "known_facts";
-  }
-  if (/ASK DECISION|DECISION.?VALUE|CANDIDATEQUESTION/.test(t)) {
-    return "ask_decision_gate";
-  }
-  if (/SAFETY REJECT|SAFETY /.test(t)) return "safety_guard";
-  if (/UNVERIFIED SPEC|SPEC LOCK|SPEC GUARD|FINISH GUARD/.test(t)) {
-    return "spec_guard";
-  }
-  if (/CONFIRMED|CONFIRMATION|INSUFFICIENT EVIDENCE/.test(t)) {
-    return "confirmation_guard";
-  }
-  if (/PONAVL|REPETITION|VEĆ IMA ODGOVOR|VEĆ POSTAVLJEN/.test(t)) {
-    return "repetition";
-  }
-  if (/SEMANTIČKI|SEMANTICKI|ISTA GRAN|SIMILAR TEST|SKIPPED/.test(t)) {
-    return "similar_test_branch";
-  }
-  if (/TEST PRIORITY/.test(t)) return "test_priority";
-  if (/HIPOTEZ|HYPOTHESIS|RAZLIKUJ/.test(t)) return "hypothesis_diff";
-  if (/VERIFIER/.test(t)) return "verifier";
-  return "quality_gate";
+const GUARD_LOG_NAME: Record<GuardIssueCode, string> = {
+  TECHNICIAN_OUTCOME: "technician_outcome",
+  ASK_REJECT: "ask_decision_gate",
+  SAFETY_REJECT: "safety_guard",
+  GOAL_REPEAT: "similar_test_branch",
+  SKIPPED_METHOD_REPEAT: "similar_test_branch",
+  REASONING: "reasoning_consistency",
+  KNOWN_FACTS: "known_facts",
+  SPEC: "spec_guard",
+  CONFIRMATION: "confirmation_guard",
+  REPETITION: "repetition",
+  TEST_PRIORITY: "test_priority",
+  HYPOTHESIS: "hypothesis_diff",
+  TEST_META: "test_meta",
+};
+
+/** Map a backend guard issue to a short guard id for retry logs. */
+export function classifyGuardName(
+  guardIssue: GuardIssue | null | undefined,
+): string {
+  if (!guardIssue) return "unknown";
+  return GUARD_LOG_NAME[guardIssue.code];
 }
 
 export async function runAiStep<T>(

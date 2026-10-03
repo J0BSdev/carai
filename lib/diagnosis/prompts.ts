@@ -1,4 +1,4 @@
-import type { DiagnosticCase, TechnicianOutcome } from "./types";
+import type { DiagnosticCase, TechnicianOutcome, UserContinueIntent } from "./types";
 import { buildKnownFactsSnapshot, latestHypotheses } from "./known-facts";
 import { normalizeForCompare } from "./text";
 import {
@@ -10,6 +10,7 @@ import { findConfirmationGuardIssue, findTechnicianOutcomeConsistencyIssue } fro
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import { findAlreadyKnownInfoIssue } from "./known-facts-guard";
+import { issue, issueOrNull, type GuardIssue } from "./guard-issue";
 import { logCompactCaseState, logDiagnosticUserPromptChars } from "./ai-telemetry";
 import {
   legacyLexicalSameBranch,
@@ -66,6 +67,15 @@ ASK — obavezno: actionType, content, rationale, askDecision (whyNeeded; ≥2 e
 
 FINISH — obavezno: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence, insufficientEvidence. Ostala polja (facts/evidence/technicalClaims) samo ako ih stvarno trebaš.
 {"actionType":"FINISH","content":"…","rationale":"…","confirmedFault":"…","diagnosisCertainty":"LIKELY","diagnosisConfidence":40,"insufficientEvidence":true,"hypotheses":[{"label":"…","status":"LIKELY","confidence":40},{"label":"…","status":"POSSIBLE","confidence":25}]}`;
+
+function observationIsSkipped(
+  obs: { intent?: UserContinueIntent; resultText?: string } | undefined,
+): boolean {
+  if (!obs) return false;
+  if (obs.intent === "SKIP" || obs.intent === "CANNOT_PERFORM") return true;
+  if (obs.intent) return false;
+  return Boolean(obs.resultText && isSkippedOrUnavailableResult(obs.resultText));
+}
 
 /**
  * How a recorded result was interpreted. `ambiguous` results stay visible to the
@@ -129,7 +139,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
   for (const step of diagnosticCase.steps) {
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
     const result = obs?.resultText ?? null;
-    const skipped = Boolean(result && isSkippedOrUnavailableResult(result));
+    const skipped = observationIsSkipped(obs);
     const stepLabel =
       step.actionType === "TEST"
         ? step.recommendedTest?.name?.trim() || step.content
@@ -229,7 +239,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     symptoms: knownFacts.symptoms,
     knownFacts,
     userObservations: diagnosticCase.observations
-      .filter((o) => !isSkippedOrUnavailableResult(o.resultText))
+      .filter((o) => !observationIsSkipped(o))
       .map((o) => o.resultText),
     answersToPreviousQuestions: answers,
     questionsAlreadyAsked: questionsAsked,
@@ -462,7 +472,7 @@ export function countTrailingAnsweredAsks(
     if (!step || step.actionType !== "ASK") break;
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
     if (!obs?.resultText?.trim()) break;
-    if (isSkippedOrUnavailableResult(obs.resultText)) break;
+    if (observationIsSkipped(obs)) break;
     count += 1;
   }
   return count;
@@ -516,29 +526,28 @@ function compactRetryDraft(previousDraft: unknown): Record<string, unknown> {
   return out;
 }
 
+function isGuardIssue(value: GuardIssue | string): value is GuardIssue {
+  return typeof value === "object" && value !== null && "code" in value;
+}
+
 export function buildDiagnosticRetryPrompt(
   diagnosticCase: DiagnosticCase,
   previousDraft: unknown,
-  issues: string[],
+  issues: Array<GuardIssue | string>,
 ): string {
   const compact = compactCaseStateForPrompt(buildCaseState(diagnosticCase), {
     compactOlderHistory: true,
   });
   const technicianOutcomeRetry = issues.some(
-    (i) =>
-      i.startsWith("TECHNICIAN OUTCOME") ||
-      i.startsWith(
-        "Current mechanic result je semantički interpretiran",
-      ),
+    (item) => isGuardIssue(item) && item.code === "TECHNICIAN_OUTCOME",
   );
-  const forceNewGoal =
-    !technicianOutcomeRetry &&
-    issues.some((i) =>
-      /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS|DRUGAČIJI diagnosticGoal|goal eksplicitno odbijen|Guard odbija trenutni diagnosticGoal/i.test(
-        i,
-      ),
-    );
+  const forceNewGoal = issues.some(
+    (item) => isGuardIssue(item) && item.code === "GOAL_REPEAT",
+  );
   const hasLedger = Array.isArray(compact.compactHistory);
+  const issueLines = issues.map((item) =>
+    isGuardIssue(item) ? item.message : item,
+  );
 
   const retryInstruction = technicianOutcomeRetry
     ? "Draft odbijen zbog technicianOutcome vs actionType. Ne zadržavaj ASK/TEST ni diagnosticTarget/diagnosticGoal iz previous drafta. Reevaluate CASE STATE. Ako potvrda i dalje vrijedi, vrati FINISH. Popravi samo navedene ISSUES."
@@ -554,7 +563,7 @@ export function buildDiagnosticRetryPrompt(
     "",
     retryInstruction,
     "ISSUES:",
-    ...issues.map((issue) => `- ${issue}`),
+    ...issueLines.map((line) => `- ${line}`),
     "",
     "PREVIOUS DRAFT:",
     JSON.stringify(compactRetryDraft(previousDraft)),
@@ -686,6 +695,22 @@ export function findObviousRepetition(
     diagnosticGoal?: string | null;
     testMethod?: string | null;
   },
+): GuardIssue | null {
+  return issueOrNull(
+    "REPETITION",
+    obviousRepetitionMessage(diagnosticCase, draft),
+  );
+}
+
+function obviousRepetitionMessage(
+  diagnosticCase: DiagnosticCase,
+  draft: {
+    actionType?: string;
+    content?: string;
+    diagnosticTarget?: string | null;
+    diagnosticGoal?: string | null;
+    testMethod?: string | null;
+  },
 ): string | null {
   const content = draft.content?.trim();
   if (!content || draft.actionType === "FINISH") return null;
@@ -757,7 +782,7 @@ export function findSimilarTestBranchIssue(
     diagnosticGoal?: string | null;
     testMethod?: string | null;
   },
-): string | null {
+): GuardIssue | null {
   if (draft.actionType !== "TEST") return null;
   const content = draft.content?.trim();
   if (!content) return null;
@@ -776,11 +801,12 @@ export function findSimilarTestBranchIssue(
     if (!testsAreSameDiagnosticBranch(draftMeta, priorMeta)) continue;
     if (isSkippedOrUnavailableResult(t.result)) continue;
 
-    return (
+    return issue(
+      "GOAL_REPEAT",
       `Semantički sličan već završenom testu iste dijagnostičke grane` +
       `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}" ` +
       `(rezultat: "${t.result.slice(0, 80)}"). Rezultat već daje traženu informaciju — ` +
-      "ne ponavljaj isti diagnosticGoal. Odaberi NEOVISNU granu (drugi diagnosticGoal) ili FINISH."
+      "ne ponavljaj isti diagnosticGoal. Odaberi NEOVISNU granu (drugi diagnosticGoal) ili FINISH.",
     );
   }
 
@@ -808,21 +834,23 @@ export function findSimilarTestBranchIssue(
         // Same goal, different method → allowed alternative after skip.
         continue;
       }
-      return (
+      return issue(
+        "SKIPPED_METHOD_REPEAT",
         `Semantički sličan skipped/unavailable testu s istim testMethod` +
         `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
         "To nije dokaz — nemoj ponavljati istu method. Predloži DRUGAČIJI testMethod za isti diagnosticGoal " +
-        "ili novi diagnosticGoal."
+        "ili novi diagnosticGoal.",
       );
     }
 
     // Missing method meta: only reject clear lexical paraphrase of the skipped test.
     if (legacyLexicalSameBranch(content, t.test)) {
-      return (
+      return issue(
+        "SKIPPED_METHOD_REPEAT",
         `Semantički sličan skipped/unavailable testu` +
         `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
         "To nije dokaz — nemoj preformulirati isti test. Predloži ALTERNATIVNI testMethod za isti goal " +
-        "ili novi diagnosticGoal."
+        "ili novi diagnosticGoal.",
       );
     }
   }
@@ -831,6 +859,25 @@ export function findSimilarTestBranchIssue(
 }
 
 export function findAskDecisionGateIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: {
+    actionType?: string;
+    content?: string;
+    rationale?: string;
+    askDecision?: {
+      whyNeeded?: string | null;
+      expectedAnswers?: string[] | null;
+      nextStepByAnswer?: Array<{
+        answer?: string;
+        nextAction?: string;
+      }> | null;
+    } | null;
+  },
+): GuardIssue | null {
+  return issueOrNull("ASK_REJECT", askDecisionGateMessage(diagnosticCase, draft));
+}
+
+function askDecisionGateMessage(
   diagnosticCase: DiagnosticCase,
   draft: {
     actionType?: string;
@@ -1100,6 +1147,16 @@ function asksGenericSymptomsOrWarningLight(normalized: string): boolean {
 export function findHypothesisDifferentiationIssue(
   diagnosticCase: DiagnosticCase,
   draft: { actionType?: string; content?: string; rationale?: string },
+): GuardIssue | null {
+  return issueOrNull(
+    "HYPOTHESIS",
+    hypothesisDifferentiationMessage(diagnosticCase, draft),
+  );
+}
+
+function hypothesisDifferentiationMessage(
+  diagnosticCase: DiagnosticCase,
+  draft: { actionType?: string; content?: string; rationale?: string },
 ): string | null {
   if (draft.actionType !== "TEST") return null;
 
@@ -1132,6 +1189,13 @@ export function findHypothesisDifferentiationIssue(
  * Generic — no component-specific hardcoding. Conservative: only obvious upstream/indirect-first.
  */
 export function findTestPriorityIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: { actionType?: string; content?: string; rationale?: string },
+): GuardIssue | null {
+  return issueOrNull("TEST_PRIORITY", testPriorityMessage(diagnosticCase, draft));
+}
+
+function testPriorityMessage(
   diagnosticCase: DiagnosticCase,
   draft: { actionType?: string; content?: string; rationale?: string },
 ): string | null {
@@ -1251,7 +1315,7 @@ export function findDraftQualityIssue(
     }> | null;
   },
   technicianOutcome?: TechnicianOutcome | null,
-): string | null {
+): GuardIssue | null {
   return (
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
     findReasoningConsistencyIssue(diagnosticCase, draft) ??
@@ -1270,6 +1334,15 @@ export function findDraftQualityIssue(
 
 /** Soft require TEST metadata on new drafts (legacy cases without meta still OK via fallback). */
 export function findMissingTestMetaIssue(draft: {
+  actionType?: string;
+  diagnosticTarget?: string | null;
+  diagnosticGoal?: string | null;
+  testMethod?: string | null;
+}): GuardIssue | null {
+  return issueOrNull("TEST_META", missingTestMetaMessage(draft));
+}
+
+function missingTestMetaMessage(draft: {
   actionType?: string;
   diagnosticTarget?: string | null;
   diagnosticGoal?: string | null;

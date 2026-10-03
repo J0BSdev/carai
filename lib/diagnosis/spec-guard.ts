@@ -6,6 +6,7 @@ import type {
 } from "./types";
 import { draftBlob } from "./text";
 import { isConfirmedTechnicianOutcome } from "./known-facts";
+import { issueOrNull, type GuardIssue } from "./guard-issue";
 
 export type { SpecVerificationStatus, TechnicalSpecClaim };
 
@@ -264,6 +265,27 @@ export function collectHistoricalReferenceClaims(
  * AI-generated claims never count as VERIFIED.
  */
 export function findSpecGuardIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: {
+    actionType?: string;
+    content?: string;
+    rationale?: string;
+    expectedResultHint?: string | null;
+    confirmedFault?: string | null;
+    facts?: string[] | null;
+    evidence?: string[] | null;
+    insufficientEvidence?: boolean | null;
+    confidence?: string | null;
+  },
+  technicianOutcome?: TechnicianOutcome | null,
+): GuardIssue | null {
+  return issueOrNull(
+    "SPEC",
+    specGuardMessage(diagnosticCase, draft, technicianOutcome),
+  );
+}
+
+function specGuardMessage(
   diagnosticCase: DiagnosticCase,
   draft: {
     actionType?: string;

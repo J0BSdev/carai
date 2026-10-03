@@ -1,6 +1,7 @@
 import type { DiagnosticCase, VehicleInfo } from "./types";
 import { buildKnownFactsSnapshot } from "./known-facts";
 import { normalizeForCompare } from "./text";
+import { issueOrNull, type GuardIssue } from "./guard-issue";
 
 function asksForDtcInventoryOrRescan(normalized: string): boolean {
   const asksInventory =
@@ -53,6 +54,16 @@ function asksForAlreadyKnownVehicle(
  * Allows asking for unknown details about a known code (status/description).
  */
 export function findAlreadyKnownInfoIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: { actionType?: string; content?: string; rationale?: string },
+): GuardIssue | null {
+  return issueOrNull(
+    "KNOWN_FACTS",
+    alreadyKnownInfoMessage(diagnosticCase, draft),
+  );
+}
+
+function alreadyKnownInfoMessage(
   diagnosticCase: DiagnosticCase,
   draft: { actionType?: string; content?: string; rationale?: string },
 ): string | null {

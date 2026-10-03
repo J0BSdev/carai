@@ -54,7 +54,7 @@ function normalizeResultText(text: string): string {
     .trim();
 }
 
-/** Detect skipped / can't-perform / unavailable observation text. */
+/** Detect skipped / can't-perform text on observations that have no typed intent. */
 export function isSkippedOrUnavailableResult(resultText: string): boolean {
   const n = normalizeResultText(resultText);
   if (!n) return false;

@@ -62,9 +62,11 @@ import type {
   RejectedDiagnosis,
   TechnicianOutcome,
   TechnicianOutcomeStatus,
+  UserContinueIntent,
   VehicleInfo,
 } from "./types";
 import { draftBlob } from "./text";
+import { issue, type GuardIssue } from "./guard-issue";
 
 /** Max Claude regenerations after the initial draft, per user step. */
 const MAX_DIAGNOSTIC_RETRIES = 2;
@@ -620,7 +622,7 @@ function findDraftQualityIssueInTurn(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
-): string | null {
+): GuardIssue | null {
   return findDraftQualityIssue(
     caseForTurn(turn, diagnosticCase),
     draft,
@@ -671,7 +673,7 @@ async function regenerateWithClaude(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
-  issues: string[],
+  issues: Array<GuardIssue | string>,
   reasonCalled: string = "quality_gate",
 ): Promise<LlmStepPayload> {
   if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
@@ -682,12 +684,18 @@ async function regenerateWithClaude(
   turn.retriesUsed += 1;
 
   const step = getActiveAiStep();
-  const primaryIssue = issues[0] ?? reasonCalled;
+  const primaryIssue = issues[0];
+  const primaryGuard = isGuardIssueValue(primaryIssue) ? primaryIssue : null;
+  const issueSummary = isGuardIssueValue(primaryIssue)
+    ? primaryIssue.message
+    : typeof primaryIssue === "string"
+      ? primaryIssue
+      : reasonCalled;
   logGuardRetry({
     stepNumber: step?.stepNumber ?? diagnosticCase.steps.length + 1,
-    guard: classifyGuardName(primaryIssue),
+    guard: primaryGuard ? classifyGuardName(primaryGuard) : "verifier",
     retryNumber: turn.retriesUsed,
-    issueSummary: primaryIssue,
+    issueSummary,
   });
 
   const turnCase = caseForTurn(turn, diagnosticCase);
@@ -934,7 +942,7 @@ async function verifyWithOpenAi(
   if (contradiction) {
     return {
       approved: false,
-      issues: [contradiction, ...issues].slice(0, 2),
+      issues: [contradiction.message, ...issues].slice(0, 2),
       correction: null,
     };
   }
@@ -1058,8 +1066,12 @@ function buildSafeVerifierFallback(
   };
 }
 
-function isTechnicianOutcomeIssue(issue: string | null | undefined): boolean {
-  return typeof issue === "string" && issue.startsWith("TECHNICIAN OUTCOME");
+function isGuardIssueValue(value: GuardIssue | string | undefined): value is GuardIssue {
+  return typeof value === "object" && value !== null && "code" in value;
+}
+
+function isTechnicianOutcomeIssue(guardIssue: GuardIssue | null | undefined): boolean {
+  return guardIssue?.code === "TECHNICIAN_OUTCOME";
 }
 
 /** Isolated retry copy — no ASK→TEST / keep-TEST helpers. */
@@ -1071,53 +1083,34 @@ const TECHNICIAN_OUTCOME_RETRY_ISSUES = [
   "Ako nakon reevaluacije technicianOutcome nije opravdan, izostavi ga i normalno odaberi ASK|TEST|FINISH.",
 ];
 
+function technicianOutcomeRetryIssues(): Array<GuardIssue | string> {
+  const [first, ...rest] = TECHNICIAN_OUTCOME_RETRY_ISSUES;
+  return [issue("TECHNICIAN_OUTCOME", first!), ...rest];
+}
+
 function buildGuardRetryIssues(
   draft: LlmStepPayload,
-  issue: string | null,
-  extraIssues: string[],
-): string[] {
-  if (
-    isTechnicianOutcomeIssue(issue) ||
-    extraIssues.some((item) => isTechnicianOutcomeIssue(item))
-  ) {
-    return [...TECHNICIAN_OUTCOME_RETRY_ISSUES];
+  guardIssue: GuardIssue | null,
+  extraIssues: GuardIssue[],
+): Array<GuardIssue | string> {
+  const all = [...(guardIssue ? [guardIssue] : []), ...extraIssues];
+  if (all.some((item) => item.code === "TECHNICIAN_OUTCOME")) {
+    return technicianOutcomeRetryIssues();
   }
 
   const askRejected =
-    draft.actionType === "ASK" ||
-    extraIssues.some((i) => /ASK REJECT/i.test(i)) ||
-    (issue != null && /ASK REJECT/i.test(issue));
-
-  const safetyRejected =
-    extraIssues.some((i) => /SAFETY REJECT/i.test(i)) ||
-    (issue != null && /SAFETY REJECT/i.test(issue));
-
-  const goalRejected =
-    (issue != null &&
-      /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Ponavljanje već završenog testa|Odaberi NEOVIS/i.test(
-        issue,
-      )) ||
-    extraIssues.some((i) =>
-      /Semantički sličan već završenom|Ponavljanje iste dijagnostičke grane|Odaberi NEOVIS/i.test(
-        i,
-      ),
-    );
-
-  const skippedMethodRepeat =
-    (issue != null &&
-      /skipped\/unavailable.*ist(a|om) (test)?method|ista method|isti testMethod/i.test(
-        issue,
-      )) ||
-    extraIssues.some((i) =>
-      /skipped\/unavailable.*method|isti testMethod/i.test(i),
-    );
+    draft.actionType === "ASK" || all.some((item) => item.code === "ASK_REJECT");
+  const safetyRejected = all.some((item) => item.code === "SAFETY_REJECT");
+  const goalRejected = all.some((item) => item.code === "GOAL_REPEAT");
+  const skippedMethodRepeat = all.some(
+    (item) => item.code === "SKIPPED_METHOD_REPEAT",
+  );
 
   const goal = draft.diagnosticGoal?.trim();
   const target = draft.diagnosticTarget?.trim();
 
   return [
-    ...(issue ? [issue] : []),
-    ...extraIssues,
+    ...all,
     askRejected
       ? "ASK je odbijen backend gateom. actionType MORA biti TEST — odmah odaberi najbolji sljedeći dijagnostički test. Ne vraćaj ASK."
       : "",
@@ -1146,7 +1139,7 @@ function buildGuardRetryIssues(
     draft.actionType === "TEST" || askRejected
       ? "Za TEST uvijek vrati diagnosticTarget, diagnosticGoal, testMethod."
       : "",
-  ].filter(Boolean);
+  ].filter((item) => item !== "");
 }
 
 /**
@@ -1368,7 +1361,7 @@ async function runStrongVerifierOnce(
       [
         ...previousIssues,
         ...verdict.issues,
-        correctedIssue,
+        correctedIssue.message,
       ],
       turn.technicianOutcome,
     );
@@ -1386,7 +1379,7 @@ async function ensureDraftPassesQualityGates(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   initialDraft: LlmStepPayload,
-  extraIssues: string[] = [],
+  extraIssues: GuardIssue[] = [],
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
 
@@ -1440,8 +1433,7 @@ async function ensureDraftPassesQualityGates(
   }
 
   if (
-    issue &&
-    /SAFETY REJECT/i.test(issue) &&
+    issue?.code === "SAFETY_REJECT" &&
     draft.actionType === "TEST" &&
     turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES
   ) {
@@ -1468,14 +1460,15 @@ async function ensureDraftPassesQualityGates(
       diagnosticCase,
       draft,
       isTechnicianOutcomeIssue(issue)
-        ? [...TECHNICIAN_OUTCOME_RETRY_ISSUES]
-        : buildGuardRetryIssues(draft, issue, [
+        ? technicianOutcomeRetryIssues()
+        : [
+            ...buildGuardRetryIssues(draft, issue, []),
             "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
             "Inače: jedan TEST koji razlikuje LEADING od najjače alternative.",
             "U rationale navedi koje hipoteze razlikuješ.",
             "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…) bez verifiedTechnicalSpecs.",
             "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
-          ]),
+          ],
     );
     issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
     if (!issue) return draft;
@@ -1493,7 +1486,7 @@ async function finalizeAfterRetryLimit(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
-  issue: string | null,
+  issue: GuardIssue | null,
 ): Promise<LlmStepPayload> {
   if (!issue) return draft;
 
@@ -1509,7 +1502,7 @@ async function finalizeAfterRetryLimit(
   }
 
   throw new DiagnosticPipelineError(
-    `Draft nije prošao quality guard nakon retry limita: ${issue}`,
+    `Draft nije prošao quality guard nakon retry limita: ${issue.message}`,
   );
 }
 
@@ -1558,6 +1551,7 @@ function writeStepObservation(
   observations: Observation[],
   stepId: string,
   resultText: string,
+  intent?: UserContinueIntent,
 ): Observation[] {
   const canonical = dedupeObservationsByStepId(observations);
   const existing = canonical.find((o) => o.stepId === stepId);
@@ -1568,6 +1562,7 @@ function writeStepObservation(
         stepId,
         resultText,
         recordedAt: new Date().toISOString(),
+        ...(intent ? { intent } : {}),
       },
     ];
   }
@@ -1577,6 +1572,31 @@ function writeStepObservation(
   throw new ObservationConflictError(
     `Conflicting second result for step ${stepId}`,
   );
+}
+
+function displayTextForIntent(
+  intent: UserContinueIntent,
+  observation: { resultText?: string; cannotPerformReason?: string },
+): string {
+  switch (intent) {
+    case "SUBMIT_RESULT": {
+      const text = observation.resultText?.trim() ?? "";
+      if (!text) {
+        throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
+      }
+      return text;
+    }
+    case "SKIP":
+      return "Preskočeno.";
+    case "CANNOT_PERFORM": {
+      const reason = observation.cannotPerformReason?.trim();
+      return reason ? `Ne mogu izvesti: ${reason}` : "Ne mogu izvesti test.";
+    }
+    case "REJECT_DIAGNOSIS":
+      return "Dijagnoza odbijena.";
+    case "CONTINUE_AFTER_FINISH":
+      return "Nastavak dijagnostike.";
+  }
 }
 
 /** Fields scanned for locked technical-spec claims after an accepted step. */
@@ -1628,9 +1648,16 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
   async continueCase(
     diagnosticCase: DiagnosticCase,
-    resultText: string,
+    observation: {
+      intent?: UserContinueIntent;
+      resultText?: string;
+      cannotPerformReason?: string;
+    },
   ): Promise<DiagnoseResponse> {
-    const trimmed = resultText.trim();
+    const intent = observation.intent;
+    const trimmed = intent
+      ? displayTextForIntent(intent, observation)
+      : observation.resultText?.trim() ?? "";
     if (!trimmed) {
       throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
     }
@@ -1649,7 +1676,10 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const reopenAfterFinish =
       currentStep.actionType === "FINISH" &&
-      (isTechnicianRejection(trimmed) || isContinueAfterFinish(trimmed));
+      (intent === "REJECT_DIAGNOSIS" ||
+        intent === "CONTINUE_AFTER_FINISH" ||
+        (intent == null &&
+          (isTechnicianRejection(trimmed) || isContinueAfterFinish(trimmed))));
 
     if (incoming.status === "completed" && !reopenAfterFinish) {
       return {
@@ -1676,12 +1706,16 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         incoming.observations,
         currentStep.id,
         trimmed,
+        intent,
       );
 
       const rejectedDiagnoses: RejectedDiagnosis[] = [
         ...(incoming.rejectedDiagnoses ?? []),
       ];
-      if (isTechnicianRejection(trimmed)) {
+      const rejected =
+        intent === "REJECT_DIAGNOSIS" ||
+        (intent == null && isTechnicianRejection(trimmed));
+      if (rejected) {
         rejectedDiagnoses.push({
           diagnosis:
             currentStep.confirmedFault?.trim() || currentStep.content.trim(),
@@ -1732,7 +1766,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
         message: formatStepMessage(
           nextStep.actionType,
           updated,
-          ` (reevaluate after ${isTechnicianRejection(trimmed) ? "rejection" : "continue"})`,
+          ` (reevaluate after ${rejected ? "rejection" : "continue"})`,
         ),
       };
     }
@@ -1741,6 +1775,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       incoming.observations,
       currentStep.id,
       trimmed,
+      intent,
     );
 
     const caseWithObservation: DiagnosticCase = {

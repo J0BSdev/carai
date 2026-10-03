@@ -2,8 +2,10 @@ import {
   DIAGNOSTIC_UNAVAILABLE_MESSAGE,
   OBSERVATION_CONFLICT_MESSAGE,
   ObservationConflictError,
+  USER_CONTINUE_INTENTS,
   type DiagnoseRequest,
   type DiagnosticCase,
+  type UserContinueIntent,
 } from "@/lib/diagnosis";
 import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
 
@@ -20,6 +22,13 @@ function isDiagnosticCase(value: unknown): value is DiagnosticCase {
   );
 }
 
+function parseIntent(value: unknown): UserContinueIntent | undefined {
+  if (typeof value !== "string") return undefined;
+  return USER_CONTINUE_INTENTS.includes(value as UserContinueIntent)
+    ? (value as UserContinueIntent)
+    : undefined;
+}
+
 function parseBody(body: unknown): DiagnoseRequest {
   if (!body || typeof body !== "object") {
     throw new Error("Tijelo zahtjeva mora biti JSON objekt");
@@ -32,15 +41,35 @@ function parseBody(body: unknown): DiagnoseRequest {
     throw new Error('action mora biti "start" ili "continue"');
   }
 
+  const observation =
+    raw.observation && typeof raw.observation === "object"
+      ? (raw.observation as Record<string, unknown>)
+      : undefined;
+  const intentRaw = observation?.intent;
+  if (
+    intentRaw != null &&
+    typeof intentRaw === "string" &&
+    !parseIntent(intentRaw)
+  ) {
+    throw new Error("observation.intent nije valjan");
+  }
+  const intent = parseIntent(intentRaw);
+  const resultText =
+    observation && typeof observation.resultText === "string"
+      ? observation.resultText
+      : undefined;
+  const cannotPerformReason =
+    observation && typeof observation.cannotPerformReason === "string"
+      ? observation.cannotPerformReason
+      : undefined;
+
   return {
     action,
     problemText: typeof raw.problemText === "string" ? raw.problemText : undefined,
     case: isDiagnosticCase(raw.case) ? raw.case : undefined,
     observation:
-      raw.observation &&
-      typeof raw.observation === "object" &&
-      typeof (raw.observation as Record<string, unknown>).resultText === "string"
-        ? { resultText: (raw.observation as { resultText: string }).resultText }
+      intent || resultText || cannotPerformReason
+        ? { intent, resultText, cannotPerformReason }
         : undefined,
   };
 }
@@ -97,12 +126,25 @@ export async function POST(request: Request) {
   }
 
   const resultText = body.observation?.resultText?.trim();
-  if (!resultText) {
+  const intent = body.observation?.intent;
+  if (!intent && !resultText) {
     return Response.json(
       { error: "observation.resultText je obavezan kad je action continue" },
       { status: 400 },
     );
   }
+  if (intent === "SUBMIT_RESULT" && !resultText) {
+    return Response.json(
+      { error: "observation.resultText je obavezan za SUBMIT_RESULT" },
+      { status: 400 },
+    );
+  }
 
-  return runPipeline(() => engine.continueCase(diagnosticCase, resultText));
+  return runPipeline(() =>
+    engine.continueCase(diagnosticCase, {
+      intent,
+      resultText,
+      cannotPerformReason: body.observation?.cannotPerformReason,
+    }),
+  );
 }

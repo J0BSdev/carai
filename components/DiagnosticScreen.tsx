@@ -6,6 +6,7 @@ import type {
   DiagnoseResponse,
   DiagnosticCase,
   DiagnosticStep,
+  UserContinueIntent,
 } from "@/lib/diagnosis";
 import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis/errors";
 import {
@@ -251,20 +252,23 @@ export default function DiagnosticScreen() {
   }
 
   function handleContinue(
-    resultText: string,
+    observation: {
+      intent: UserContinueIntent;
+      resultText?: string;
+      cannotPerformReason?: string;
+    },
     caseOverride?: DiagnosticCase,
   ) {
     const base = caseOverride ?? diagnosticCase;
     if (!base) return;
-    const text = resultText.trim();
-    if (!text) {
+    if (observation.intent === "SUBMIT_RESULT" && !observation.resultText?.trim()) {
       setError("Unesi rezultat prije nastavka.");
       return;
     }
     void runDiagnose({
       action: "continue",
       case: base,
-      observation: { resultText: text },
+      observation,
     });
   }
 
@@ -278,10 +282,9 @@ export default function DiagnosticScreen() {
     setFailedRequest(null);
   }
 
-  /** Reopen FINISH via engine: rejection is stored in case.rejectedDiagnoses. */
-  function reopenAndContinue(reason: string) {
+  function reopenAndContinue(intent: "REJECT_DIAGNOSIS" | "CONTINUE_AFTER_FINISH") {
     if (!diagnosticCase || !finishStep) return;
-    handleContinue(reason, {
+    handleContinue({ intent }, {
       ...diagnosticCase,
       status: "active",
     });
@@ -473,9 +476,11 @@ export default function DiagnosticScreen() {
               <NextActionCard
                 step={nextStep}
                 stepNumber={diagnosticCase.steps.length}
-                onSubmitResult={(text) => handleContinue(text)}
+                onSubmitResult={(text) =>
+                  handleContinue({ intent: "SUBMIT_RESULT", resultText: text })
+                }
                 onCantPerform={() => setCantOpen(true)}
-                onSkip={() => handleContinue("Preskočeno za sada.")}
+                onSkip={() => handleContinue({ intent: "SKIP" })}
                 onHowTo={() => setHowToOpen(true)}
               />
             )}
@@ -486,15 +491,9 @@ export default function DiagnosticScreen() {
                 confirmedFault={diagnosticCase.confirmedFault}
                 onComplete={resetCase}
                 onKeepDiagnosing={() =>
-                  reopenAndContinue(
-                    "Mehaničar želi nastaviti dijagnostiku nakon prijedloga. Predloži diskriminirajući sljedeći korak (ne CONFIRMED bez novog dokaza).",
-                  )
+                  reopenAndContinue("CONTINUE_AFTER_FINISH")
                 }
-                onReject={() =>
-                  reopenAndContinue(
-                    "TECHNICIAN_REJECTED_DIAGNOSIS: Mehaničar odbija predloženu dijagnozu (dijagnoza ne izgleda točno). Reevaluate alternatives. Pitaj: Što u prethodnom zaključku možda nije objašnjeno?",
-                  )
-                }
+                onReject={() => reopenAndContinue("REJECT_DIAGNOSIS")}
               />
             )}
 
@@ -533,14 +532,21 @@ export default function DiagnosticScreen() {
           open={resultOpen}
           onClose={() => setResultOpen(false)}
           step={nextStep}
-          onSubmit={(result) => handleContinue(result)}
+          onSubmit={(result) =>
+            handleContinue({ intent: "SUBMIT_RESULT", resultText: result })
+          }
         />
       )}
 
       <CannotPerformModal
         open={cantOpen}
         onClose={() => setCantOpen(false)}
-        onSubmit={(reason) => handleContinue(reason)}
+        onSubmit={(reason) =>
+          handleContinue({
+            intent: "CANNOT_PERFORM",
+            cannotPerformReason: reason,
+          })
+        }
       />
 
       <HowToTestDrawer

@@ -1,6 +1,7 @@
 import type { DiagnosticCase, TechnicalSourceType } from "./types";
 import { extractReferenceSpecClaims } from "./spec-guard";
 import { draftBlob, normalizeForCompare } from "./text";
+import { issue, type GuardIssue } from "./guard-issue";
 
 export type TechnicalClaimPayload = {
   claim?: string | null;
@@ -344,9 +345,10 @@ export function findSafetyAndTechnicalRuleIssue(
     technicalClaims?: TechnicalClaimPayload[] | null;
     safetyPreconditions?: SafetyPreconditionsPayload | null;
   },
-): string | null {
-  return (
-    findTechnicalSourceTypeIssue(diagnosticCase, draft) ??
-    findSafetyCriticalTestIssue(draft)
-  );
+): GuardIssue | null {
+  const technical = findTechnicalSourceTypeIssue(diagnosticCase, draft);
+  if (technical) return issue("SPEC", technical);
+  const safety = findSafetyCriticalTestIssue(draft);
+  if (safety) return issue("SAFETY_REJECT", safety);
+  return null;
 }

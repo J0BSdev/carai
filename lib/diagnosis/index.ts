@@ -17,6 +17,7 @@ export type {
   SourceRef,
   TechnicianOutcome,
   TechnicianOutcomeStatus,
+  UserContinueIntent,
   VehicleInfo,
 } from "./types";
 
@@ -25,3 +26,5 @@ export {
   OBSERVATION_CONFLICT_MESSAGE,
   ObservationConflictError,
 } from "./errors";
+
+export { USER_CONTINUE_INTENTS } from "./types";

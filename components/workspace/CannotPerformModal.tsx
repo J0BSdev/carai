@@ -50,7 +50,7 @@ export default function CannotPerformModal({
       <button
         type="button"
         onClick={() => {
-          onSubmit(`Ne mogu izvesti test: ${reason}`);
+          onSubmit(reason);
           onClose();
         }}
         className="mt-5 flex min-h-12 w-full items-center justify-center rounded-2xl bg-[var(--accent)] text-sm font-semibold text-[#061018]"

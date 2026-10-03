@@ -1,5 +1,6 @@
 import type { DiagnosticCase, DiagnosticStep } from "./types";
 import { draftBlob as coreDraftBlob } from "./text";
+import { issueOrNull, type GuardIssue } from "./guard-issue";
 
 export type ReasoningDraft = {
   actionType?: string;
@@ -270,6 +271,16 @@ function findContradiction(
  * Also fails internal draft contradictions (same response, no new evidence possible).
  */
 export function findReasoningConsistencyIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: ReasoningDraft,
+): GuardIssue | null {
+  return issueOrNull(
+    "REASONING",
+    reasoningConsistencyMessage(diagnosticCase, draft),
+  );
+}
+
+function reasoningConsistencyMessage(
   diagnosticCase: DiagnosticCase,
   draft: ReasoningDraft,
 ): string | null {

@@ -9,6 +9,7 @@ import { diagnosticEvidenceFamilyKey } from "./diagnostic-meta";
 import { isCompletedTestEvidence } from "./test-result";
 import { normalizeForCompare } from "./text";
 import { isConfirmedTechnicianOutcome } from "./known-facts";
+import { issue, issueOrNull, type GuardIssue } from "./guard-issue";
 
 export type FinishDraft = {
   actionType?: string;
@@ -61,6 +62,7 @@ export function resolveDiagnosisCertainty(
   return "LIKELY";
 }
 
+/** Legacy fail-safe only. New observations carry UserContinueIntent and must not be routed by this. */
 export function isTechnicianRejection(resultText: string): boolean {
   const n = normalizeForCompare(resultText);
   return (
@@ -73,6 +75,7 @@ export function isTechnicianRejection(resultText: string): boolean {
   );
 }
 
+/** Legacy fail-safe only. New observations carry UserContinueIntent and must not be routed by this. */
 export function isContinueAfterFinish(resultText: string): boolean {
   const n = normalizeForCompare(resultText);
   return (
@@ -237,8 +240,17 @@ function newIndependentEvidenceSinceRejection(
     if (step.actionType !== "TEST") continue;
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
     if (!obs?.resultText?.trim()) continue;
-    if (isTechnicianRejection(obs.resultText)) continue;
-    if (isContinueAfterFinish(obs.resultText)) continue;
+    if (obs.intent === "SKIP" || obs.intent === "CANNOT_PERFORM") continue;
+    if (
+      obs.intent === "REJECT_DIAGNOSIS" ||
+      obs.intent === "CONTINUE_AFTER_FINISH"
+    ) {
+      continue;
+    }
+    if (!obs.intent) {
+      if (isTechnicianRejection(obs.resultText)) continue;
+      if (isContinueAfterFinish(obs.resultText)) continue;
+    }
     if (!isCompletedTestEvidence(step, obs.resultText)) continue;
     if (!after || Date.parse(obs.recordedAt) > after) {
       // New test after rejection — treat as candidate independent evidence
@@ -270,6 +282,16 @@ function finishDependsOnUnverifiedSpec(draft: FinishDraft): boolean {
  * Does not parse mechanic prose — only the typed AI extraction.
  */
 export function findTechnicianOutcomeConsistencyIssue(
+  technicianOutcome: TechnicianOutcome | null | undefined,
+  draft: FinishDraft,
+): GuardIssue | null {
+  return issueOrNull(
+    "TECHNICIAN_OUTCOME",
+    technicianOutcomeConsistencyMessage(technicianOutcome, draft),
+  );
+}
+
+function technicianOutcomeConsistencyMessage(
   technicianOutcome: TechnicianOutcome | null | undefined,
   draft: FinishDraft,
 ): string | null {
@@ -306,7 +328,17 @@ export function findConfirmationGuardIssue(
   diagnosticCase: DiagnosticCase,
   draft: FinishDraft,
   technicianOutcome?: TechnicianOutcome | null,
-): string | null {
+): GuardIssue | null {
+  const found = confirmationGuardMessage(diagnosticCase, draft, technicianOutcome);
+  if (!found) return null;
+  return issue("CONFIRMATION", found.message, { downgradeTo: found.downgradeTo });
+}
+
+function confirmationGuardMessage(
+  diagnosticCase: DiagnosticCase,
+  draft: FinishDraft,
+  technicianOutcome?: TechnicianOutcome | null,
+): { message: string; downgradeTo: "LIKELY" | "HIGH_CONFIDENCE" } | null {
   if (draft.actionType !== "FINISH") return null;
 
   const certainty = resolveDiagnosisCertainty(draft);
@@ -324,25 +356,31 @@ export function findConfirmationGuardIssue(
       wasDiagnosisRejected(diagnosticCase, diagnosisText) &&
       !newIndependentEvidenceSinceRejection(diagnosticCase)
     ) {
-      return (
-        "RECONFIRMATION GUARD: wasDiagnosisRejected===true i newIndependentConfirmatoryEvidence===false. " +
-        "Ne smiješ vratiti CONFIRMED za odbijenu dijagnozu. Koristi LIKELY/HIGH_CONFIDENCE i diskriminirajući TEST/ASK."
-      );
+      return {
+        downgradeTo: "LIKELY",
+        message:
+          "RECONFIRMATION GUARD: wasDiagnosisRejected===true i newIndependentConfirmatoryEvidence===false. " +
+          "Ne smiješ vratiti CONFIRMED za odbijenu dijagnozu. Koristi LIKELY/HIGH_CONFIDENCE i diskriminirajući TEST/ASK.",
+      };
     }
 
     if (strongAlternativeExists(draft)) {
-      return (
-        "CONFIRMED GUARD: strongAlternativeStillExists===true. " +
-        "Confidence != confirmation. Vrati HIGH_CONFIDENCE ili LIKELY, ne CONFIRMED."
-      );
+      return {
+        downgradeTo: "HIGH_CONFIDENCE",
+        message:
+          "CONFIRMED GUARD: strongAlternativeStillExists===true. " +
+          "Confidence != confirmation. Vrati HIGH_CONFIDENCE ili LIKELY, ne CONFIRMED.",
+      };
     }
   }
 
   if (!hasIndependentConfirmatorySignal(diagnosticCase, draft, technicianOutcome)) {
-    return (
-      "CONFIRMED GUARD: nema dovoljno NEOVISNIH potvrđujućih dokaza. " +
-      "Jedan simptom/DTC/lanac povezanih opažanja nije CONFIRMED. Vrati LIKELY ili HIGH_CONFIDENCE."
-    );
+    return {
+      downgradeTo: "HIGH_CONFIDENCE",
+      message:
+        "CONFIRMED GUARD: nema dovoljno NEOVISNIH potvrđujućih dokaza. " +
+        "Jedan simptom/DTC/lanac povezanih opažanja nije CONFIRMED. Vrati LIKELY ili HIGH_CONFIDENCE.",
+    };
   }
 
   if (
@@ -350,10 +388,12 @@ export function findConfirmationGuardIssue(
     finishDependsOnUnverifiedSpec(draft) &&
     getVerifiedTechnicalSpecs(diagnosticCase).length === 0
   ) {
-    return (
-      "CONFIRMED GUARD: exactTechnicalSpecWasRequired && specIsNotVerified. " +
-      "Blokiran CONFIRMED. Vrati LIKELY/HIGH_CONFIDENCE bez neprovjerenih OEM brojki."
-    );
+    return {
+      downgradeTo: "LIKELY",
+      message:
+        "CONFIRMED GUARD: exactTechnicalSpecWasRequired && specIsNotVerified. " +
+        "Blokiran CONFIRMED. Vrati LIKELY/HIGH_CONFIDENCE bez neprovjerenih OEM brojki.",
+    };
   }
 
   // High % alone never justifies CONFIRMED
@@ -364,9 +404,11 @@ export function findConfirmationGuardIssue(
     conf >= 80 &&
     strongAlternativeExists(draft)
   ) {
-    return (
-      "CONFIRMED GUARD: visoki confidence postotak nije potvrda. Status = HIGH_CONFIDENCE."
-    );
+    return {
+      downgradeTo: "HIGH_CONFIDENCE",
+      message:
+        "CONFIRMED GUARD: visoki confidence postotak nije potvrda. Status = HIGH_CONFIDENCE.",
+    };
   }
 
   return null;
@@ -375,12 +417,10 @@ export function findConfirmationGuardIssue(
 /** Downgrade illegal CONFIRMED drafts to HIGH_CONFIDENCE / LIKELY. */
 export function downgradeUnjustifiedConfirmed(
   draft: FinishDraft,
-  issue: string,
+  guardIssue: GuardIssue,
 ): FinishDraft {
-  const toLikely = /RECONFIRMATION|specIsNotVerified|UNVERIFIED/i.test(issue);
-  const certainty: DiagnosisCertainty = toLikely
-    ? "LIKELY"
-    : "HIGH_CONFIDENCE";
+  const certainty: DiagnosisCertainty =
+    guardIssue.downgradeTo === "LIKELY" ? "LIKELY" : "HIGH_CONFIDENCE";
   return {
     ...draft,
     diagnosisCertainty: certainty,
@@ -392,7 +432,7 @@ export function downgradeUnjustifiedConfirmed(
           ? "medium"
           : (draft.confidence as "low" | "medium" | "high" | null | undefined) ??
             "high",
-    rationale: `${draft.rationale ?? ""}\n\n[${certainty}: CONFIRMED odbijen — ${issue.slice(0, 180)}]`.trim(),
+    rationale: `${draft.rationale ?? ""}\n\n[${certainty}: CONFIRMED odbijen — ${guardIssue.message.slice(0, 180)}]`.trim(),
   };
 }
 
