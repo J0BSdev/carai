@@ -156,17 +156,9 @@ function formatCost(cost: number | null): string {
 
 const GUARD_LOG_NAME: Record<GuardIssueCode, string> = {
   TECHNICIAN_OUTCOME: "technician_outcome",
-  ASK_REJECT: "ask_decision_gate",
   SAFETY_REJECT: "safety_guard",
-  GOAL_REPEAT: "similar_test_branch",
-  SKIPPED_METHOD_REPEAT: "similar_test_branch",
-  REASONING: "reasoning_consistency",
-  KNOWN_FACTS: "known_facts",
   SPEC: "spec_guard",
   CONFIRMATION: "confirmation_guard",
-  REPETITION: "repetition",
-  TEST_PRIORITY: "test_priority",
-  HYPOTHESIS: "hypothesis_diff",
   TEST_META: "test_meta",
 };
 

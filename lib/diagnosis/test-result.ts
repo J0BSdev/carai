@@ -54,25 +54,6 @@ function normalizeResultText(text: string): string {
     .trim();
 }
 
-/** RESULT prose that is not a completed measurement. Workflow skips are Observation.kind. */
-export function isSkippedOrUnavailableResult(resultText: string): boolean {
-  const n = normalizeResultText(resultText);
-  if (!n) return false;
-  return (
-    n.includes("ne mogu izvesti") ||
-    n.includes("preskocen") ||
-    n.includes("preskoceno") ||
-    n.includes("preskoci") ||
-    /\bskipped\b/.test(n) ||
-    n.includes("cant perform") ||
-    n.includes("cannot perform") ||
-    /\bunavailable\b/.test(n) ||
-    n.includes("nije dostupan") ||
-    n.includes("nije moguce izvesti") ||
-    n.includes("test nedostupan")
-  );
-}
-
 function stepContextBlob(step: DiagnosticStep): string {
   return [
     step.content,
@@ -400,6 +381,5 @@ export function isCompletedTestEvidence(
   resultText: string,
 ): boolean {
   if (!resultText.trim()) return false;
-  if (isSkippedOrUnavailableResult(resultText)) return false;
   return interpretTestResult(step, resultText).kind !== "AMBIGUOUS";
 }

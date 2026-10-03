@@ -1,11 +1,11 @@
 import type {
   DiagnosticCase,
   DiagnosisCertainty,
+  DiagnosticStep,
   Hypothesis,
   TechnicianOutcome,
 } from "./types";
 import { getVerifiedTechnicalSpecs } from "./spec-guard";
-import { diagnosticEvidenceFamilyKey } from "./diagnostic-meta";
 import { isCompletedTestEvidence } from "./test-result";
 import { normalizeForCompare } from "./text";
 import { isConfirmedTechnicianOutcome } from "./known-facts";
@@ -144,6 +144,20 @@ function strongAlternativeExists(draft: FinishDraft): boolean {
   }
 
   return alt.confidence >= 15;
+}
+
+/** Group completed TEST results by the model's own goal/target, not by prose similarity. */
+function diagnosticEvidenceFamilyKey(
+  step: Pick<DiagnosticStep, "diagnosticTarget" | "diagnosticGoal" | "testMethod" | "content">,
+): string {
+  const goal = normalizeForCompare(step.diagnosticGoal ?? "");
+  if (goal) return `goal:${goal}`;
+  const target = normalizeForCompare(step.diagnosticTarget ?? "");
+  if (target) return `target:${target}`;
+  const method = normalizeForCompare(step.testMethod ?? "");
+  if (method) return `method:${method}`;
+  const content = normalizeForCompare(step.content).slice(0, 40);
+  return content ? `content:${content}` : "unknown";
 }
 
 /** Only VALUE/PASS/FAIL results count — skipped and AMBIGUOUS are not evidence. */

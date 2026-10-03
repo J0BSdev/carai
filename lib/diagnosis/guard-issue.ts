@@ -3,17 +3,9 @@ import type { DiagnosisCertainty } from "./types";
 /** Stable id for guard routing. Never inferred from `message`. */
 export type GuardIssueCode =
   | "TECHNICIAN_OUTCOME"
-  | "ASK_REJECT"
   | "SAFETY_REJECT"
-  | "GOAL_REPEAT"
-  | "SKIPPED_METHOD_REPEAT"
-  | "REASONING"
-  | "KNOWN_FACTS"
   | "SPEC"
   | "CONFIRMATION"
-  | "REPETITION"
-  | "TEST_PRIORITY"
-  | "HYPOTHESIS"
   | "TEST_META";
 
 export type GuardIssue = {

@@ -1,7 +1,6 @@
 import type { DiagnosticCase, Observation, TechnicianOutcome } from "./types";
 import { observationResultText } from "./observation";
 import { buildKnownFactsSnapshot, latestHypotheses } from "./known-facts";
-import { normalizeForCompare } from "./text";
 import {
   collectHistoricalReferenceClaims,
   findSpecGuardIssue,
@@ -9,21 +8,8 @@ import {
 } from "./spec-guard";
 import { findConfirmationGuardIssue, findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
-import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
-import { findAlreadyKnownInfoIssue } from "./known-facts-guard";
-import { issue, issueOrNull, type GuardIssue } from "./guard-issue";
+import { issue, type GuardIssue } from "./guard-issue";
 import { logCompactCaseState, logDiagnosticUserPromptChars } from "./ai-telemetry";
-import {
-  legacyLexicalSameBranch,
-  metaFromDraft,
-  metaKeysEqual,
-  testsAreSameDiagnosticBranch,
-} from "./diagnostic-meta";
-import {
-  interpretTestResult,
-  isSkippedOrUnavailableResult,
-  type TestResultInterpretation,
-} from "./test-result";
 
 export const DIAGNOSTIC_SYSTEM_PROMPT = `AI dijagnostički copilot za profesionalne mehaničare. ADAPTIVNA dijagnostika korak-po-korak (ne checklista/chatbot lista kvarova). Cilj: minimalan broj koraka do pouzdane dijagnoze.
 
@@ -73,53 +59,10 @@ function observationIsSkipped(obs: Observation | undefined): boolean {
   return obs?.kind === "SKIP" || obs?.kind === "CANNOT_PERFORM";
 }
 
-/**
- * How a recorded result was interpreted. `ambiguous` results stay visible to the
- * model as raw text but never count as evidence.
- */
-type StepResultKind =
-  | "none"
-  | "answer"
-  | "value"
-  | "pass"
-  | "fail"
-  | "ambiguous"
-  | "skipped";
+type StepResultKind = "none" | "answer" | "result" | "skipped";
 
-const RESULT_KIND_BY_INTERPRETATION: Record<
-  TestResultInterpretation["kind"],
-  StepResultKind
-> = {
-  VALUE: "value",
-  PASS: "pass",
-  FAIL: "fail",
-  AMBIGUOUS: "ambiguous",
-};
-
-/** Explicit session case state sent on every model call. */
+/** Case facts serialized into prompts. Result text is raw; the model interprets it. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
-  const questionsAsked: string[] = [];
-  const completedTests: Array<{
-    test: string;
-    result: string;
-    diagnosticTarget?: string;
-    diagnosticGoal?: string;
-    testMethod?: string;
-  }> = [];
-  const skippedUnavailableTests: Array<{
-    test: string;
-    reason?: string;
-    diagnosticTarget?: string;
-    diagnosticGoal?: string;
-    testMethod?: string;
-  }> = [];
-  const answers: Array<{ question: string; answer: string }> = [];
-  const measurements: string[] = [];
-  const previousDiagnosticActions: Array<{
-    actionType: string;
-    content: string;
-    outcome: "answered" | "result" | "skipped" | "ambiguous" | "pending";
-  }> = [];
   const stepHistory: Array<{
     actionType: string;
     content: string;
@@ -133,27 +76,24 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
   }> = [];
 
   const knownFacts = buildKnownFactsSnapshot(diagnosticCase);
+  let resultCount = 0;
 
   for (const step of diagnosticCase.steps) {
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
     const result = observationResultText(obs);
     const skipped = observationIsSkipped(obs);
+    if (result) resultCount += 1;
     const stepLabel =
       step.actionType === "TEST"
         ? step.recommendedTest?.name?.trim() || step.content
         : step.content;
-
-    // Only RESULT text is interpreted. Structured kinds are state, not evidence.
-    const interpretation =
-      result && step.actionType === "TEST"
-        ? interpretTestResult(step, result)
-        : null;
-
-    let resultKind: StepResultKind = "none";
-    if (skipped) resultKind = "skipped";
-    else if (interpretation) {
-      resultKind = RESULT_KIND_BY_INTERPRETATION[interpretation.kind];
-    } else if (result) resultKind = "answer";
+    const resultKind: StepResultKind = skipped
+      ? "skipped"
+      : result
+        ? step.actionType === "ASK"
+          ? "answer"
+          : "result"
+        : "none";
 
     stepHistory.push({
       actionType: step.actionType,
@@ -170,93 +110,22 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       ...(step.diagnosticGoal ? { diagnosticGoal: step.diagnosticGoal } : {}),
       ...(step.testMethod ? { testMethod: step.testMethod } : {}),
     });
-
-    previousDiagnosticActions.push({
-      actionType: step.actionType,
-      content: stepLabel,
-      outcome: !obs
-        ? "pending"
-        : skipped
-          ? "skipped"
-          : interpretation
-            ? interpretation.kind === "AMBIGUOUS"
-              ? "ambiguous"
-              : "result"
-            : result
-              ? "answered"
-              : "pending",
-    });
-
-    if (step.actionType === "ASK") {
-      questionsAsked.push(step.content);
-      if (result) {
-        answers.push({ question: step.content, answer: result });
-      }
-    }
-
-    if (step.actionType === "TEST" && obs) {
-      const meta = {
-        ...(step.diagnosticTarget
-          ? { diagnosticTarget: step.diagnosticTarget }
-          : {}),
-        ...(step.diagnosticGoal
-          ? { diagnosticGoal: step.diagnosticGoal }
-          : {}),
-        ...(step.testMethod ? { testMethod: step.testMethod } : {}),
-      };
-      if (skipped) {
-        skippedUnavailableTests.push({
-          test: stepLabel,
-          ...(obs.kind === "CANNOT_PERFORM" && obs.reason
-            ? { reason: obs.reason }
-            : {}),
-          ...meta,
-        });
-      } else if (
-        result &&
-        interpretation &&
-        interpretation.kind !== "AMBIGUOUS"
-      ) {
-        completedTests.push({ test: stepLabel, result, ...meta });
-        if (interpretation.kind === "VALUE") measurements.push(result);
-      }
-    }
   }
 
-  const currentHypotheses = latestHypotheses(diagnosticCase).map(
-    (h) => ({
+  return {
+    originalComplaint: diagnosticCase.problemText,
+    knownFacts,
+    currentHypotheses: latestHypotheses(diagnosticCase).map((h) => ({
       hypothesis: h.label,
       status: h.status,
       confidence: h.confidence ?? null,
       supportingEvidence: h.supportingEvidence ?? [],
       contradictingEvidence: h.contradictingEvidence ?? [],
       note: h.note ?? null,
-    }),
-  );
-
-  const significantEvidenceCount = answers.length + completedTests.length;
-
-  return {
-    originalComplaint: diagnosticCase.problemText,
-    // Top-level aliases kept for backend guards; prompt uses compactCaseStateForPrompt.
-    vehicleInformation: knownFacts.vehicle,
-    dtcs: knownFacts.knownDtcCodes,
-    symptoms: knownFacts.symptoms,
-    knownFacts,
-    userObservations: diagnosticCase.observations.flatMap((o) =>
-      o.kind === "RESULT" ? [o.text] : [],
-    ),
-    answersToPreviousQuestions: answers,
-    questionsAlreadyAsked: questionsAsked,
-    completedTests,
-    skippedUnavailableTests,
-    testResults: completedTests.map((t) => t.result),
-    // Evidence only — VALUE test results. knownFacts.measurements stay case context.
-    measurements,
-    currentHypotheses,
-    previousDiagnosticActions,
+    })),
     diagnosticStepHistory: stepHistory,
-    significantEvidenceCount,
+    significantEvidenceCount: resultCount,
+    skippedStepCount: stepHistory.filter((s) => s.resultKind === "skipped").length,
     consecutiveAnsweredAsksJustCompleted:
       countTrailingAnsweredAsks(diagnosticCase),
     status: diagnosticCase.status,
@@ -277,18 +146,6 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       }),
     ),
     rejectedDiagnoses: diagnosticCase.rejectedDiagnoses ?? [],
-    evidenceModel: {
-      MEASURED_EVIDENCE:
-        "Rezultati mehaničara (answers, completedTests, measurements) — stvarni dokazi.",
-      REFERENCE_SPEC:
-        "OEM/očekivani rasponi — dokaz SAMO ako status=VERIFIED u verifiedTechnicalSpecs. AI claim ≠ verified.",
-      INDEPENDENT_CONFIRMATORY_EVIDENCE:
-        "Dokazi iz različitih mjerenja/grana — ne broji isti signal više puta.",
-    },
-    instruction:
-      diagnosticCase.observations.length === 0
-        ? "Start from originalComplaint. Never extract technicianOutcome from the complaint. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. FINISH uses diagnosisCertainty. Do not invent OEM numbers."
-        : "technicianOutcome only from the latest RESULT text. history.kind SKIP, CANNOT_PERFORM, REJECT_DIAGNOSIS and CONTINUE_AFTER_FINISH are structured state, not mechanic prose and not evidence. Backend does not rewrite actionType. FAULT_CONFIRMED/REPAIR_CONFIRMED → FINISH with your own diagnosis text. Then REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. CONFIRMED is rare. Respect rejectedDiagnoses. Do not invent OEM numbers.",
   };
 }
 
@@ -358,8 +215,7 @@ function compactHistoryLedgerRow(s: CaseStepHistoryRow): Record<string, unknown>
 }
 
 /**
- * Prompt-only CASE STATE: drop redundant aliases of the same evidence.
- * Full buildCaseState remains for backend guards/verifier.
+ * Prompt-only CASE STATE. History carries raw RESULT text and observation kind.
  * compactOlderHistory is diagnostic-only — verifier keeps full step rows.
  */
 export function compactCaseStateForPrompt(
@@ -550,9 +406,6 @@ export function buildDiagnosticRetryPrompt(
   const technicianOutcomeRetry = issues.some(
     (item) => isGuardIssue(item) && item.code === "TECHNICIAN_OUTCOME",
   );
-  const forceNewGoal = issues.some(
-    (item) => isGuardIssue(item) && item.code === "GOAL_REPEAT",
-  );
   const hasLedger = Array.isArray(compact.compactHistory);
   const issueLines = issues.map((item) =>
     isGuardIssue(item) ? item.message : item,
@@ -560,9 +413,7 @@ export function buildDiagnosticRetryPrompt(
 
   const retryInstruction = technicianOutcomeRetry
     ? "Draft odbijen zbog technicianOutcome vs actionType. Ne zadržavaj ASK/TEST ni diagnosticTarget/diagnosticGoal iz previous drafta. Reevaluate CASE STATE. Ako potvrda i dalje vrijedi, vrati FINISH. Popravi samo navedene ISSUES."
-    : forceNewGoal
-      ? "Draft odbijen zbog ponavljanja grane — vrati NOVI JSON s DRUGAČIJIM diagnosticGoal. Popravi samo navedeni issue."
-      : "Draft odbijen — vrati ispravljeni JSON. Zadrži isti diagnosticTarget i diagnosticGoal; popravi samo navedeni issue (ne biraj novu granu).";
+    : "Draft odbijen — vrati ispravljeni JSON koji rješava ISSUES.";
 
   return [
     hasLedger
@@ -635,10 +486,7 @@ export function buildVerifierUserPrompt(
   if (action === "ASK" && caseState.consecutiveAnsweredAsksJustCompleted >= 1) {
     notes.push("consecutive ASK ≥1 — odobri samo uz jasne različite grane.");
   }
-  if (
-    action === "TEST" &&
-    caseState.skippedUnavailableTests.length > 0
-  ) {
+  if (action === "TEST" && caseState.skippedStepCount > 0) {
     notes.push("Postoje skipped (history resultKind=skipped) — odbij parafrazu.");
   }
   if ((caseState.rejectedDiagnoses as unknown[]).length > 0) {
@@ -692,593 +540,7 @@ export function buildVerifierUserPrompt(
     .join("\n");
 }
 
-/**
- * Detect obvious repeat of an already-asked question or completed test.
- * TEST repeats use diagnosticGoal/target metadata when present.
- */
-export function findObviousRepetition(
-  diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    diagnosticTarget?: string | null;
-    diagnosticGoal?: string | null;
-    testMethod?: string | null;
-  },
-): GuardIssue | null {
-  return issueOrNull(
-    "REPETITION",
-    obviousRepetitionMessage(diagnosticCase, draft),
-  );
-}
-
-function obviousRepetitionMessage(
-  diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    diagnosticTarget?: string | null;
-    diagnosticGoal?: string | null;
-    testMethod?: string | null;
-  },
-): string | null {
-  const content = draft.content?.trim();
-  if (!content || draft.actionType === "FINISH") return null;
-
-  const normalizedNew = normalizeForCompare(content);
-  if (normalizedNew.length < 12) return null;
-
-  const state = buildCaseState(diagnosticCase);
-
-  if (draft.actionType === "ASK") {
-    for (const q of state.questionsAlreadyAsked) {
-      const nq = normalizeForCompare(q);
-      if (!nq) continue;
-      if (normalizedNew === nq || containsAsCore(normalizedNew, nq)) {
-        return `Ponavljanje već postavljenog pitanja: "${q.slice(0, 120)}"`;
-      }
-    }
-    for (const a of state.answersToPreviousQuestions) {
-      const nq = normalizeForCompare(a.question);
-      if (nq && (normalizedNew === nq || containsAsCore(normalizedNew, nq))) {
-        return `Pitanje već ima odgovor u CASE STATE: "${a.answer.slice(0, 80)}"`;
-      }
-    }
-  }
-
-  if (draft.actionType === "TEST") {
-    const draftMeta = metaFromDraft(draft);
-    for (const t of state.completedTests) {
-      const nt = normalizeForCompare(t.test);
-      if (!nt) continue;
-      if (normalizedNew === nt || containsAsCore(normalizedNew, nt)) {
-        return `Ponavljanje već završenog testa: "${t.test.slice(0, 120)}" (rezultat: ${t.result.slice(0, 80)})`;
-      }
-      const priorMeta = {
-        content: t.test,
-        diagnosticTarget: t.diagnosticTarget,
-        diagnosticGoal: t.diagnosticGoal,
-        testMethod: t.testMethod,
-      };
-      if (
-        testsAreSameDiagnosticBranch(draftMeta, priorMeta) &&
-        t.result.trim().length >= 4 &&
-        !isSkippedOrUnavailableResult(t.result)
-      ) {
-        return (
-          `Ponavljanje iste dijagnostičke grane (goal/target): "${t.test.slice(0, 100)}" ` +
-          `(rezultat već daje info: "${t.result.slice(0, 80)}"). ` +
-          "Odaberi NEOVISAN diagnosticGoal / drugu granu."
-        );
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Reject TEST that repeats a completed diagnostic goal, or a skipped test
- * with the same goal AND same method.
- * Skipped + same goal + different testMethod = allowed alternative path.
- */
-export function findSimilarTestBranchIssue(
-  diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    rationale?: string;
-    diagnosticTarget?: string | null;
-    diagnosticGoal?: string | null;
-    testMethod?: string | null;
-  },
-): GuardIssue | null {
-  if (draft.actionType !== "TEST") return null;
-  const content = draft.content?.trim();
-  if (!content) return null;
-
-  const draftMeta = metaFromDraft(draft);
-  const state = buildCaseState(diagnosticCase);
-
-  for (const t of state.completedTests) {
-    const priorMeta = {
-      content: t.test,
-      diagnosticTarget: t.diagnosticTarget,
-      diagnosticGoal: t.diagnosticGoal,
-      testMethod: t.testMethod,
-    };
-    // Completed + same diagnosticGoal (or legacy same branch) = repeat.
-    if (!testsAreSameDiagnosticBranch(draftMeta, priorMeta)) continue;
-    if (isSkippedOrUnavailableResult(t.result)) continue;
-
-    return issue(
-      "GOAL_REPEAT",
-      `Semantički sličan već završenom testu iste dijagnostičke grane` +
-      `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}" ` +
-      `(rezultat: "${t.result.slice(0, 80)}"). Rezultat već daje traženu informaciju — ` +
-      "ne ponavljaj isti diagnosticGoal. Odaberi NEOVISNU granu (drugi diagnosticGoal) ili FINISH.",
-    );
-  }
-
-  for (const t of state.skippedUnavailableTests) {
-    const priorMeta = {
-      content: t.test,
-      diagnosticTarget: t.diagnosticTarget,
-      diagnosticGoal: t.diagnosticGoal,
-      testMethod: t.testMethod,
-    };
-
-    const sameGoal =
-      (draftMeta.diagnosticGoal &&
-        t.diagnosticGoal &&
-        metaKeysEqual(draftMeta.diagnosticGoal, t.diagnosticGoal)) ||
-      ((!draftMeta.diagnosticGoal || !t.diagnosticGoal) &&
-        testsAreSameDiagnosticBranch(draftMeta, priorMeta));
-
-    if (!sameGoal) continue;
-
-    const bothMethods =
-      Boolean(draftMeta.testMethod?.trim()) && Boolean(t.testMethod?.trim());
-    if (bothMethods) {
-      if (!metaKeysEqual(draftMeta.testMethod, t.testMethod)) {
-        // Same goal, different method → allowed alternative after skip.
-        continue;
-      }
-      return issue(
-        "SKIPPED_METHOD_REPEAT",
-        `Semantički sličan skipped/unavailable testu s istim testMethod` +
-        `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
-        "To nije dokaz — nemoj ponavljati istu method. Predloži DRUGAČIJI testMethod za isti diagnosticGoal " +
-        "ili novi diagnosticGoal.",
-      );
-    }
-
-    // Missing method meta: only reject clear lexical paraphrase of the skipped test.
-    if (legacyLexicalSameBranch(content, t.test)) {
-      return issue(
-        "SKIPPED_METHOD_REPEAT",
-        `Semantički sličan skipped/unavailable testu` +
-        `${t.diagnosticGoal ? ` (goal="${t.diagnosticGoal}")` : ""}: "${t.test.slice(0, 100)}". ` +
-        "To nije dokaz — nemoj preformulirati isti test. Predloži ALTERNATIVNI testMethod za isti goal " +
-        "ili novi diagnosticGoal.",
-      );
-    }
-  }
-
-  return null;
-}
-
-export function findAskDecisionGateIssue(
-  diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    rationale?: string;
-    askDecision?: {
-      whyNeeded?: string | null;
-      expectedAnswers?: string[] | null;
-      nextStepByAnswer?: Array<{
-        answer?: string;
-        nextAction?: string;
-      }> | null;
-    } | null;
-  },
-): GuardIssue | null {
-  return issueOrNull("ASK_REJECT", askDecisionGateMessage(diagnosticCase, draft));
-}
-
-function askDecisionGateMessage(
-  diagnosticCase: DiagnosticCase,
-  draft: {
-    actionType?: string;
-    content?: string;
-    rationale?: string;
-    askDecision?: {
-      whyNeeded?: string | null;
-      expectedAnswers?: string[] | null;
-      nextStepByAnswer?: Array<{
-        answer?: string;
-        nextAction?: string;
-      }> | null;
-    } | null;
-  },
-): string | null {
-  if (draft.actionType !== "ASK") return null;
-  const state = buildCaseState(diagnosticCase);
-  const normalizedQuestion = normalizeForCompare(
-    `${draft.content ?? ""} ${draft.rationale ?? ""}`,
-  );
-
-  const askRejectPrefix =
-    "ASK REJECT: neprikazuje se. Regeneriraj s actionType=TEST (najbolji sljedeći dijagnostički test). ";
-
-  const dtcKnown = Array.isArray(state.dtcs) && state.dtcs.length > 0;
-  const dtcDetailQuestion = isDtcDetailQuestion(normalizedQuestion);
-  if (dtcKnown) {
-    if (asksForDtcInventoryOrRescanLocal(normalizedQuestion)) {
-      return (
-        askRejectPrefix +
-        `DTC je već poznat (${state.dtcs.join(", ")}). Ne traži ponovno DTC, prijeđi na relevantan TEST.`
-      );
-    }
-    if (
-      state.completedTests.length === 0 &&
-      !dtcDetailQuestion &&
-      asksGenericSymptomsOrWarningLight(normalizedQuestion)
-    ) {
-      return (
-        askRejectPrefix +
-        "Kod poznatog DTC-a ne pitaj opće simptome/lampice prije korištenja DTC traga. Odaberi TEST koji razlikuje uzroke tog DTC-a."
-      );
-    }
-    if (!dtcDetailQuestion) {
-      return (
-        askRejectPrefix +
-        "Poznat DTC je dovoljan za smislen prvi test. ASK je dopušten samo za nedostajući DTC detalj (status/opis/subcode) ako je potreban."
-      );
-    }
-    if (hasKnownDtcDetailAlready(state, normalizedQuestion)) {
-      return (
-        askRejectPrefix +
-        "Traženi DTC detalj je već u case stateu. Odaberi sljedeći TEST."
-      );
-    }
-  }
-
-  if (canSelectMeaningfulTestNow(state) && !dtcDetailQuestion) {
-    return (
-      askRejectPrefix +
-      "Već postoji dovoljno podataka za smislen/siguran sljedeći TEST. ASK nije dopušten."
-    );
-  }
-
-  const why =
-    draft.askDecision?.whyNeeded?.trim() ||
-    extractWhyFromRationale(draft.rationale ?? "");
-  const expectedAnswers = (draft.askDecision?.expectedAnswers ?? [])
-    .map((a) => a?.trim())
-    .filter((a): a is string => Boolean(a));
-  const branches = (draft.askDecision?.nextStepByAnswer ?? [])
-    .map((b) => ({
-      answer: b.answer?.trim() ?? "",
-      nextAction: b.nextAction?.trim() ?? "",
-    }))
-    .filter((b) => b.answer && b.nextAction);
-
-  // Structured path preferred
-  if (draft.askDecision) {
-    if (!why) {
-      return (
-        askRejectPrefix +
-        "Nedostaje zašto je informacija potrebna (askDecision.whyNeeded)."
-      );
-    }
-    if (isContextOnlyWhy(why)) {
-      return (
-        askRejectPrefix +
-        "Pitanje samo prikuplja dodatni kontekst bez utjecaja na odluku."
-      );
-    }
-    if (expectedAnswers.length < 2 && branches.length < 2) {
-      return (
-        askRejectPrefix +
-        "ASK mora navesti najmanje 2 očekivana odgovora i kako svaki mijenja sljedeći korak."
-      );
-    }
-    if (branches.length >= 2) {
-      const norms = branches.map((b) => normalizeNextAction(b.nextAction));
-      const allSame = norms.every((n) => n === norms[0]);
-      if (allSame) {
-        return (
-          askRejectPrefix +
-          "Različiti odgovori vode na ISTI sljedeći korak (candidateQuestionChangesNextAction===false). Odaberi taj TEST odmah."
-        );
-      }
-    } else if (!rationaleHasDistinctBranches(draft.rationale ?? "")) {
-      return (
-        askRejectPrefix +
-        "Nedostaje mapiranje odgovor → različiti sljedeći koraci (askDecision.nextStepByAnswer)."
-      );
-    }
-  } else {
-    // No structured askDecision — require explicit branch proof in rationale, else reject
-    if (!why || isContextOnlyWhy(why) || !rationaleHasDistinctBranches(draft.rationale ?? "")) {
-      return (
-        askRejectPrefix +
-        "Svaki ASK mora imati: (1) zašto je informacija potrebna, (2) očekivane odgovore, " +
-        "(3) kako bi svaki odgovor promijenio sljedeći korak. Bez toga vrati TEST."
-      );
-    }
-  }
-
-  // Second consecutive ASK still needs clear branch justification
-  const consecutive = countTrailingAnsweredAsks(diagnosticCase);
-  if (consecutive >= 1 && !rationaleHasDistinctBranches(draft.rationale ?? "") && branches.length < 2) {
-    return (
-      askRejectPrefix +
-      "Drugi uzastopni ASK bez jasnih različitih grana — vrati TEST."
-    );
-  }
-
-  return null;
-}
-
-function extractWhyFromRationale(rationale: string): string {
-  const t = rationale.trim();
-  if (!t) return "";
-  // First sentence often carries the "why"
-  return t.split(/[.!\n]/)[0]?.trim() ?? t;
-}
-
-function isContextOnlyWhy(why: string): boolean {
-  const n = normalizeForCompare(why);
-  if (!n) return true;
-  const contextOnly =
-    /(potpunij|vise informac|dodatni kontekst|bolje razumij|opcenit|općenit|za svaki slucaj|za svaki slučaj|zanimljiv|korisno znati|nice to have)/.test(
-      n,
-    );
-  const decisionSignal =
-    /(razlik|odluc|odluč|grana|sljedeci|sljedeći|test|elimin|hipotez|ako\b)/.test(
-      n,
-    );
-  return contextOnly && !decisionSignal;
-}
-
-function normalizeNextAction(text: string): string {
-  return normalizeForCompare(text)
-    .replace(/\b(onda|zatim|sljedeci|sljedeći|korak|test|ask|finish)\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function rationaleHasDistinctBranches(rationale: string): boolean {
-  if (!rationaleHasBranchJustification(rationale)) return false;
-  // Require at least two distinct action-ish phrases after ako/inače
-  const r = rationale.toLowerCase();
-  const parts = r.split(/\bako\b|ina[cč]e|u suprotnom|;/);
-  const actions = parts
-    .slice(1)
-    .map((p) =>
-      normalizeNextAction(
-        p.replace(/^(ne\s+)?/, "").split(/[.!\n]/)[0] ?? "",
-      ),
-    )
-    .filter((a) => a.length >= 8);
-  if (actions.length < 2) return rationaleHasBranchJustification(rationale);
-  return actions[0] !== actions[1];
-}
-
-function canSelectMeaningfulTestNow(state: ReturnType<typeof buildCaseState>): boolean {
-  if ((state.dtcs?.length ?? 0) > 0) return true;
-  if (state.completedTests.length > 0) return true;
-  // Intake measurements are context, not evidence, but still enough to pick a test.
-  if ((state.measurements?.length ?? 0) > 0) return true;
-  if (state.knownFacts.measurements.length > 0) return true;
-  if (state.answersToPreviousQuestions.length >= 1 && (state.symptoms?.length ?? 0) > 0) {
-    return true;
-  }
-  return false;
-}
-
-function asksForDtcInventoryOrRescanLocal(normalized: string): boolean {
-  const asksInventory =
-    /(ocitaj|ocitati|procitaj|skenir|scan|provjeri).{0,40}(dtc|kod|fault|gresk)/.test(
-      normalized,
-    ) ||
-    /(ima li|postoji li|koji su|navedi|popis).{0,40}(dtc|kod|fault|gresk)/.test(
-      normalized,
-    ) ||
-    /(dtc|kodovi|fault codes).{0,40}(ocitaj|ocitati|skenir|scan)/.test(
-      normalized,
-    );
-  if (!asksInventory) return false;
-  const asksDetailOnly =
-    /(status|opis|znacenj|značenj|freeze|pending|confirmed|aktiv|povijest|frame|subcode).{0,40}(dtc|kod|df\d|[pcbu][0-9a-f]{4})/.test(
-      normalized,
-    ) || /(status|opis|subcode).{0,30}(df\d|[pcbu][0-9a-f]{4})/.test(normalized);
-  return !asksDetailOnly;
-}
-
-function isDtcDetailQuestion(normalized: string): boolean {
-  return (
-    /(dtc|kod|gresk|fault|df\d|[pcbu][0-9a-f]{4})/.test(normalized) &&
-    /(status|opis|znacenj|značenj|subcode|freeze|pending|confirmed|aktivan|memoriran|povijest|frame)/.test(
-      normalized,
-    )
-  );
-}
-
-function hasKnownDtcDetailAlready(
-  state: ReturnType<typeof buildCaseState>,
-  normalizedQuestion: string,
-): boolean {
-  const wantsStatus = /(status|aktivan|memoriran|pending|confirmed|povijest)/.test(
-    normalizedQuestion,
-  );
-  const wantsDescription = /(opis|znacenj|značenj|description)/.test(
-    normalizedQuestion,
-  );
-  const wantsSubcode = /(subcode|podkod|freeze|frame)/.test(normalizedQuestion);
-  if (!wantsStatus && !wantsDescription && !wantsSubcode) return false;
-
-  const corpus = [
-    ...state.answersToPreviousQuestions.map((a) => a.answer),
-    ...state.userObservations,
-    ...state.testResults,
-  ]
-    .map((x) => normalizeForCompare(x))
-    .join(" | ");
-
-  if (!corpus) return false;
-  if (wantsStatus && /(aktivan|memoriran|pending|confirmed|povijest)/.test(corpus)) {
-    return true;
-  }
-  if (wantsDescription && /(opis|znacenj|značenj|znaci|znači)/.test(corpus)) {
-    return true;
-  }
-  if (wantsSubcode && /(subcode|podkod|freeze|frame)/.test(corpus)) {
-    return true;
-  }
-  return false;
-}
-
-function asksGenericSymptomsOrWarningLight(normalized: string): boolean {
-  return (
-    /(simptom|kako se ponasa|kada se javlja|opcenito|općenito|opisi kvar)/.test(
-      normalized,
-    ) ||
-    /(lampic|lampica|warning|mil|check engine|kontrolna)/.test(normalized)
-  );
-}
-
-/**
- * After enough real evidence, reject pure checklist TESTs that don't claim to differentiate.
- */
-export function findHypothesisDifferentiationIssue(
-  diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string; rationale?: string },
-): GuardIssue | null {
-  return issueOrNull(
-    "HYPOTHESIS",
-    hypothesisDifferentiationMessage(diagnosticCase, draft),
-  );
-}
-
-function hypothesisDifferentiationMessage(
-  diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string; rationale?: string },
-): string | null {
-  if (draft.actionType !== "TEST") return null;
-
-  const state = buildCaseState(diagnosticCase);
-  if (state.significantEvidenceCount < 2) return null;
-  if (state.completedTests.length < 1) return null;
-
-  const rationale = normalizeForCompare(draft.rationale ?? "");
-  const mentionsDifferentiate =
-    /(razlik|hipotez|leading|vodec|alternativ|ako .+ (onda|→|->)|potvrd|elimin|iskljuc)/i.test(
-      draft.rationale ?? "",
-    ) ||
-    rationale.includes("razlik") ||
-    rationale.includes("hipotez");
-
-  if (mentionsDifferentiate) return null;
-
-  // Soft gate: only when we already have multiple completed tests
-  if (state.completedTests.length < 2) return null;
-
-  return (
-    "Nakon više dokaza TEST mora u rationale jasno reći koje hipoteze razlikuje. " +
-    "Ne predlaži još jedan test samo zato što nije napravljen. " +
-    "Ako je LEADING dovoljno jak → FINISH; inače jedan potvrđujući test koji razdvaja alternative."
-  );
-}
-
-/**
- * Prefer direct boundary measurement on the suspect component before upstream/indirect checks.
- * Generic — no component-specific hardcoding. Conservative: only obvious upstream/indirect-first.
- */
-export function findTestPriorityIssue(
-  diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string; rationale?: string },
-): GuardIssue | null {
-  return issueOrNull("TEST_PRIORITY", testPriorityMessage(diagnosticCase, draft));
-}
-
-function testPriorityMessage(
-  diagnosticCase: DiagnosticCase,
-  draft: { actionType?: string; content?: string; rationale?: string },
-): string | null {
-  if (draft.actionType !== "TEST") return null;
-  const text = normalizeForCompare(
-    `${draft.content ?? ""} ${draft.rationale ?? ""}`,
-  );
-  if (!text) return null;
-
-  // Already measuring at component boundary → OK
-  const isDirectBoundary =
-    /(na (samoj )?komponent|na konektoru|na uticnici|na utikacu|granica komponent)/.test(
-      text,
-    ) ||
-    (/(napajanj|masa|uzemljen|ground|b\+|ulaz|signal)/.test(text) &&
-      /(izmjer|mjeren|napon|otpor|kontinuitet|provjer)/.test(text) &&
-      /(na |konektor|komponent|uticnic|utikac)/.test(text));
-
-  if (isDirectBoundary) return null;
-
-  const isUpstreamFirst =
-    /(relej|relay|osigurac|fuse|ecu naredb|pcm naredb|naredba (ecu|pcm|modula)|upravljacki (signal|dio|modul)|driver circuit|uzvodno|upstream|prije komponente)/.test(
-      text,
-    ) &&
-    !/(na konektoru|napajanj.{0,24}(konektor|komponent)|masa.{0,24}(konektor|komponent)|signal.{0,24}(konektor|komponent))/.test(
-      text,
-    );
-
-  const isWeakIndirect =
-    /(poslusaj|slušaj|zvuk |culi |vizualn|pogledaj je li|izgleda kao|cest uzrok|tipican uzrok|obicno je)/.test(
-      text,
-    ) && !/(izmjer|mjeren|napon|otpor|tlak|kontinuitet|signal)/.test(text);
-
-  if (!isUpstreamFirst && !isWeakIndirect) return null;
-
-  const state = buildCaseState(diagnosticCase);
-  const hasSuspectContext =
-    state.currentHypotheses.length > 0 ||
-    (state.dtcs?.length ?? 0) > 0 ||
-    /(ne radi|ne pali|ne aktiv|neisprav|kvar|ne daje|nema |ne pali se|gubi )/.test(
-      normalizeForCompare(state.originalComplaint),
-    );
-  if (!hasSuspectContext) return null;
-
-  // After a direct boundary check already done, upstream follow-up is allowed.
-  const alreadyDirect = state.completedTests.some((t) => {
-    const n = normalizeForCompare(`${t.test} ${t.result}`);
-    return (
-      /(napajanj|masa|ground|uzemljen|signal|napon|otpor|kontinuitet)/.test(n) &&
-      /(konektor|komponent|uticnic|utikac|na )/.test(n)
-    );
-  });
-  if (alreadyDirect) return null;
-
-  // Quick-check allowed only if rationale claims branch-changing speed tradeoff.
-  if (isWeakIndirect) {
-    const rationale = normalizeForCompare(draft.rationale ?? "");
-    const claimsQuickBranch =
-      /(brz|quick|trenutno|odmah).{0,40}(grana|sljedeci|mijenja|razlik)/.test(
-        rationale,
-      ) ||
-      /(grana|sljedeci|razlik).{0,40}(brz|quick)/.test(rationale);
-    if (claimsQuickBranch) return null;
-  }
-
-  return (
-    "TEST PRIORITY REJECT: postoji očito jednostavniji, sigurniji i direktniji mjerni test na granici sumnjive komponente " +
-    "(ulaz/napajanje/masa/signal) koji bolje razdvaja kvar komponente od napajanja/mase/upravljanja/instalacije. " +
-    "Ne idi prvo na relej/osigurač/ECU/zvuk/vizual dok to nije provjereno. Regeneriraj DIREKTAN boundary TEST (bez izmišljenih pinova/napona)."
-  );
-}
-
-/** Combined draft rejection reasons used before/after verifier. */
+/** Structural gates only. Semantic repeat, DTC, priority and hypothesis checks belong to the model and verifier. */
 export function findDraftQualityIssue(
   diagnosticCase: DiagnosticCase,
   draft: {
@@ -1291,17 +553,11 @@ export function findDraftQualityIssue(
     evidence?: string[] | null;
     insufficientEvidence?: boolean | null;
     confidence?: string | null;
+    diagnosisCertainty?: string | null;
+    diagnosisConfidence?: number | null;
     diagnosticTarget?: string | null;
     diagnosticGoal?: string | null;
     testMethod?: string | null;
-    askDecision?: {
-      whyNeeded?: string | null;
-      expectedAnswers?: string[] | null;
-      nextStepByAnswer?: Array<{
-        answer?: string;
-        nextAction?: string;
-      }> | null;
-    } | null;
     technicalClaims?: Array<{
       claim?: string | null;
       valueText?: string | null;
@@ -1320,91 +576,33 @@ export function findDraftQualityIssue(
       status?: string;
       note?: string | null;
       confidence?: number | null;
-      supportingEvidence?: string[] | null;
-      contradictingEvidence?: string[] | null;
     }> | null;
   },
   technicianOutcome?: TechnicianOutcome | null,
 ): GuardIssue | null {
   return (
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
-    findReasoningConsistencyIssue(diagnosticCase, draft) ??
-    findAlreadyKnownInfoIssue(diagnosticCase, draft) ??
-    findAskDecisionGateIssue(diagnosticCase, draft) ??
     findSafetyAndTechnicalRuleIssue(diagnosticCase, draft) ??
     findSpecGuardIssue(diagnosticCase, draft, technicianOutcome) ??
     findConfirmationGuardIssue(diagnosticCase, draft, technicianOutcome) ??
-    findObviousRepetition(diagnosticCase, draft) ??
-    findSimilarTestBranchIssue(diagnosticCase, draft) ??
-    findTestPriorityIssue(diagnosticCase, draft) ??
-    findHypothesisDifferentiationIssue(diagnosticCase, draft) ??
     findMissingTestMetaIssue(draft)
   );
 }
 
-/** Soft require TEST metadata on new drafts (legacy cases without meta still OK via fallback). */
-export function findMissingTestMetaIssue(draft: {
+function findMissingTestMetaIssue(draft: {
   actionType?: string;
   diagnosticTarget?: string | null;
   diagnosticGoal?: string | null;
   testMethod?: string | null;
 }): GuardIssue | null {
-  return issueOrNull("TEST_META", missingTestMetaMessage(draft));
-}
-
-function missingTestMetaMessage(draft: {
-  actionType?: string;
-  diagnosticTarget?: string | null;
-  diagnosticGoal?: string | null;
-  testMethod?: string | null;
-}): string | null {
   if (draft.actionType !== "TEST") return null;
   const missing: string[] = [];
   if (!draft.diagnosticTarget?.trim()) missing.push("diagnosticTarget");
   if (!draft.diagnosticGoal?.trim()) missing.push("diagnosticGoal");
   if (!draft.testMethod?.trim()) missing.push("testMethod");
   if (missing.length === 0) return null;
-  return (
-    `TEST metadata nedostaje (${missing.join(", ")}). ` +
-    "Dodaj kratka polja diagnosticTarget, diagnosticGoal, testMethod."
+  return issue(
+    "TEST_META",
+    `TEST metadata nedostaje (${missing.join(", ")}). Dodaj diagnosticTarget, diagnosticGoal i testMethod.`,
   );
-}
-
-function rationaleHasBranchJustification(rationale: string): boolean {
-  const r = rationale.toLowerCase();
-  if (!r) return false;
-  if (/(ako\s+.+\s*(→|->|onda)|ako\s+.+;\s*ako\s+)/i.test(rationale)) {
-    return true;
-  }
-  const akoCount = (r.match(/\bako\b/g) ?? []).length;
-  if (
-    akoCount >= 2 &&
-    /(test|izmjer|provjer|skenir|otpor|napon|signal)/i.test(r)
-  ) {
-    return true;
-  }
-  if (
-    akoCount >= 1 &&
-    /(inače|u suprotnom|ako ne|različiti?\s+test|drugačiji\s+test|grane?)/i.test(
-      r,
-    )
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/** True if one string largely contains the other (shared core). */
-function containsAsCore(a: string, b: string): boolean {
-  if (a.length < 16 || b.length < 16) return false;
-  if (a.includes(b) || b.includes(a)) return true;
-  const ta = new Set(a.split(" ").filter((w) => w.length > 3));
-  const tb = new Set(b.split(" ").filter((w) => w.length > 3));
-  if (ta.size === 0 || tb.size === 0) return false;
-  let inter = 0;
-  for (const w of ta) {
-    if (tb.has(w)) inter += 1;
-  }
-  const ratio = inter / Math.min(ta.size, tb.size);
-  return ratio >= 0.75 && inter >= 4;
 }

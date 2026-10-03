@@ -38,30 +38,23 @@ import {
   extractReferenceSpecClaims,
   mergeTechnicalSpecClaims,
 } from "./spec-guard";
-import { findReasoningConsistencyIssue } from "./reasoning-consistency-guard";
 import { isSafetyCriticalTestDraft } from "./safety-guard";
 import {
   downgradeUnjustifiedConfirmed,
   findConfirmationGuardIssue,
-  mapHypothesisUiStatus,
   resolveDiagnosisCertainty,
 } from "./confirmation-guard";
 import type {
-  AiActionType,
   DiagnosticCase,
   DiagnosticEngine,
   DiagnosticStep,
   DiagnoseResponse,
   DiagnosisCertainty,
   ExtractedCaseFacts,
-  ExtractedMeasurement,
-  Hypothesis,
   Observation,
   ObservationInput,
   RejectedDiagnosis,
   TechnicianOutcome,
-  TechnicianOutcomeStatus,
-  VehicleInfo,
 } from "./types";
 import {
   assertObservationAllowed,
@@ -69,6 +62,17 @@ import {
   stampObservation,
 } from "./observation";
 import { draftBlob } from "./text";
+import {
+  caseForTurn,
+  persistSemanticUpdate,
+  recordSemanticUpdate,
+  stripLegacyExtractedTechnicianOutcome,
+} from "./semantic-update";
+import { toDiagnosticStep } from "./step-draft";
+import {
+  parseVerifierIssues,
+  sanitizeVerifierCorrection,
+} from "./verifier-payload";
 import { issue, type GuardIssue } from "./guard-issue";
 
 /** Max Claude regenerations after the initial draft, per user step. */
@@ -87,8 +91,6 @@ type DiagnosticTurn = {
   /** True only on continue after a mechanic result. startCase is always false. */
   allowTechnicianOutcome: boolean;
 };
-
-const ALLOWED_ACTIONS: AiActionType[] = ["ASK", "TEST", "FINISH"];
 
 function hasTechnicalClaimsOrSpecs(draft: LlmStepPayload): boolean {
   const claims = Array.isArray(draft.technicalClaims) ? draft.technicalClaims : [];
@@ -154,7 +156,6 @@ function hasContradictoryStrongEvidence(draft: LlmStepPayload): boolean {
 type VerifierRouteReason =
   | "finish"
   | "rejected_diagnosis"
-  | "reasoning_consistency"
   | "technical_claim_or_spec"
   | "safety_critical"
   | "high_confidence"
@@ -171,9 +172,6 @@ function shouldCallVerifier(
   if (draft.actionType === "FINISH") return "finish";
   if ((diagnosticCase.rejectedDiagnoses?.length ?? 0) > 0) {
     return "rejected_diagnosis";
-  }
-  if (findReasoningConsistencyIssue(diagnosticCase, draft)) {
-    return "reasoning_consistency";
   }
   if (hasTechnicalClaimsOrSpecs(draft)) return "technical_claim_or_spec";
 
@@ -204,423 +202,20 @@ function shouldEscalateToStrongVerifier(
   if (draft.actionType === "ASK") return false;
   if (previousIssues.length === 0) return false;
 
-  const reasoningStillBroken = Boolean(
-    findReasoningConsistencyIssue(diagnosticCase, draft),
-  );
   const safetyUnclear = isSafetyCriticalTestDraft(draft);
   const contradictory = hasContradictoryStrongEvidence(draft);
 
   if (draft.actionType === "FINISH") {
-    // Primary already failed on a FINISH — escalate once if strong available.
     return true;
   }
 
   if (draft.actionType === "TEST") {
-    return reasoningStillBroken || safetyUnclear || contradictory;
+    return safetyUnclear || contradictory;
   }
 
   return false;
 }
 
-function parseHypotheses(
-  value: LlmStepPayload["hypotheses"],
-): Hypothesis[] | undefined {
-  if (!value || !Array.isArray(value)) return undefined;
-  const parsed: Hypothesis[] = [];
-  for (const h of value) {
-    if (!h) continue;
-    const label = (h.label ?? h.cause ?? "").trim();
-    if (!label) continue;
-    const confidence =
-      typeof h.confidence === "number" && Number.isFinite(h.confidence)
-        ? Math.max(0, Math.min(100, Math.round(h.confidence)))
-        : h.confidence === null
-          ? null
-          : undefined;
-    parsed.push({
-      label,
-      status: mapHypothesisUiStatus(h.status ?? "POSSIBLE"),
-      note: h.note ?? undefined,
-      confidence,
-      supportingEvidence: h.supportingEvidence?.filter(Boolean),
-      contradictingEvidence: h.contradictingEvidence?.filter(Boolean),
-    });
-  }
-  return parsed.length > 0 ? parsed : undefined;
-}
-
-function parseDiagnosisConfidence(
-  value: unknown,
-): number | null | undefined {
-  if (value === null) return null;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.min(100, Math.round(value)));
-  }
-  return undefined;
-}
-
-function toDiagnosticStep(
-  payload: LlmStepPayload,
-  stepId: string,
-): DiagnosticStep {
-  if (!ALLOWED_ACTIONS.includes(payload.actionType as AiActionType)) {
-    throw new Error(
-      `AI je vratio neispravan actionType: ${payload.actionType}. Očekivano ASK, TEST ili FINISH.`,
-    );
-  }
-  if (!payload.content?.trim() || !payload.rationale?.trim()) {
-    throw new Error("AI odgovor mora sadržavati content i rationale.");
-  }
-
-  const actionType = payload.actionType as AiActionType;
-  let diagnosisCertainty: DiagnosisCertainty | undefined;
-  let insufficientEvidence = payload.insufficientEvidence ?? undefined;
-  let diagnosisConfidence = parseDiagnosisConfidence(payload.diagnosisConfidence);
-
-  if (actionType === "FINISH") {
-    diagnosisCertainty = resolveDiagnosisCertainty(payload);
-    insufficientEvidence = diagnosisCertainty !== "CONFIRMED";
-    if (
-      diagnosisConfidence === undefined &&
-      payload.hypotheses &&
-      payload.hypotheses.length > 0
-    ) {
-      const top = [...payload.hypotheses]
-        .map((h) => h.confidence)
-        .filter((c): c is number => typeof c === "number")
-        .sort((a, b) => b - a)[0];
-      if (typeof top === "number") diagnosisConfidence = top;
-    }
-  }
-
-  return {
-    id: stepId,
-    actionType,
-    content: payload.content.trim(),
-    rationale: payload.rationale.trim(),
-    expectedResultHint: payload.expectedResultHint?.trim() || undefined,
-    confirmedFault:
-      actionType === "FINISH"
-        ? payload.confirmedFault?.trim() || payload.content.trim()
-        : undefined,
-    confidence: payload.confidence ?? undefined,
-    diagnosisCertainty,
-    diagnosisConfidence,
-    insufficientEvidence,
-    facts: payload.facts ?? undefined,
-    evidence: payload.evidence ?? undefined,
-    hypotheses: parseHypotheses(payload.hypotheses),
-    diagnosticTarget:
-      actionType === "TEST"
-        ? payload.diagnosticTarget?.trim() || undefined
-        : undefined,
-    diagnosticGoal:
-      actionType === "TEST"
-        ? payload.diagnosticGoal?.trim() || undefined
-        : undefined,
-    testMethod:
-      actionType === "TEST"
-        ? payload.testMethod?.trim() || undefined
-        : undefined,
-    testGuide:
-      actionType === "TEST"
-        ? payload.testGuide?.trim() || undefined
-        : undefined,
-  };
-}
-
-function parseAiYear(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const y = Math.round(value);
-    return y >= 1900 && y <= 2100 ? y : undefined;
-  }
-  if (typeof value === "string" && /^(19|20)\d{2}$/.test(value.trim())) {
-    return Number(value.trim());
-  }
-  return undefined;
-}
-
-function normalizeSymptomList(values: unknown): string[] {
-  if (!Array.isArray(values)) return [];
-  return values
-    .map((s) => (typeof s === "string" ? s.trim() : ""))
-    .filter(Boolean);
-}
-
-function dedupeSymptoms(values: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const v of values) {
-    const key = v.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(v);
-  }
-  return out;
-}
-
-/** Type validation only — the code is stored as stated, no namespace guessing. */
-function normalizeAiDtcList(values: unknown): string[] {
-  if (!Array.isArray(values)) return [];
-  const out: string[] = [];
-  for (const v of values) {
-    if (typeof v !== "string") continue;
-    const code = v.trim().replace(/\s+/g, " ").toUpperCase();
-    if (!code || code.length > 24) continue;
-    out.push(code);
-  }
-  return out;
-}
-
-function parseAiNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const n = Number(value.trim().replace(",", "."));
-    if (Number.isFinite(n)) return n;
-  }
-  return undefined;
-}
-
-/** Type validation only — `raw` stays verbatim, nothing is re-parsed from prose. */
-function normalizeAiMeasurementList(values: unknown): ExtractedMeasurement[] {
-  if (!Array.isArray(values)) return [];
-  const out: ExtractedMeasurement[] = [];
-  for (const v of values) {
-    if (!v || typeof v !== "object") continue;
-    const row = v as Record<string, unknown>;
-    const raw = typeof row.raw === "string" ? row.raw.trim() : "";
-    if (!raw || raw.length > 120) continue;
-
-    const measurement: ExtractedMeasurement = { raw };
-    const value = parseAiNumber(row.value);
-    if (value !== undefined) measurement.value = value;
-    if (typeof row.unit === "string" && row.unit.trim()) {
-      measurement.unit = row.unit.trim();
-    }
-    if (typeof row.parameter === "string" && row.parameter.trim()) {
-      measurement.parameter = row.parameter.trim();
-    }
-    out.push(measurement);
-  }
-  return out;
-}
-
-function measurementKey(m: ExtractedMeasurement | string): string {
-  if (typeof m === "string") return m.trim().toLowerCase();
-  return [m.parameter ?? "", m.raw].join("|").trim().toLowerCase();
-}
-
-const TECHNICIAN_OUTCOME_STATUSES: TechnicianOutcomeStatus[] = [
-  "FAULT_CONFIRMED",
-  "REPAIR_CONFIRMED",
-  "NOT_CONFIRMED",
-];
-
-/** Type-validate only — never infers confirmation from mechanic prose. */
-function parseTechnicianOutcome(raw: unknown): TechnicianOutcome | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const row = raw as Record<string, unknown>;
-  const statusRaw =
-    typeof row.status === "string"
-      ? row.status.trim().toUpperCase().replace(/[\s-]+/g, "_")
-      : "";
-  if (
-    !TECHNICIAN_OUTCOME_STATUSES.includes(statusRaw as TechnicianOutcomeStatus)
-  ) {
-    return undefined;
-  }
-  const outcome: TechnicianOutcome = {
-    status: statusRaw as TechnicianOutcomeStatus,
-  };
-  if (typeof row.fault === "string" && row.fault.trim()) {
-    outcome.fault = row.fault.trim();
-  }
-  if (typeof row.basis === "string" && row.basis.trim()) {
-    outcome.basis = row.basis.trim();
-  }
-  return outcome;
-}
-
-function dedupeMeasurements(
-  values: Array<ExtractedMeasurement | string>,
-): Array<ExtractedMeasurement | string> {
-  const out: Array<ExtractedMeasurement | string> = [];
-  const seen = new Set<string>();
-  for (const v of values) {
-    const key = measurementKey(v);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(v);
-  }
-  return out;
-}
-
-/**
- * Merge an explicit semanticUpdate into case facts. Pure — returns null when the
- * delta changes nothing. The model is the semantic extractor; this only validates
- * types, dedupes and merges.
- */
-function mergeSemanticUpdate(
-  prior: ExtractedCaseFacts,
-  update: NonNullable<LlmStepPayload["semanticUpdate"]>,
-): ExtractedCaseFacts | null {
-  let vehicle = prior.vehicle;
-  let symptoms = [...(prior.symptoms ?? [])];
-  let dtcs = [...(prior.dtcs ?? [])];
-  let measurements = [...(prior.measurements ?? [])];
-  let changed = false;
-
-  const rawVehicle = update.vehicle;
-  if (rawVehicle && typeof rawVehicle === "object") {
-    const patch: VehicleInfo = { ...vehicle };
-    let vehicleChanged = false;
-
-    const setField = <K extends keyof VehicleInfo>(
-      key: K,
-      value: VehicleInfo[K] | undefined,
-    ) => {
-      if (value === undefined || patch[key] === value) return;
-      patch[key] = value;
-      vehicleChanged = true;
-    };
-
-    if (typeof rawVehicle.make === "string" && rawVehicle.make.trim()) {
-      setField("make", rawVehicle.make.trim());
-    }
-    if (typeof rawVehicle.model === "string" && rawVehicle.model.trim()) {
-      setField("model", rawVehicle.model.trim());
-    }
-    setField("year", parseAiYear(rawVehicle.year));
-    if (typeof rawVehicle.engine === "string" && rawVehicle.engine.trim()) {
-      setField("engine", rawVehicle.engine.trim());
-    }
-    if (
-      typeof rawVehicle.mileage === "number" &&
-      Number.isFinite(rawVehicle.mileage)
-    ) {
-      setField("mileage", Math.round(rawVehicle.mileage));
-    }
-
-    if (vehicleChanged) {
-      vehicle = patch;
-      changed = true;
-    }
-  }
-
-  const toAdd = normalizeSymptomList(update.symptomsAdd);
-  if (toAdd.length) {
-    const merged = dedupeSymptoms([...symptoms, ...toAdd]);
-    if (merged.length !== symptoms.length) {
-      symptoms = merged;
-      changed = true;
-    }
-  }
-
-  const toRemove = normalizeSymptomList(update.symptomsRemove);
-  if (toRemove.length) {
-    const removeKeys = new Set(toRemove.map((s) => s.toLowerCase()));
-    const next = symptoms.filter((s) => !removeKeys.has(s.toLowerCase()));
-    if (next.length !== symptoms.length) {
-      symptoms = next;
-      changed = true;
-    }
-  }
-
-  const dtcsToAdd = normalizeAiDtcList(update.dtcsAdd);
-  if (dtcsToAdd.length) {
-    const merged = dedupeSymptoms([...dtcs, ...dtcsToAdd]);
-    if (merged.length !== dtcs.length) {
-      dtcs = merged;
-      changed = true;
-    }
-  }
-
-  const measurementsToAdd = normalizeAiMeasurementList(update.measurementsAdd);
-  if (measurementsToAdd.length) {
-    const merged = dedupeMeasurements([...measurements, ...measurementsToAdd]);
-    if (merged.length !== measurements.length) {
-      measurements = merged;
-      changed = true;
-    }
-  }
-
-  if (!changed) return null;
-
-  return {
-    vehicle,
-    symptoms: symptoms.length ? symptoms : undefined,
-    dtcs: dtcs.length ? dtcs : undefined,
-    measurements: measurements.length ? measurements : undefined,
-  };
-}
-
-/**
- * Fold a diagnostic draft's semanticUpdate into the turn. Only drafts from the
- * diagnostic model reach this, so the verifier never acts as extractor.
- */
-function recordSemanticUpdate(
-  turn: DiagnosticTurn,
-  diagnosticCase: DiagnosticCase,
-  draft: LlmStepPayload,
-): void {
-  if (turn.allowTechnicianOutcome) {
-    turn.technicianOutcome =
-      parseTechnicianOutcome(draft.semanticUpdate?.technicianOutcome) ?? null;
-  } else {
-    turn.technicianOutcome = null;
-  }
-
-  const update = draft.semanticUpdate;
-  if (!update || typeof update !== "object") return;
-  const merged = mergeSemanticUpdate(
-    turn.extracted ?? diagnosticCase.extracted ?? {},
-    update,
-  );
-  if (merged) turn.extracted = merged;
-}
-
-/**
- * Throwaway copy of the case carrying the turn's facts, so every part of the turn
- * judges the draft against the same state. Never persisted — a rejected draft
- * leaves no trace on the real case.
- */
-function caseForTurn(
-  turn: DiagnosticTurn,
-  diagnosticCase: DiagnosticCase,
-): DiagnosticCase {
-  const extracted = stripLegacyExtractedTechnicianOutcome(
-    turn.extracted ?? diagnosticCase.extracted,
-  );
-  if (!extracted) return diagnosticCase;
-  return { ...diagnosticCase, extracted };
-}
-
-/** Old clients may still send extracted.technicianOutcome — never treat it as active. */
-function stripLegacyExtractedTechnicianOutcome(
-  extracted: ExtractedCaseFacts | undefined | null,
-): ExtractedCaseFacts | undefined {
-  if (!extracted) return undefined;
-  if (!("technicianOutcome" in extracted)) return extracted;
-  const rest = { ...extracted };
-  delete (rest as { technicianOutcome?: unknown }).technicianOutcome;
-  return rest;
-}
-
-/** Persist case facts — only once the turn is accepted. Never persist technicianOutcome. */
-function persistSemanticUpdate(
-  diagnosticCase: DiagnosticCase,
-  turn: DiagnosticTurn,
-): void {
-  if (turn.extracted) {
-    diagnosticCase.extracted =
-      stripLegacyExtractedTechnicianOutcome(turn.extracted) ?? {};
-  } else if (diagnosticCase.extracted) {
-    diagnosticCase.extracted =
-      stripLegacyExtractedTechnicianOutcome(diagnosticCase.extracted) ?? {};
-  }
-}
-
-/** Guards evaluate the draft against the case including the turn's own facts. */
 function findDraftQualityIssueInTurn(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
@@ -716,163 +311,6 @@ async function regenerateWithClaude(
   );
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseVerifierIssues(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  const issues: string[] = [];
-  for (const item of raw) {
-    if (typeof item !== "string") continue;
-    issues.push(item);
-    if (issues.length >= 2) break;
-  }
-  return issues;
-}
-
-function readStringOrNull(
-  value: unknown,
-): { ok: true; value: string | null } | { ok: false } {
-  if (value === null || typeof value === "string") {
-    return { ok: true, value };
-  }
-  return { ok: false };
-}
-
-function readBooleanOrNull(
-  value: unknown,
-): { ok: true; value: boolean | null } | { ok: false } {
-  if (value === null || typeof value === "boolean") {
-    return { ok: true, value };
-  }
-  return { ok: false };
-}
-
-function readStringArrayOrNull(
-  value: unknown,
-): { ok: true; value: string[] | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (!Array.isArray(value)) return { ok: false };
-  const items: string[] = [];
-  for (const item of value) {
-    if (typeof item !== "string") return { ok: false };
-    items.push(item);
-  }
-  return { ok: true, value: items };
-}
-
-function parseTechnicalClaimsField(
-  raw: unknown,
-): LlmStepPayload["technicalClaims"] | undefined {
-  if (raw === null) return null;
-  if (!Array.isArray(raw)) return undefined;
-  const claims: NonNullable<LlmStepPayload["technicalClaims"]> = [];
-  for (const item of raw) {
-    if (!isPlainObject(item)) return undefined;
-    const claim: NonNullable<LlmStepPayload["technicalClaims"]>[number] = {};
-    if ("claim" in item) {
-      const parsed = readStringOrNull(item.claim);
-      if (!parsed.ok) return undefined;
-      claim.claim = parsed.value;
-    }
-    if ("valueText" in item) {
-      const parsed = readStringOrNull(item.valueText);
-      if (!parsed.ok) return undefined;
-      claim.valueText = parsed.value;
-    }
-    if ("sourceType" in item) {
-      const parsed = readStringOrNull(item.sourceType);
-      if (!parsed.ok) return undefined;
-      claim.sourceType = parsed.value;
-    }
-    if ("vehicleSpecific" in item) {
-      const parsed = readBooleanOrNull(item.vehicleSpecific);
-      if (!parsed.ok) return undefined;
-      claim.vehicleSpecific = parsed.value;
-    }
-    claims.push(claim);
-  }
-  return claims;
-}
-
-function parseSafetyPreconditionsField(
-  raw: unknown,
-): LlmStepPayload["safetyPreconditions"] | undefined {
-  if (raw === null) return null;
-  if (!isPlainObject(raw)) return undefined;
-  const parsed: NonNullable<LlmStepPayload["safetyPreconditions"]> = {};
-  if ("category" in raw) {
-    const category = readStringOrNull(raw.category);
-    if (!category.ok) return undefined;
-    parsed.category = category.value;
-  }
-  if ("warnings" in raw) {
-    const warnings = readStringArrayOrNull(raw.warnings);
-    if (!warnings.ok) return undefined;
-    parsed.warnings = warnings.value;
-  }
-  if ("requiredSteps" in raw) {
-    const steps = readStringArrayOrNull(raw.requiredSteps);
-    if (!steps.ok) return undefined;
-    parsed.requiredSteps = steps.value;
-  }
-  if ("needsVerifiedProcedure" in raw) {
-    const flag = readBooleanOrNull(raw.needsVerifiedProcedure);
-    if (!flag.ok) return undefined;
-    parsed.needsVerifiedProcedure = flag.value;
-  }
-  return parsed;
-}
-
-function sanitizeVerifierCorrection(
-  raw: unknown,
-): VerifierCorrectionPatch | null {
-  if (!isPlainObject(raw)) return null;
-  const patch: VerifierCorrectionPatch = {};
-
-  if ("content" in raw && typeof raw.content === "string") {
-    patch.content = raw.content;
-  }
-  if ("rationale" in raw && typeof raw.rationale === "string") {
-    patch.rationale = raw.rationale;
-  }
-  if ("expectedResultHint" in raw) {
-    const parsed = readStringOrNull(raw.expectedResultHint);
-    if (parsed.ok) patch.expectedResultHint = parsed.value;
-  }
-  if ("confirmedFault" in raw) {
-    const parsed = readStringOrNull(raw.confirmedFault);
-    if (parsed.ok) patch.confirmedFault = parsed.value;
-  }
-  if ("diagnosisCertainty" in raw) {
-    const parsed = readStringOrNull(raw.diagnosisCertainty);
-    if (parsed.ok) patch.diagnosisCertainty = parsed.value;
-  }
-  if ("diagnosisConfidence" in raw) {
-    const n = raw.diagnosisConfidence;
-    if (typeof n === "number" && Number.isFinite(n)) {
-      patch.diagnosisConfidence = Math.max(0, Math.min(100, n));
-    }
-  }
-  if (
-    "insufficientEvidence" in raw &&
-    typeof raw.insufficientEvidence === "boolean"
-  ) {
-    patch.insufficientEvidence = raw.insufficientEvidence;
-  }
-  if ("technicalClaims" in raw) {
-    const claims = parseTechnicalClaimsField(raw.technicalClaims);
-    if (claims !== undefined) patch.technicalClaims = claims;
-  }
-  if ("safetyPreconditions" in raw) {
-    const safety = parseSafetyPreconditionsField(raw.safetyPreconditions);
-    if (safety !== undefined) patch.safetyPreconditions = safety;
-  }
-
-  return Object.keys(patch).length > 0 ? patch : null;
-}
-
 function mergeVerifierCorrection(
   draft: LlmStepPayload,
   correction: VerifierCorrectionPatch,
@@ -934,22 +372,6 @@ async function verifyWithOpenAi(
     ? null
     : sanitizeVerifierCorrection(parsed.correction);
 
-  const merged = correction
-    ? mergeVerifierCorrection(draft, correction)
-    : draft;
-  const contradiction =
-    findReasoningConsistencyIssue(turnCase, draft) ??
-    (correction
-      ? findReasoningConsistencyIssue(turnCase, merged)
-      : null);
-  if (contradiction) {
-    return {
-      approved: false,
-      issues: [contradiction.message, ...issues].slice(0, 2),
-      correction: null,
-    };
-  }
-
   return { approved, issues, correction };
 }
 
@@ -978,106 +400,16 @@ async function applyConfirmationPolicy(
   } as LlmStepPayload;
 }
 
-/**
- * Safe backend fallback after strong reject / terminal verifier failure.
- * Never CONFIRMED. No further AI escalation.
- */
-function buildSafeVerifierFallback(
-  diagnosticCase: DiagnosticCase,
-  draft: LlmStepPayload,
-  issues: string[],
-  technicianOutcome?: TechnicianOutcome | null,
-): LlmStepPayload {
-  const issueSummary =
-    issues.filter(Boolean).slice(0, 2).join("; ") ||
-    "nedovoljno pouzdanih dokaza";
-
-  if (draft.actionType === "FINISH") {
-    let next: LlmStepPayload = {
-      ...draft,
-      actionType: "FINISH",
-      diagnosisCertainty: "LIKELY",
-      insufficientEvidence: true,
-      confidence: "medium",
-    };
-    const confIssue = findConfirmationGuardIssue(
-      diagnosticCase,
-      next,
-      technicianOutcome,
-    );
-    if (confIssue) {
-      next = {
-        ...downgradeUnjustifiedConfirmed(next, confIssue),
-        actionType: "FINISH",
-      } as LlmStepPayload;
-    }
-    if ((next.diagnosisCertainty ?? "").toUpperCase() === "CONFIRMED") {
-      next = {
-        ...next,
-        diagnosisCertainty: "LIKELY",
-        insufficientEvidence: true,
-      };
-    }
-    const certainty = resolveDiagnosisCertainty(next);
-    const supportedLikely =
-      certainty === "LIKELY" || certainty === "HIGH_CONFIDENCE";
-    return {
-      ...next,
-      diagnosisCertainty: supportedLikely ? certainty : "SUSPECTED",
-      insufficientEvidence: true,
-      confirmedFault:
-        next.confirmedFault?.trim() ||
-        "Vodeća sumnja (nije CONFIRMED — potreban dodatni dokaz)",
-      content:
-        `${supportedLikely ? "LIKELY" : "SUSPECTED"} / NEEDS CONFIRMATION: ` +
-        `${(next.content || next.confirmedFault || "vodeća sumnja").trim()}. ` +
-        `Verifier nije odobrio potvrdu. Potreban dodatni dokaz (${issueSummary}).`,
-      rationale: `Siguran fallback nakon verifier eskalacije — nema CONFIRMED bez dovoljnog dokaza. ${issueSummary}`,
-    };
-  }
-
-  return {
-    actionType: "ASK",
-    content:
-      "Prije sigurnog nastavka potreban je dodatni konkretan dokaz. Koje mjerenje ili opažanje možeš sada dodati?",
-    rationale: `Siguran fallback: verifier nije odobrio korak (${issueSummary}). Nema daljnje AI eskalacije.`,
-    expectedResultHint: "Konkretan rezultat mjerenja ili opažanja",
-    confirmedFault: null,
-    confidence: "low",
-    insufficientEvidence: true,
-    askDecision: {
-      whyNeeded:
-        "Bez dodatnog dokaza nije sigurno nastaviti nakon verifier odbijanja",
-      expectedAnswers: [
-        "Imam novo mjerenje/opažanje",
-        "Nemam dodatni dokaz sada",
-      ],
-      nextStepByAnswer: [
-        {
-          answer: "Imam novo mjerenje/opažanje",
-          nextAction: "TEST ili reevaluate prema novom dokazu",
-        },
-        {
-          answer: "Nemam dodatni dokaz sada",
-          nextAction: "FINISH LIKELY/SUSPECTED s insufficientEvidence",
-        },
-      ],
-    },
-    facts: draft.facts ?? null,
-    evidence: draft.evidence ?? null,
-    hypotheses: draft.hypotheses ?? null,
-  };
+function rejectUnapprovedDraft(issues: string[]): never {
+  const summary = issues.filter(Boolean).slice(0, 2).join("; ") || "odbijen";
+  throw new DiagnosticPipelineError(`Verifier nije odobrio draft: ${summary}`);
 }
 
 function isGuardIssueValue(value: GuardIssue | string | undefined): value is GuardIssue {
   return typeof value === "object" && value !== null && "code" in value;
 }
 
-function isTechnicianOutcomeIssue(guardIssue: GuardIssue | null | undefined): boolean {
-  return guardIssue?.code === "TECHNICIAN_OUTCOME";
-}
-
-/** Isolated retry copy — no ASK→TEST / keep-TEST helpers. */
+/** Isolated retry copy — structural FINISH invariant, not a new diagnosis. */
 const TECHNICIAN_OUTCOME_RETRY_ISSUES = [
   "Current mechanic result je semantički interpretiran kao FAULT_CONFIRMED/REPAIR_CONFIRMED.",
   "Ponovno evaluiraj cijeli CASE STATE i vrati ispravan FINISH ako ta potvrda i dalje vrijedi.",
@@ -1091,67 +423,32 @@ function technicianOutcomeRetryIssues(): Array<GuardIssue | string> {
   return [issue("TECHNICIAN_OUTCOME", first!), ...rest];
 }
 
-function buildGuardRetryIssues(
-  draft: LlmStepPayload,
-  guardIssue: GuardIssue | null,
-  extraIssues: GuardIssue[],
+function retryIssuesFor(
+  issue: GuardIssue | null,
+  extra: GuardIssue[],
 ): Array<GuardIssue | string> {
-  const all = [...(guardIssue ? [guardIssue] : []), ...extraIssues];
-  if (all.some((item) => item.code === "TECHNICIAN_OUTCOME")) {
+  const items: Array<GuardIssue | string> = [
+    ...(issue ? [issue] : []),
+    ...extra,
+  ];
+  if (items.some((item) => isGuardIssueValue(item) && item.code === "TECHNICIAN_OUTCOME")) {
     return technicianOutcomeRetryIssues();
   }
-
-  const askRejected =
-    draft.actionType === "ASK" || all.some((item) => item.code === "ASK_REJECT");
-  const safetyRejected = all.some((item) => item.code === "SAFETY_REJECT");
-  const goalRejected = all.some((item) => item.code === "GOAL_REPEAT");
-  const skippedMethodRepeat = all.some(
-    (item) => item.code === "SKIPPED_METHOD_REPEAT",
-  );
-
-  const goal = draft.diagnosticGoal?.trim();
-  const target = draft.diagnosticTarget?.trim();
-
-  return [
-    ...all,
-    askRejected
-      ? "ASK je odbijen backend gateom. actionType MORA biti TEST — odmah odaberi najbolji sljedeći dijagnostički test. Ne vraćaj ASK."
-      : "",
-    goalRejected
-      ? "Guard odbija trenutni diagnosticGoal — odaberi DRUGAČIJI diagnosticGoal (neovisna grana). Ne ponavljaj isti goal."
-      : "",
-    skippedMethodRepeat
-      ? "Skipped test s istim testMethod — predloži DRUGAČIJI testMethod za isti diagnosticGoal, ili novi goal."
-      : "",
-    safetyRejected
-      ? "SAFETY REJECT: isti TEST (isti diagnosticTarget + diagnosticGoal). Dodaj 1 kratku praktičnu rečenicu što napraviti PRIJE rada. Ne checklista. Ne izmišljaj wait time."
-      : "",
-    !goalRejected &&
-      !askRejected &&
-      draft.actionType === "TEST" &&
-      target &&
-      goal
-      ? `Quality/format fix: zadrži diagnosticTarget="${target}" i diagnosticGoal="${goal}"; popravi samo navedeni issue (content/safety/meta/format). Ne mijenjaj granu.`
-      : "",
-    !goalRejected &&
-      !askRejected &&
-      draft.actionType === "TEST" &&
-      (!target || !goal)
-      ? "Popravi issue; ako su diagnosticTarget/diagnosticGoal poznati, zadrži ih. Novu granu biraj samo ako je goal eksplicitno odbijen."
-      : "",
-    draft.actionType === "TEST" || askRejected
-      ? "Za TEST uvijek vrati diagnosticTarget, diagnosticGoal, testMethod."
-      : "",
-  ].filter((item) => item !== "");
+  if (items.some((item) => isGuardIssueValue(item) && item.code === "SAFETY_REJECT")) {
+    return [
+      ...items,
+      "Isti TEST. Dodaj 1 kratku praktičnu rečenicu što napraviti PRIJE rada. Ne checklista. Ne izmišljaj wait time.",
+    ];
+  }
+  if (items.some((item) => isGuardIssueValue(item) && item.code === "TEST_META")) {
+    return [
+      ...items,
+      "TEST mora imati diagnosticTarget, diagnosticGoal i testMethod.",
+    ];
+  }
+  return items;
 }
 
-/**
- * 3-tier pipeline:
- * 1) Claude proposes ASK/TEST/FINISH.
- * 2) Programmatic guards (bounded Claude retries).
- * 3) Primary verifier only when selective conditions match.
- * 4) Strong verifier at most once per case when still stuck; else safe fallback.
- */
 async function callVerifiedDiagnosticStep(
   diagnosticCase: DiagnosticCase,
   options?: { allowTechnicianOutcome?: boolean },
@@ -1206,7 +503,6 @@ async function callVerifiedDiagnosticStep(
         turn.technicianOutcome,
       );
 
-      // Turn accepted — only now do the model's case facts reach the real case.
       persistSemanticUpdate(diagnosticCase, turn);
       return toDiagnosticStep(draft, stepId);
     },
@@ -1305,12 +601,7 @@ async function runSelectiveVerifier(
     return runStrongVerifierOnce(turn, diagnosticCase, draft, collectedIssues);
   }
 
-  return buildSafeVerifierFallback(
-    turnCase,
-    draft,
-    collectedIssues,
-    turn.technicianOutcome,
-  );
+  rejectUnapprovedDraft(collectedIssues);
 }
 
 async function runStrongVerifierOnce(
@@ -1322,12 +613,7 @@ async function runStrongVerifierOnce(
   const turnCase = caseForTurn(turn, diagnosticCase);
   const strongModel = getStrongVerifierModel();
   if (!strongModel) {
-    return buildSafeVerifierFallback(
-      turnCase,
-      draft,
-      previousIssues,
-      turn.technicianOutcome,
-    );
+    rejectUnapprovedDraft(previousIssues);
   }
 
   diagnosticCase.strongVerifierUsed = true;
@@ -1340,9 +626,7 @@ async function runStrongVerifierOnce(
     reasonCalled: "strong_escalate",
   });
 
-  if (verdict.approved) {
-    return draft;
-  }
+  if (verdict.approved) return draft;
 
   if (verdict.correction) {
     const corrected = mergeVerifierCorrection(draft, verdict.correction);
@@ -1358,24 +642,14 @@ async function runStrongVerifierOnce(
         turn.technicianOutcome,
       );
     }
-    return buildSafeVerifierFallback(
-      turnCase,
-      draft,
-      [
-        ...previousIssues,
-        ...verdict.issues,
-        correctedIssue.message,
-      ],
-      turn.technicianOutcome,
-    );
+    rejectUnapprovedDraft([
+      ...previousIssues,
+      ...verdict.issues,
+      correctedIssue.message,
+    ]);
   }
 
-  return buildSafeVerifierFallback(
-    turnCase,
-    draft,
-    [...previousIssues, ...verdict.issues],
-    turn.technicianOutcome,
-  );
+  rejectUnapprovedDraft([...previousIssues, ...verdict.issues]);
 }
 
 async function ensureDraftPassesQualityGates(
@@ -1384,106 +658,37 @@ async function ensureDraftPassesQualityGates(
   initialDraft: LlmStepPayload,
   extraIssues: GuardIssue[] = [],
 ): Promise<LlmStepPayload> {
-  let draft = initialDraft;
+  let draft = await applyConfirmationPolicy(
+    caseForTurn(turn, diagnosticCase),
+    initialDraft,
+    turn.technicianOutcome,
+  );
+  let pending = [...extraIssues];
 
-  if (draft.actionType === "FINISH") {
-    const confIssue = findConfirmationGuardIssue(
+  for (;;) {
+    const issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
+    if (!issue && pending.length === 0) return draft;
+    if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
+      return finalizeAfterRetryLimit(turn, diagnosticCase, draft, issue);
+    }
+    draft = await regenerateWithClaude(
+      turn,
+      diagnosticCase,
+      draft,
+      retryIssuesFor(issue, pending),
+    );
+    pending = [];
+    draft = await applyConfirmationPolicy(
       caseForTurn(turn, diagnosticCase),
       draft,
       turn.technicianOutcome,
     );
-    if (confIssue) {
-      draft = {
-        ...downgradeUnjustifiedConfirmed(draft, confIssue),
-        actionType: "FINISH",
-      } as LlmStepPayload;
-    }
   }
-
-  let issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
-  let pendingExtra = [...extraIssues];
-  if (!issue && pendingExtra.length === 0) return draft;
-
-  if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
-    return finalizeAfterRetryLimit(turn, diagnosticCase, draft, issue);
-  }
-
-  draft = await regenerateWithClaude(
-    turn,
-    diagnosticCase,
-    draft,
-    buildGuardRetryIssues(draft, issue, pendingExtra),
-  );
-  pendingExtra = [];
-  issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
-
-  if (
-    draft.actionType === "ASK" &&
-    issue &&
-    !isTechnicianOutcomeIssue(issue) &&
-    turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES
-  ) {
-    draft = await regenerateWithClaude(
-      turn,
-      diagnosticCase,
-      draft,
-      [
-        issue,
-        "OBAVEZNO: actionType=TEST. Nemoj vraćati ASK. Odaberi najbolji diskriminirajući test iz CASE STATE.",
-      ],
-    );
-    issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
-  }
-
-  if (
-    issue?.code === "SAFETY_REJECT" &&
-    draft.actionType === "TEST" &&
-    turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES
-  ) {
-    draft = await regenerateWithClaude(
-      turn,
-      diagnosticCase,
-      draft,
-      [
-        issue,
-        "OBAVEZNO: actionType=TEST.",
-        "Dodaj 1 kratku praktičnu rečenicu u content (što napraviti PRIJE rada).",
-        "Ne checklista. Ne izmišljaj wait time/OEM proceduru.",
-        "technicalClaims[]: svaka tvrdnja mora imati ispravan sourceType.",
-      ],
-    );
-    issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
-  }
-
-  if (!issue) return draft;
-
-  if (turn.retriesUsed < MAX_DIAGNOSTIC_RETRIES) {
-    draft = await regenerateWithClaude(
-      turn,
-      diagnosticCase,
-      draft,
-      isTechnicianOutcomeIssue(issue)
-        ? technicianOutcomeRetryIssues()
-        : [
-            ...buildGuardRetryIssues(draft, issue, []),
-            "Ako completedTests snažno podupiru LEADING hipotezu → FINISH, ali BEZ izmišljenih OEM brojki; bez verifiedTechnicalSpecs ne smiješ CONFIRMED usporedbom measured vs expected.",
-            "Inače: jedan TEST koji razlikuje LEADING od najjače alternative.",
-            "U rationale navedi koje hipoteze razlikuješ.",
-            "Ne navodi NITI JEDAN vehicle-specific brojčani OEM/referentni raspon (Ω/V/bar/…) bez verifiedTechnicalSpecs.",
-            "Ako actionType=FINISH: insufficientEvidence=true; LIKELY / NEEDS CONFIRMATION bez UNVERIFIED spece.",
-          ],
-    );
-    issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
-    if (!issue) return draft;
-  }
-
-  return finalizeAfterRetryLimit(turn, diagnosticCase, draft, issue);
 }
 
 /**
- * Retry budget spent. A failing ASK/TEST is never turned into a FINISH — exhausted
- * retries must not invent a conclusion. An existing FINISH may only be softened
- * through the confirmation policy that already owns certainty.
+ * Retry budget spent. A failing ASK/TEST is never turned into a FINISH.
+ * An existing FINISH may only be softened by the confirmation policy.
  */
 async function finalizeAfterRetryLimit(
   turn: DiagnosticTurn,
