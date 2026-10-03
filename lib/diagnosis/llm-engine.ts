@@ -7,7 +7,6 @@ import {
 } from "./config";
 import {
   DiagnosticPipelineError,
-  InvalidContinueIntentError,
   ObservationConflictError,
 } from "./errors";
 import {
@@ -44,8 +43,6 @@ import { isSafetyCriticalTestDraft } from "./safety-guard";
 import {
   downgradeUnjustifiedConfirmed,
   findConfirmationGuardIssue,
-  isContinueAfterFinish,
-  isTechnicianRejection,
   mapHypothesisUiStatus,
   resolveDiagnosisCertainty,
 } from "./confirmation-guard";
@@ -60,12 +57,17 @@ import type {
   ExtractedMeasurement,
   Hypothesis,
   Observation,
+  ObservationInput,
   RejectedDiagnosis,
   TechnicianOutcome,
   TechnicianOutcomeStatus,
-  UserContinueIntent,
   VehicleInfo,
 } from "./types";
+import {
+  assertObservationAllowed,
+  sameObservation,
+  stampObservation,
+} from "./observation";
 import { draftBlob } from "./text";
 import { issue, type GuardIssue } from "./guard-issue";
 
@@ -1522,141 +1524,26 @@ function formatStepMessage(
 function dedupeObservationsByStepId(
   observations: Observation[],
 ): Observation[] {
-  const firstByStepId = new Map<string, string>();
+  const firstByStepId = new Map<string, Observation>();
   const out: Observation[] = [];
   for (const obs of observations) {
-    const firstText = firstByStepId.get(obs.stepId);
-    if (firstText !== undefined) {
+    const first = firstByStepId.get(obs.stepId);
+    if (first) {
       if (
         process.env.NODE_ENV === "development" &&
-        firstText !== obs.resultText.trim()
+        !sameObservation(first, obs)
       ) {
         console.warn(
-          "[diagnosis] dropping duplicate observation with different resultText for stepId",
+          "[diagnosis] dropping duplicate observation for stepId",
           obs.stepId,
         );
       }
       continue;
     }
-    firstByStepId.set(obs.stepId, obs.resultText.trim());
+    firstByStepId.set(obs.stepId, obs);
     out.push(obs);
   }
   return out;
-}
-
-const INTENT_ALLOWED_ON: Record<UserContinueIntent, readonly AiActionType[]> = {
-  SUBMIT_RESULT: ["ASK", "TEST"],
-  SKIP: ["ASK", "TEST"],
-  CANNOT_PERFORM: ["TEST"],
-  REJECT_DIAGNOSIS: ["FINISH"],
-  CONTINUE_AFTER_FINISH: ["FINISH"],
-};
-
-function assertIntentAllowedForStep(
-  intent: UserContinueIntent,
-  actionType: AiActionType,
-): void {
-  if (!INTENT_ALLOWED_ON[intent].includes(actionType)) {
-    throw new InvalidContinueIntentError(
-      `intent ${intent} nije dozvoljen za actionType ${actionType}`,
-    );
-  }
-}
-
-/** Identity for replay vs conflict. Legacy rows (no intent) stay resultText-only. */
-function observationCanonical(obs: {
-  intent?: UserContinueIntent;
-  resultText: string;
-  cannotPerformReason?: string;
-}): string {
-  if (!obs.intent) return `legacy\0${obs.resultText.trim()}`;
-  if (obs.intent === "SUBMIT_RESULT") {
-    return `SUBMIT_RESULT\0${obs.resultText.trim()}`;
-  }
-  if (obs.intent === "CANNOT_PERFORM") {
-    return `CANNOT_PERFORM\0${(obs.cannotPerformReason ?? "").trim()}`;
-  }
-  return obs.intent;
-}
-
-type ObservationWrite =
-  | { status: "created"; observations: Observation[] }
-  | { status: "replay"; observations: Observation[] };
-
-/**
- * One observation per step. Same canonical identity = replay.
- * Same step with a different identity = conflict. Does not call AI.
- */
-function writeStepObservation(
-  observations: Observation[],
-  stepId: string,
-  next: {
-    resultText: string;
-    intent?: UserContinueIntent;
-    cannotPerformReason?: string;
-  },
-): ObservationWrite {
-  const canonical = dedupeObservationsByStepId(observations);
-  const existing = canonical.find((o) => o.stepId === stepId);
-  if (existing) {
-    if (observationCanonical(existing) === observationCanonical(next)) {
-      return { status: "replay", observations: canonical };
-    }
-    throw new ObservationConflictError(
-      `Conflicting second result for step ${stepId}`,
-    );
-  }
-  return {
-    status: "created",
-    observations: [
-      ...canonical,
-      {
-        stepId,
-        resultText: next.resultText,
-        recordedAt: new Date().toISOString(),
-        ...(next.intent ? { intent: next.intent } : {}),
-        ...(next.intent === "CANNOT_PERFORM"
-          ? { cannotPerformReason: next.cannotPerformReason?.trim() ?? "" }
-          : {}),
-      },
-    ],
-  };
-}
-
-function replayContinueResponse(
-  diagnosticCase: DiagnosticCase,
-): DiagnoseResponse {
-  const last = diagnosticCase.steps[diagnosticCase.steps.length - 1] ?? null;
-  return {
-    case: diagnosticCase,
-    nextStep: last,
-    message: "Postojeći rezultat za ovaj korak.",
-  };
-}
-
-function displayTextForIntent(
-  intent: UserContinueIntent,
-  observation: { resultText?: string; cannotPerformReason?: string },
-): string {
-  switch (intent) {
-    case "SUBMIT_RESULT": {
-      const text = observation.resultText?.trim() ?? "";
-      if (!text) {
-        throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
-      }
-      return text;
-    }
-    case "SKIP":
-      return "Preskočeno.";
-    case "CANNOT_PERFORM": {
-      const reason = observation.cannotPerformReason?.trim();
-      return reason ? `Ne mogu izvesti: ${reason}` : "Ne mogu izvesti test.";
-    }
-    case "REJECT_DIAGNOSIS":
-      return "Dijagnoza odbijena.";
-    case "CONTINUE_AFTER_FINISH":
-      return "Nastavak dijagnostike.";
-  }
 }
 
 /** Fields scanned for locked technical-spec claims after an accepted step. */
@@ -1708,14 +1595,8 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
   async continueCase(
     diagnosticCase: DiagnosticCase,
-    observation: {
-      intent?: UserContinueIntent;
-      resultText?: string;
-      cannotPerformReason?: string;
-    },
+    observation: ObservationInput,
   ): Promise<DiagnoseResponse> {
-    const intent = observation.intent;
-
     const incoming: DiagnosticCase = {
       ...diagnosticCase,
       extracted:
@@ -1728,132 +1609,60 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       throw new Error("Slučaj nema aktivni korak za zabilježiti");
     }
 
-    if (intent) {
-      assertIntentAllowedForStep(intent, currentStep.actionType);
-    }
+    assertObservationAllowed(observation.kind, currentStep.actionType);
 
-    const trimmed = intent
-      ? displayTextForIntent(intent, observation)
-      : observation.resultText?.trim() ?? "";
-    if (!trimmed) {
-      throw new Error("Za nastavak dijagnoze potreban je rezultat ili odgovor");
-    }
-
-    const cannotPerformReason =
-      intent === "CANNOT_PERFORM"
-        ? observation.cannotPerformReason?.trim() ?? ""
-        : undefined;
-
-    const written = writeStepObservation(incoming.observations, currentStep.id, {
-      resultText: trimmed,
-      intent,
-      cannotPerformReason,
-    });
-    if (written.status === "replay") {
-      return replayContinueResponse(incoming);
-    }
-
-    const reopenAfterFinish =
-      currentStep.actionType === "FINISH" &&
-      (intent === "REJECT_DIAGNOSIS" ||
-        intent === "CONTINUE_AFTER_FINISH" ||
-        (intent == null &&
-          (isTechnicianRejection(trimmed) || isContinueAfterFinish(trimmed))));
-
-    if (incoming.status === "completed" && !reopenAfterFinish) {
-      return {
-        case: incoming,
-        nextStep: null,
-        message: "Slučaj je već završen.",
-      };
-    }
-
-    if (currentStep.actionType === "FINISH") {
-      if (!reopenAfterFinish) {
-        return {
-          case: {
-            ...incoming,
-            status: "completed",
-            confirmedFault: currentStep.confirmedFault,
-          },
-          nextStep: null,
-          message: "Slučaj označen kao riješen (FINISH).",
-        };
+    const nextObservation = stampObservation(currentStep.id, observation);
+    const existing = incoming.observations.find(
+      (item) => item.stepId === currentStep.id,
+    );
+    if (existing) {
+      if (!sameObservation(existing, nextObservation)) {
+        throw new ObservationConflictError(
+          `Conflicting second result for step ${currentStep.id}`,
+        );
       }
+      return { case: incoming, nextStep: currentStep };
+    }
 
-      const writtenObservations = written.observations;
-
-      const rejectedDiagnoses: RejectedDiagnosis[] = [
-        ...(incoming.rejectedDiagnoses ?? []),
-      ];
-      const rejected =
-        intent === "REJECT_DIAGNOSIS" ||
-        (intent == null && isTechnicianRejection(trimmed));
-      if (rejected) {
-        rejectedDiagnoses.push({
-          diagnosis:
-            currentStep.confirmedFault?.trim() || currentStep.content.trim(),
-          rejectedAtStep: currentStep.id,
-          reason: "technician_rejected",
-          rejectedAt: new Date().toISOString(),
-        });
-      }
-
-      const softenedSteps = incoming.steps.map((s) =>
-        s.id === currentStep.id
-          ? {
-              ...s,
-              diagnosisCertainty: "LIKELY" as DiagnosisCertainty,
-              insufficientEvidence: true,
-            }
-          : s,
-      );
-
-      const reopened: DiagnosticCase = {
-        ...incoming,
-        steps: softenedSteps,
-        status: "active",
-        confirmedFault: undefined,
-        rejectedDiagnoses,
-        observations: writtenObservations,
-      };
-
-      const nextStep = await callVerifiedDiagnosticStep(reopened, {
-        allowTechnicianOutcome: true,
+    const reopen =
+      observation.kind === "REJECT_DIAGNOSIS" ||
+      observation.kind === "CONTINUE_AFTER_FINISH";
+    const rejectedDiagnoses: RejectedDiagnosis[] = [
+      ...(incoming.rejectedDiagnoses ?? []),
+    ];
+    if (observation.kind === "REJECT_DIAGNOSIS") {
+      rejectedDiagnoses.push({
+        diagnosis:
+          currentStep.confirmedFault?.trim() || currentStep.content.trim(),
+        rejectedAtStep: currentStep.id,
+        reason: "technician_rejected",
+        rejectedAt: new Date().toISOString(),
       });
-      const isFinish = nextStep.actionType === "FINISH";
-      const updated: DiagnosticCase = {
-        ...reopened,
-        steps: [...reopened.steps, nextStep],
-        status: isFinish ? "completed" : "active",
-        confirmedFault: isFinish ? nextStep.confirmedFault : undefined,
-        technicalSpecClaims: mergeTechnicalSpecClaims(
-          reopened,
-          stepClaimText(nextStep),
-        ),
-        strongVerifierUsed: reopened.strongVerifierUsed,
-      };
-
-      return {
-        case: updated,
-        nextStep,
-        message: formatStepMessage(
-          nextStep.actionType,
-          updated,
-          ` (reevaluate after ${rejected ? "rejection" : "continue"})`,
-        ),
-      };
     }
-
-    const writtenObservations = written.observations;
 
     const caseWithObservation: DiagnosticCase = {
       ...incoming,
-      observations: writtenObservations,
+      observations: [...incoming.observations, nextObservation],
+      ...(reopen
+        ? {
+            steps: incoming.steps.map((step) =>
+              step.id === currentStep.id
+                ? {
+                    ...step,
+                    diagnosisCertainty: "LIKELY" as DiagnosisCertainty,
+                    insufficientEvidence: true,
+                  }
+                : step,
+            ),
+            status: "active" as const,
+            confirmedFault: undefined,
+            rejectedDiagnoses,
+          }
+        : {}),
     };
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation, {
-      allowTechnicianOutcome: true,
+      allowTechnicianOutcome: observation.kind === "RESULT",
     });
     const isFinish = nextStep.actionType === "FINISH";
     const updated: DiagnosticCase = {
@@ -1870,10 +1679,17 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       strongVerifierUsed: caseWithObservation.strongVerifierUsed,
     };
 
+    const suffix =
+      observation.kind === "REJECT_DIAGNOSIS"
+        ? " (reevaluate after rejection)"
+        : observation.kind === "CONTINUE_AFTER_FINISH"
+          ? " (reevaluate after continue)"
+          : "";
+
     return {
       case: updated,
       nextStep,
-      message: formatStepMessage(nextStep.actionType, updated),
+      message: formatStepMessage(nextStep.actionType, updated, suffix),
     };
   }
 }

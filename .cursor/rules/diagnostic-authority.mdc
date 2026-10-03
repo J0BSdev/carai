@@ -9,8 +9,8 @@ These four rules override convenience. Do not violate them.
 
 ## 1. AI owns semantics
 
-The diagnostic model interprets free-form mechanic text (complaint, result, confirmation).
-The backend does not infer meaning from that prose, except a minimal deterministic legacy fail-safe when a stored observation has no typed intent.
+The diagnostic model interprets free-form mechanic text (complaint and `RESULT` text).
+The backend does not infer meaning from that prose. Structured observation kinds are state, not prose.
 
 ```ts
 // BAD — backend decides the mechanic confirmed a fault
@@ -42,9 +42,9 @@ if (issue.code === "ASK_REJECT") { ... }
 
 Set `code` where the issue is created. `message` is for the model and logs only.
 
-## 4. UI intent is structured
+## 4. UI observation is structured
 
-A button click sends an intent enum. Do not turn a click into a fake free-text observation that the backend then parses.
+A button click sends an `Observation` kind. Do not turn a click into a fake free-text observation that the backend then parses.
 
 ```ts
 // BAD
@@ -52,8 +52,8 @@ onSkip={() => continue("Preskočeno za sada.")}
 onReject={() => continue("TECHNICIAN_REJECTED_DIAGNOSIS: ...")}
 
 // GOOD
-onSkip={() => continue({ intent: "SKIP" })}
-onReject={() => continue({ intent: "REJECT_DIAGNOSIS" })}
+onSkip={() => continue({ kind: "SKIP" })}
+onReject={() => continue({ kind: "REJECT_DIAGNOSIS" })}
 ```
 
-`SUBMIT_RESULT` is the only intent that carries mechanic prose. The model interprets that prose.
+`RESULT` is the only kind that carries mechanic prose. The model interprets that prose.

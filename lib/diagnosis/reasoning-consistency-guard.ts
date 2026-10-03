@@ -215,20 +215,6 @@ function opposite(a: Polarity, b: Polarity): boolean {
   return a !== b;
 }
 
-function isRealEvidenceResult(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-  return !(
-    n.includes("ne mogu izvesti") ||
-    n.includes("preskoc") ||
-    /\bskipped\b/.test(n) ||
-    /\bunavailable\b/.test(n) ||
-    n.includes("nije dostupan") ||
-    n.includes("cant perform") ||
-    n.includes("cannot perform")
-  );
-}
-
 function hasNewEvidenceAfterStep(
   diagnosticCase: DiagnosticCase,
   stepIndex: number,
@@ -238,7 +224,8 @@ function hasNewEvidenceAfterStep(
     diagnosticCase.steps.slice(stepIndex).map((s) => s.id),
   );
   const relevant = diagnosticCase.observations.filter(
-    (o) => stepIds.has(o.stepId) && isRealEvidenceResult(o.resultText),
+    (o): o is Extract<typeof o, { kind: "RESULT" }> =>
+      stepIds.has(o.stepId) && o.kind === "RESULT" && Boolean(o.text.trim()),
   );
   if (relevant.length === 0) return false;
 
@@ -251,7 +238,7 @@ function hasNewEvidenceAfterStep(
 
   // Prefer subject-linked evidence; also allow clear measurement results as new proof.
   return relevant.some((o) => {
-    const n = normalize(o.resultText);
+    const n = normalize(o.text);
     if (patterns.some((p) => p.test(n))) return true;
     return /\d/.test(n) && /(v|ohm|Ω|bar|ok|missing|fail|napon|otpor|signal|masa|napaj)/.test(n);
   });

@@ -1,14 +1,16 @@
 import {
   DIAGNOSTIC_UNAVAILABLE_MESSAGE,
-  InvalidContinueIntentError,
+  InvalidObservationError,
   OBSERVATION_CONFLICT_MESSAGE,
   ObservationConflictError,
-  USER_CONTINUE_INTENTS,
   type DiagnoseRequest,
   type DiagnosticCase,
-  type UserContinueIntent,
 } from "@/lib/diagnosis";
 import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
+import {
+  parseObservationInput,
+  parseStoredObservation,
+} from "@/lib/diagnosis/observation";
 
 function isDiagnosticCase(value: unknown): value is DiagnosticCase {
   if (!value || typeof value !== "object") return false;
@@ -23,11 +25,14 @@ function isDiagnosticCase(value: unknown): value is DiagnosticCase {
   );
 }
 
-function parseIntent(value: unknown): UserContinueIntent {
-  if (typeof value !== "string" || !USER_CONTINUE_INTENTS.includes(value as UserContinueIntent)) {
-    throw new Error("observation.intent nije valjan");
+function parseCase(value: unknown): DiagnosticCase {
+  if (!isDiagnosticCase(value)) {
+    throw new Error("case nije valjan");
   }
-  return value as UserContinueIntent;
+  return {
+    ...value,
+    observations: value.observations.map(parseStoredObservation),
+  };
 }
 
 function parseBody(body: unknown): DiagnoseRequest {
@@ -42,31 +47,14 @@ function parseBody(body: unknown): DiagnoseRequest {
     throw new Error('action mora biti "start" ili "continue"');
   }
 
-  const observation =
-    raw.observation && typeof raw.observation === "object"
-      ? (raw.observation as Record<string, unknown>)
-      : undefined;
-  const intent =
-    observation && "intent" in observation
-      ? parseIntent(observation.intent)
-      : undefined;
-  const resultText =
-    observation && typeof observation.resultText === "string"
-      ? observation.resultText
-      : undefined;
-  const cannotPerformReason =
-    observation && typeof observation.cannotPerformReason === "string"
-      ? observation.cannotPerformReason
-      : undefined;
-
   return {
     action,
     problemText: typeof raw.problemText === "string" ? raw.problemText : undefined,
-    case: isDiagnosticCase(raw.case) ? raw.case : undefined,
+    case: raw.case === undefined ? undefined : parseCase(raw.case),
     observation:
-      intent || resultText || cannotPerformReason
-        ? { intent, resultText, cannotPerformReason }
-        : undefined,
+      raw.observation === undefined
+        ? undefined
+        : parseObservationInput(raw.observation),
   };
 }
 
@@ -75,7 +63,7 @@ async function runPipeline(run: () => Promise<unknown>): Promise<Response> {
   try {
     return Response.json(await run());
   } catch (error) {
-    if (error instanceof InvalidContinueIntentError) {
+    if (error instanceof InvalidObservationError) {
       return Response.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof ObservationConflictError) {
@@ -124,26 +112,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const resultText = body.observation?.resultText?.trim();
-  const intent = body.observation?.intent;
-  if (!intent && !resultText) {
+  const observation = body.observation;
+  if (!observation) {
     return Response.json(
-      { error: "observation.resultText je obavezan kad je action continue" },
-      { status: 400 },
-    );
-  }
-  if (intent === "SUBMIT_RESULT" && !resultText) {
-    return Response.json(
-      { error: "observation.resultText je obavezan za SUBMIT_RESULT" },
+      { error: "observation je obavezan kad je action continue" },
       { status: 400 },
     );
   }
 
-  return runPipeline(() =>
-    engine.continueCase(diagnosticCase, {
-      intent,
-      resultText,
-      cannotPerformReason: body.observation?.cannotPerformReason,
-    }),
-  );
+  return runPipeline(() => engine.continueCase(diagnosticCase, observation));
 }

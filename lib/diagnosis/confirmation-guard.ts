@@ -62,30 +62,6 @@ export function resolveDiagnosisCertainty(
   return "LIKELY";
 }
 
-/** Legacy fail-safe only. New observations carry UserContinueIntent and must not be routed by this. */
-export function isTechnicianRejection(resultText: string): boolean {
-  const n = normalizeForCompare(resultText);
-  return (
-    n.includes("technician_rejected") ||
-    n.includes("technician rejected") ||
-    n.includes("odbija predlozenu dijagnozu") ||
-    n.includes("dijagnoza ne izgleda tocno") ||
-    n.includes("ne izgleda tocno") ||
-    n.includes("rejected_diagnosis")
-  );
-}
-
-/** Legacy fail-safe only. New observations carry UserContinueIntent and must not be routed by this. */
-export function isContinueAfterFinish(resultText: string): boolean {
-  const n = normalizeForCompare(resultText);
-  return (
-    n.includes("nastaviti dijagnostiku") ||
-    n.includes("nastavi testiranje") ||
-    n.includes("continue diagnosis") ||
-    n.includes("keep diagnosing")
-  );
-}
-
 export function diagnosisLabelKey(text: string): string {
   return normalizeForCompare(text)
     .replace(/\b(kvar|neispravan|fault|likely|high confidence|confirmed|suspected)\b/g, " ")
@@ -176,8 +152,8 @@ function countCompletedTestFamilies(diagnosticCase: DiagnosticCase): number {
   for (const step of diagnosticCase.steps) {
     if (step.actionType !== "TEST") continue;
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
-    if (!obs?.resultText) continue;
-    if (!isCompletedTestEvidence(step, obs.resultText)) continue;
+    if (obs?.kind !== "RESULT") continue;
+    if (!isCompletedTestEvidence(step, obs.text)) continue;
     families.add(diagnosticEvidenceFamilyKey(step));
   }
   return families.size;
@@ -199,7 +175,7 @@ function hasIndependentConfirmatorySignal(
   const answers = diagnosticCase.steps.filter((s) => {
     if (s.actionType !== "ASK") return false;
     return diagnosticCase.observations.some(
-      (o) => o.stepId === s.id && o.resultText?.trim(),
+      (o) => o.stepId === s.id && o.kind === "RESULT" && o.text.trim(),
     );
   }).length;
 
@@ -218,13 +194,9 @@ function observationsAfterRejection(
   if (rejected.length === 0) return 0;
   const last = rejected[rejected.length - 1];
   const after = last?.rejectedAt ? Date.parse(last.rejectedAt) : 0;
-  if (!after) {
-    // Fallback: any observation after rejection step
-    return diagnosticCase.observations.length;
-  }
-  return diagnosticCase.observations.filter(
-    (o) => Date.parse(o.recordedAt) > after,
-  ).length;
+  const results = diagnosticCase.observations.filter((o) => o.kind === "RESULT");
+  if (!after) return results.length;
+  return results.filter((o) => Date.parse(o.recordedAt) > after).length;
 }
 
 function newIndependentEvidenceSinceRejection(
@@ -239,19 +211,8 @@ function newIndependentEvidenceSinceRejection(
   for (const step of diagnosticCase.steps) {
     if (step.actionType !== "TEST") continue;
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
-    if (!obs?.resultText?.trim()) continue;
-    if (obs.intent === "SKIP" || obs.intent === "CANNOT_PERFORM") continue;
-    if (
-      obs.intent === "REJECT_DIAGNOSIS" ||
-      obs.intent === "CONTINUE_AFTER_FINISH"
-    ) {
-      continue;
-    }
-    if (!obs.intent) {
-      if (isTechnicianRejection(obs.resultText)) continue;
-      if (isContinueAfterFinish(obs.resultText)) continue;
-    }
-    if (!isCompletedTestEvidence(step, obs.resultText)) continue;
+    if (obs?.kind !== "RESULT" || !obs.text.trim()) continue;
+    if (!isCompletedTestEvidence(step, obs.text)) continue;
     if (!after || Date.parse(obs.recordedAt) > after) {
       // New test after rejection — treat as candidate independent evidence
       // Still not enough alone for auto-CONFIRMED; used only to unlock reconfirm path

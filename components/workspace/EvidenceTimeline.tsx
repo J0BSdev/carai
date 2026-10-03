@@ -23,6 +23,21 @@ type Item = {
   step?: DiagnosticStep;
 };
 
+function observationDisplay(obs: Observation): { title: string; result?: string } {
+  switch (obs.kind) {
+    case "RESULT":
+      return { title: obs.text, result: obs.text };
+    case "CANNOT_PERFORM":
+      return { title: obs.reason ?? "Ne mogu izvesti" };
+    case "SKIP":
+      return { title: "Preskočeno" };
+    case "REJECT_DIAGNOSIS":
+      return { title: "Dijagnoza odbijena" };
+    case "CONTINUE_AFTER_FINISH":
+      return { title: "Nastavak dijagnostike" };
+  }
+}
+
 function buildItems(c: DiagnosticCase): Item[] {
   const items: Item[] = [
     {
@@ -54,11 +69,12 @@ function buildItems(c: DiagnosticCase): Item[] {
 
     const obs = c.observations.find((o) => o.stepId === step.id);
     if (obs) {
+      const shown = observationDisplay(obs);
       items.push({
         key: `${step.id}-res`,
         kind: step.actionType === "TEST" ? "MJERENJE" : "REZULTAT",
-        title: obs.resultText,
-        result: obs.resultText,
+        title: shown.title,
+        result: shown.result,
         observation: obs,
         step,
       });

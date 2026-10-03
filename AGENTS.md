@@ -10,7 +10,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # Diagnostic authority
 
-- AI owns semantics. The backend does not interpret free-form mechanic text, except a legacy fail-safe when a stored observation has no typed intent.
+- AI owns semantics. The backend does not interpret free-form mechanic text. Only `Observation` kind `RESULT` carries that text.
 - Backend owns structure and invariants: state, enums, evidence provenance, retry limits, safety and spec guards.
 - Internal control flow uses typed codes and state. Never route on your own issue or error strings (`startsWith`, `includes`, regex).
-- A UI button sends a structured intent enum. Do not turn a click into fake free-text for the backend to parse.
+- A UI button sends a structured `Observation` kind. Do not turn a click into fake free-text for the backend to parse.

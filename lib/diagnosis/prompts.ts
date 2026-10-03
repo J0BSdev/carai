@@ -1,4 +1,5 @@
-import type { DiagnosticCase, TechnicianOutcome, UserContinueIntent } from "./types";
+import type { DiagnosticCase, Observation, TechnicianOutcome } from "./types";
+import { observationResultText } from "./observation";
 import { buildKnownFactsSnapshot, latestHypotheses } from "./known-facts";
 import { normalizeForCompare } from "./text";
 import {
@@ -27,7 +28,7 @@ import {
 export const DIAGNOSTIC_SYSTEM_PROMPT = `AI dijagnostički copilot za profesionalne mehaničare. ADAPTIVNA dijagnostika korak-po-korak (ne checklista/chatbot lista kvarova). Cilj: minimalan broj koraka do pouzdane dijagnoze.
 
 TOČNO JEDNA akcija po odgovoru: ASK (1 decision-critical pitanje) | TEST (1 test; ≤2–3 podprovjere samo ako ista fizička radnja) | FINISH (kad dokaz dovoljno podupire uzrok).
-Na continue nakon novog mechanic result-a: odredi semanticUpdate.technicianOutcome iz značenja ZADNJEG mechanic result + aktivnog koraka/hipoteza, zatim TI biraš ASK|TEST|FINISH. Backend NE parsira tekst i NE mijenja actionType. Na originalComplaint / prvom koraku technicianOutcome IZOSTAVI. Zatim REEVALUATE CIJELI CASE STATE. Bez budućeg plana/liste. Ne ponavljaj poznate podatke/testove/mjerenja. Hrvatski. Bez SEARCH_WEB. Ne tvrdi kvar / ne preporučuj skupu zamjenu zbog "čestog uzroka" bez dovoljno dokaza.
+Na continue nakon RESULT: odredi semanticUpdate.technicianOutcome iz značenja tog RESULT.text + aktivnog koraka/hipoteza, zatim TI biraš ASK|TEST|FINISH. SKIP/CANNOT_PERFORM/REJECT_DIAGNOSIS/CONTINUE_AFTER_FINISH nisu mechanic result. Backend NE parsira tekst i NE mijenja actionType. Na originalComplaint / prvom koraku technicianOutcome IZOSTAVI. Zatim REEVALUATE CIJELI CASE STATE. Bez budućeg plana/liste. Ne ponavljaj poznate podatke/testove/mjerenja. Hrvatski. Bez SEARCH_WEB. Ne tvrdi kvar / ne preporučuj skupu zamjenu zbog "čestog uzroka" bez dovoljno dokaza.
 
 DTC-FIRST: ako knownFacts.knownDtcCodes postoje — koristi odmah; ne rescan/popis DTC; ne opća simptom/lampica pitanja prije DTC traga; preferiraj TEST koji razlikuje uzroke tog DTC-a; ASK status/opis/freeze-frame samo ako nedostaje i decision-critical. Ne pitaj ponovno vehicle iz knownFacts.
 
@@ -48,7 +49,7 @@ FINISH: diagnosisCertainty SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED + diagnosi
 REJECTION (rejectedDiagnoses): ne CONFIRMED bez NOVOG neovisnog jakog dokaza; hipoteza smije LIKELY/POSSIBLE; prvo ASK "Što u prethodnom zaključku možda nije objašnjeno?" (ako nema odgovora); zatim diskriminirajući TEST; ne isti reasoning/test.
 
 semanticUpdate: TI si jedini extractor case fakata (backend ne parsira tekst). Uključi SAMO ako zadnji korisnički unos stvarno dodaje/ispravlja ono čega još nema u knownFacts ILI (samo na continue) ako postoji jasan technicianOutcome; inače izostavi cijeli objekt. Na originalComplaint / startCase: smiješ vehicle/symptoms/DTC/measurements; technicianOutcome IZOSTAVI. vehicle = samo eksplicitno navedena polja; symptomsAdd dodaje; symptomsRemove samo za eksplicitnu korekciju; dtcsAdd = kodovi TOČNO kako ih je mehaničar napisao (P0299, DF003, C40186) — ne izmišljaj prefiks ni kod iz golog broja; measurementsAdd = eksplicitna brojčana mjerenja: raw = verbatim; value/unit/parameter smiješ odrediti iz raw + konteksta trenutnog TEST-a. Ne pretvaraj jedinice. Ne izvodi mjerenje iz procjene/opisa. semanticUpdate (osim technicianOutcome) je samo state, NE dokaz.
-technicianOutcome (samo continue nakon novog mechanic result-a, u semanticUpdate): status FAULT_CONFIRMED = zadnji odgovor semantički potvrđuje konkretan uzrok (pristanak na aktivni test/hipotezu) — uz to vrati FINISH + fault ili confirmedFault; REPAIR_CONFIRMED = tehničar potvrdio uspješnu intervenciju / nestanak simptoma — TI formuliraš FINISH; NOT_CONFIRMED = odgovor eksplicitno kaže da nije to. Običan test PASS/FAIL/mjerenje, skip, nejasan odgovor ili originalComplaint → izostavi polje (backend tada stavlja null). fault = koji uzrok (iz odgovora ili aktivne hipoteze/koraka). basis = kratko zašto. technicianOutcome NE čini OEM spec VERIFIED, NE preživljava retry/reopen, NE daje permission idućem turnu.
+technicianOutcome (samo continue nakon RESULT.text, u semanticUpdate): status FAULT_CONFIRMED = zadnji RESULT semantički potvrđuje konkretan uzrok (pristanak na aktivni test/hipotezu) — uz to vrati FINISH + fault ili confirmedFault; REPAIR_CONFIRMED = tehničar potvrdio uspješnu intervenciju / nestanak simptoma — TI formuliraš FINISH; NOT_CONFIRMED = RESULT eksplicitno kaže da nije to. history.kind SKIP, CANNOT_PERFORM, REJECT_DIAGNOSIS i CONTINUE_AFTER_FINISH nisu mechanic result i nisu dokaz — technicianOutcome izostavi. Običan PASS/FAIL/mjerenje, nejasan RESULT ili originalComplaint → izostavi polje (backend tada stavlja null). fault = koji uzrok (iz RESULT ili aktivne hipoteze/koraka). basis = kratko zašto. technicianOutcome NE čini OEM spec VERIFIED, NE preživljava retry/reopen, NE daje permission idućem turnu.
 
 HIPOTEZE (skipped≠dokaz): interno max 3 kad ima ≥2 značajna dokaza (LIKELY|POSSIBLE|WEAK|RULED_OUT; confidence 0–100|null, ne zbroj 100). Status/confidence samo iz dokaza.
 JSON hypotheses COMPACT: max 3, samo label + status + confidence. Bez supportingEvidence, contradictingEvidence i note po defaultu. Ne facts/evidence.
@@ -68,13 +69,8 @@ ASK — obavezno: actionType, content, rationale, askDecision (whyNeeded; ≥2 e
 FINISH — obavezno: actionType, content, rationale, confirmedFault, diagnosisCertainty, diagnosisConfidence, insufficientEvidence. Ostala polja (facts/evidence/technicalClaims) samo ako ih stvarno trebaš.
 {"actionType":"FINISH","content":"…","rationale":"…","confirmedFault":"…","diagnosisCertainty":"LIKELY","diagnosisConfidence":40,"insufficientEvidence":true,"hypotheses":[{"label":"…","status":"LIKELY","confidence":40},{"label":"…","status":"POSSIBLE","confidence":25}]}`;
 
-function observationIsSkipped(
-  obs: { intent?: UserContinueIntent; resultText?: string } | undefined,
-): boolean {
-  if (!obs) return false;
-  if (obs.intent === "SKIP" || obs.intent === "CANNOT_PERFORM") return true;
-  if (obs.intent) return false;
-  return Boolean(obs.resultText && isSkippedOrUnavailableResult(obs.resultText));
+function observationIsSkipped(obs: Observation | undefined): boolean {
+  return obs?.kind === "SKIP" || obs?.kind === "CANNOT_PERFORM";
 }
 
 /**
@@ -112,7 +108,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
   }> = [];
   const skippedUnavailableTests: Array<{
     test: string;
-    reason: string;
+    reason?: string;
     diagnosticTarget?: string;
     diagnosticGoal?: string;
     testMethod?: string;
@@ -129,7 +125,8 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     content: string;
     result: string | null;
     resultKind: StepResultKind;
-    intent?: UserContinueIntent;
+    kind?: Observation["kind"];
+    reason?: string;
     diagnosticTarget?: string;
     diagnosticGoal?: string;
     testMethod?: string;
@@ -139,33 +136,34 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
 
   for (const step of diagnosticCase.steps) {
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
-    const result = obs?.resultText ?? null;
+    const result = observationResultText(obs);
     const skipped = observationIsSkipped(obs);
     const stepLabel =
       step.actionType === "TEST"
         ? step.recommendedTest?.name?.trim() || step.content
         : step.content;
 
-    // Skipped wins; otherwise a TEST result is interpreted in its own step context.
+    // Only RESULT text is interpreted. Structured kinds are state, not evidence.
     const interpretation =
-      result && !skipped && step.actionType === "TEST"
+      result && step.actionType === "TEST"
         ? interpretTestResult(step, result)
         : null;
 
     let resultKind: StepResultKind = "none";
-    if (result) {
-      if (skipped) resultKind = "skipped";
-      else if (interpretation) {
-        resultKind = RESULT_KIND_BY_INTERPRETATION[interpretation.kind];
-      } else resultKind = "answer";
-    }
+    if (skipped) resultKind = "skipped";
+    else if (interpretation) {
+      resultKind = RESULT_KIND_BY_INTERPRETATION[interpretation.kind];
+    } else if (result) resultKind = "answer";
 
     stepHistory.push({
       actionType: step.actionType,
       content: stepLabel,
       result,
       resultKind,
-      ...(obs?.intent ? { intent: obs.intent } : {}),
+      ...(obs ? { kind: obs.kind } : {}),
+      ...(obs?.kind === "CANNOT_PERFORM" && obs.reason
+        ? { reason: obs.reason }
+        : {}),
       ...(step.diagnosticTarget
         ? { diagnosticTarget: step.diagnosticTarget }
         : {}),
@@ -176,7 +174,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     previousDiagnosticActions.push({
       actionType: step.actionType,
       content: stepLabel,
-      outcome: !result
+      outcome: !obs
         ? "pending"
         : skipped
           ? "skipped"
@@ -184,38 +182,43 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
             ? interpretation.kind === "AMBIGUOUS"
               ? "ambiguous"
               : "result"
-            : "answered",
+            : result
+              ? "answered"
+              : "pending",
     });
 
     if (step.actionType === "ASK") {
       questionsAsked.push(step.content);
-      if (result && !skipped) {
+      if (result) {
         answers.push({ question: step.content, answer: result });
       }
     }
 
-    if (step.actionType === "TEST") {
-      if (result) {
-        const meta = {
-          ...(step.diagnosticTarget
-            ? { diagnosticTarget: step.diagnosticTarget }
+    if (step.actionType === "TEST" && obs) {
+      const meta = {
+        ...(step.diagnosticTarget
+          ? { diagnosticTarget: step.diagnosticTarget }
+          : {}),
+        ...(step.diagnosticGoal
+          ? { diagnosticGoal: step.diagnosticGoal }
+          : {}),
+        ...(step.testMethod ? { testMethod: step.testMethod } : {}),
+      };
+      if (skipped) {
+        skippedUnavailableTests.push({
+          test: stepLabel,
+          ...(obs.kind === "CANNOT_PERFORM" && obs.reason
+            ? { reason: obs.reason }
             : {}),
-          ...(step.diagnosticGoal
-            ? { diagnosticGoal: step.diagnosticGoal }
-            : {}),
-          ...(step.testMethod ? { testMethod: step.testMethod } : {}),
-        };
-        if (skipped) {
-          skippedUnavailableTests.push({
-            test: stepLabel,
-            reason: result,
-            ...meta,
-          });
-        } else if (interpretation && interpretation.kind !== "AMBIGUOUS") {
-          // AMBIGUOUS stays out of evidence; raw text remains in history/observations.
-          completedTests.push({ test: stepLabel, result, ...meta });
-          if (interpretation.kind === "VALUE") measurements.push(result);
-        }
+          ...meta,
+        });
+      } else if (
+        result &&
+        interpretation &&
+        interpretation.kind !== "AMBIGUOUS"
+      ) {
+        completedTests.push({ test: stepLabel, result, ...meta });
+        if (interpretation.kind === "VALUE") measurements.push(result);
       }
     }
   }
@@ -240,9 +243,9 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     dtcs: knownFacts.knownDtcCodes,
     symptoms: knownFacts.symptoms,
     knownFacts,
-    userObservations: diagnosticCase.observations
-      .filter((o) => !observationIsSkipped(o))
-      .map((o) => o.resultText),
+    userObservations: diagnosticCase.observations.flatMap((o) =>
+      o.kind === "RESULT" ? [o.text] : [],
+    ),
     answersToPreviousQuestions: answers,
     questionsAlreadyAsked: questionsAsked,
     completedTests,
@@ -285,7 +288,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     instruction:
       diagnosticCase.observations.length === 0
         ? "Start from originalComplaint. Never extract technicianOutcome from the complaint. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. FINISH uses diagnosisCertainty. Do not invent OEM numbers."
-        : "Extract technicianOutcome for THIS turn only from the last mechanic result + active step, then you choose ASK|TEST|FINISH. Backend does not rewrite actionType. If history.intent is set, that is the structured user action — do not infer SKIP/REJECT/CONTINUE from result text. FAULT_CONFIRMED/REPAIR_CONFIRMED → FINISH with your own diagnosis text. Then REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. CONFIRMED is rare. Respect rejectedDiagnoses. Do not invent OEM numbers.",
+        : "technicianOutcome only from the latest RESULT text. history.kind SKIP, CANNOT_PERFORM, REJECT_DIAGNOSIS and CONTINUE_AFTER_FINISH are structured state, not mechanic prose and not evidence. Backend does not rewrite actionType. FAULT_CONFIRMED/REPAIR_CONFIRMED → FINISH with your own diagnosis text. Then REEVALUATE all evidence. Use knownFacts — never re-ask known DTCs/vehicle facts already listed. CONFIRMED is rare. Respect rejectedDiagnoses. Do not invent OEM numbers.",
   };
 }
 
@@ -310,7 +313,8 @@ function detailedHistoryRow(s: CaseStepHistoryRow): Record<string, unknown> {
   };
   if (s.result != null) row.result = s.result;
   if (s.resultKind !== "none") row.resultKind = s.resultKind;
-  if (s.intent) row.intent = s.intent;
+  if (s.kind) row.kind = s.kind;
+  if (s.reason) row.reason = s.reason;
   if (s.diagnosticTarget) row.diagnosticTarget = s.diagnosticTarget;
   if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
   if (s.testMethod) row.testMethod = s.testMethod;
@@ -327,7 +331,8 @@ function compactHistoryLedgerRow(s: CaseStepHistoryRow): Record<string, unknown>
   if (s.diagnosticGoal) row.diagnosticGoal = s.diagnosticGoal;
   if (s.testMethod) row.testMethod = s.testMethod;
   if (s.resultKind !== "none") row.resultKind = s.resultKind;
-  if (s.intent) row.intent = s.intent;
+  if (s.kind) row.kind = s.kind;
+  if (s.reason) row.reason = s.reason;
   const shortResult = shortLedgerText(s.result);
   if (shortResult) row.result = shortResult;
 
@@ -475,8 +480,8 @@ export function countTrailingAnsweredAsks(
     const step = diagnosticCase.steps[i];
     if (!step || step.actionType !== "ASK") break;
     const obs = diagnosticCase.observations.find((o) => o.stepId === step.id);
-    if (!obs?.resultText?.trim()) break;
-    if (observationIsSkipped(obs)) break;
+    const answer = observationResultText(obs);
+    if (!answer) break;
     count += 1;
   }
   return count;
@@ -668,7 +673,8 @@ export function buildVerifierUserPrompt(
     activeStep: lastStep
       ? { actionType: lastStep.actionType, content: lastStep.content }
       : null,
-    lastMechanicResult: lastObs?.resultText ?? null,
+    lastMechanicResult: observationResultText(lastObs),
+    observationKind: lastObs?.kind ?? null,
   };
 
   return [

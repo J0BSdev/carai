@@ -6,7 +6,7 @@ import type {
   DiagnoseResponse,
   DiagnosticCase,
   DiagnosticStep,
-  UserContinueIntent,
+  ObservationInput,
 } from "@/lib/diagnosis";
 import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis/errors";
 import {
@@ -252,16 +252,12 @@ export default function DiagnosticScreen() {
   }
 
   function handleContinue(
-    observation: {
-      intent: UserContinueIntent;
-      resultText?: string;
-      cannotPerformReason?: string;
-    },
+    observation: ObservationInput,
     caseOverride?: DiagnosticCase,
   ) {
     const base = caseOverride ?? diagnosticCase;
     if (!base) return;
-    if (observation.intent === "SUBMIT_RESULT" && !observation.resultText?.trim()) {
+    if (observation.kind === "RESULT" && !observation.text.trim()) {
       setError("Unesi rezultat prije nastavka.");
       return;
     }
@@ -282,12 +278,11 @@ export default function DiagnosticScreen() {
     setFailedRequest(null);
   }
 
-  function reopenAndContinue(intent: "REJECT_DIAGNOSIS" | "CONTINUE_AFTER_FINISH") {
+  function reopenAndContinue(
+    kind: "REJECT_DIAGNOSIS" | "CONTINUE_AFTER_FINISH",
+  ) {
     if (!diagnosticCase || !finishStep) return;
-    handleContinue({ intent }, {
-      ...diagnosticCase,
-      status: "active",
-    });
+    handleContinue({ kind });
   }
 
   useEffect(() => {
@@ -477,10 +472,10 @@ export default function DiagnosticScreen() {
                 step={nextStep}
                 stepNumber={diagnosticCase.steps.length}
                 onSubmitResult={(text) =>
-                  handleContinue({ intent: "SUBMIT_RESULT", resultText: text })
+                  handleContinue({ kind: "RESULT", text })
                 }
                 onCantPerform={() => setCantOpen(true)}
-                onSkip={() => handleContinue({ intent: "SKIP" })}
+                onSkip={() => handleContinue({ kind: "SKIP" })}
                 onHowTo={() => setHowToOpen(true)}
               />
             )}
@@ -533,7 +528,7 @@ export default function DiagnosticScreen() {
           onClose={() => setResultOpen(false)}
           step={nextStep}
           onSubmit={(result) =>
-            handleContinue({ intent: "SUBMIT_RESULT", resultText: result })
+            handleContinue({ kind: "RESULT", text: result })
           }
         />
       )}
@@ -542,10 +537,11 @@ export default function DiagnosticScreen() {
         open={cantOpen}
         onClose={() => setCantOpen(false)}
         onSubmit={(reason) =>
-          handleContinue({
-            intent: "CANNOT_PERFORM",
-            cannotPerformReason: reason,
-          })
+          handleContinue(
+            reason.trim()
+              ? { kind: "CANNOT_PERFORM", reason: reason.trim() }
+              : { kind: "CANNOT_PERFORM" },
+          )
         }
       />
 

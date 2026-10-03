@@ -12,20 +12,18 @@ export type {
   Hypothesis,
   HypothesisStatus,
   Observation,
+  ObservationInput,
   RecommendedTest,
   RejectedDiagnosis,
   SourceRef,
   TechnicianOutcome,
   TechnicianOutcomeStatus,
-  UserContinueIntent,
   VehicleInfo,
 } from "./types";
 
 export {
   DIAGNOSTIC_UNAVAILABLE_MESSAGE,
   OBSERVATION_CONFLICT_MESSAGE,
-  InvalidContinueIntentError,
+  InvalidObservationError,
   ObservationConflictError,
 } from "./errors";
-
-export { USER_CONTINUE_INTENTS } from "./types";

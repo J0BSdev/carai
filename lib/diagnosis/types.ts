@@ -127,15 +127,43 @@ export interface DiagnosticStep {
   testGuide?: string;
 }
 
-export interface Observation {
-  stepId: string;
-  resultText: string;
-  recordedAt: string;
-  /** Absent on observations saved before typed intents. */
-  intent?: UserContinueIntent;
-  /** Structured reason for CANNOT_PERFORM. Not parsed back out of resultText. */
-  cannotPerformReason?: string;
-}
+/** One recorded user action. Only RESULT carries mechanic prose. */
+export type Observation =
+  | {
+      kind: "RESULT";
+      stepId: string;
+      text: string;
+      recordedAt: string;
+    }
+  | {
+      kind: "SKIP";
+      stepId: string;
+      recordedAt: string;
+    }
+  | {
+      kind: "CANNOT_PERFORM";
+      stepId: string;
+      reason?: string;
+      recordedAt: string;
+    }
+  | {
+      kind: "REJECT_DIAGNOSIS";
+      stepId: string;
+      recordedAt: string;
+    }
+  | {
+      kind: "CONTINUE_AFTER_FINISH";
+      stepId: string;
+      recordedAt: string;
+    };
+
+/** Continue payload. Server stamps stepId and recordedAt. */
+export type ObservationInput = {
+  [K in Observation["kind"]]: Omit<
+    Extract<Observation, { kind: K }>,
+    "stepId" | "recordedAt"
+  >;
+}[Observation["kind"]];
 
 export type SpecVerificationStatus = "VERIFIED" | "UNVERIFIED";
 
@@ -189,31 +217,11 @@ export interface DiagnosticCase {
 /** HTTP API body action (start/continue case), not AI actionType. */
 export type DiagnoseAction = "start" | "continue";
 
-/** Why the mechanic continued. Button clicks use an enum, not fake prose. */
-export type UserContinueIntent =
-  | "SUBMIT_RESULT"
-  | "SKIP"
-  | "CANNOT_PERFORM"
-  | "REJECT_DIAGNOSIS"
-  | "CONTINUE_AFTER_FINISH";
-
-export const USER_CONTINUE_INTENTS: UserContinueIntent[] = [
-  "SUBMIT_RESULT",
-  "SKIP",
-  "CANNOT_PERFORM",
-  "REJECT_DIAGNOSIS",
-  "CONTINUE_AFTER_FINISH",
-];
-
 export interface DiagnoseRequest {
   action: DiagnoseAction;
   problemText?: string;
   case?: DiagnosticCase;
-  observation?: {
-    intent?: UserContinueIntent;
-    resultText?: string;
-    cannotPerformReason?: string;
-  };
+  observation?: ObservationInput;
 }
 
 export interface DiagnoseResponse {
@@ -227,10 +235,6 @@ export interface DiagnosticEngine {
   startCase(problemText: string): Promise<DiagnoseResponse>;
   continueCase(
     diagnosticCase: DiagnosticCase,
-    observation: {
-      intent?: UserContinueIntent;
-      resultText?: string;
-      cannotPerformReason?: string;
-    },
+    observation: ObservationInput,
   ): Promise<DiagnoseResponse>;
 }
