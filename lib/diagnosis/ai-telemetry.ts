@@ -157,7 +157,6 @@ function formatCost(cost: number | null): string {
 const GUARD_LOG_NAME: Record<GuardIssueCode, string> = {
   TECHNICIAN_OUTCOME: "technician_outcome",
   SPEC: "spec_guard",
-  SAFETY: "safety",
 };
 
 /** Map a backend guard issue to a short guard id for retry logs. */

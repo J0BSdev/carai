@@ -1,14 +1,7 @@
 import type { DiagnosticCase, Hypothesis, Observation, TechnicianOutcome } from "./types";
 import { observationResultText } from "./observation";
-import {
-  collectHistoricalReferenceClaims,
-  findSpecGuardIssue,
-} from "./spec-guard";
 import { findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
-import {
-  findLiveDangerIssue,
-  findSafetyAndTechnicalRuleIssue,
-} from "./safety-guard";
+import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
 import type { GuardIssue } from "./guard-issue";
 import { logDiagnosticUserPromptChars } from "./ai-telemetry";
 import type { LlmStepPayload } from "./providers";
@@ -76,12 +69,6 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       confidence: h.confidence ?? null,
     })),
     diagnosticStepHistory: stepHistory,
-    claimedReferenceSpecs: collectHistoricalReferenceClaims(diagnosticCase).map(
-      (c) => ({
-        parameterKey: c.parameterKey,
-        valueText: c.valueText,
-      }),
-    ),
     rejectedDiagnoses: rejectedFromObservations(diagnosticCase),
   };
 }
@@ -142,10 +129,6 @@ export function compactCaseStateForPrompt(
 
   if (state.currentHypotheses.length) {
     out.currentHypotheses = state.currentHypotheses;
-  }
-
-  if (state.claimedReferenceSpecs.length) {
-    out.claimedReferenceSpecs = state.claimedReferenceSpecs;
   }
 
   if (state.rejectedDiagnoses.length) {
@@ -277,14 +260,11 @@ export function buildVerifierUserPrompt(
 
 /** Structural gates only. Semantic repeat, DTC, priority and hypothesis checks belong to the model and verifier. */
 export function findDraftQualityIssue(
-  diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
   technicianOutcome?: TechnicianOutcome | null,
 ): GuardIssue | null {
   return (
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
-    findLiveDangerIssue(draft) ??
-    findSafetyAndTechnicalRuleIssue(draft) ??
-    findSpecGuardIssue(diagnosticCase, draft)
+    findSafetyAndTechnicalRuleIssue(draft)
   );
 }

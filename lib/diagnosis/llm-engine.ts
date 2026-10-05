@@ -35,7 +35,7 @@ import {
   buildVerifierUserPrompt,
   findDraftQualityIssue,
 } from "./prompts";
-import { draftHasSpecRisk } from "./spec-guard";
+import { draftHasSpecRisk } from "./safety-guard";
 import type {
   DiagnosticCase,
   DiagnosticEngine,
@@ -111,14 +111,9 @@ function shouldEscalateToStrongVerifier(
 
 function findDraftQualityIssueInTurn(
   turn: DiagnosticTurn,
-  diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): GuardIssue | null {
-  return findDraftQualityIssue(
-    caseForTurn(turn, diagnosticCase),
-    draft,
-    turn.technicianOutcome,
-  );
+  return findDraftQualityIssue(draft, turn.technicianOutcome);
 }
 
 async function draftWithClaude(
@@ -428,7 +423,7 @@ async function ensureDraftPassesQualityGates(
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
   for (;;) {
-    const issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
+    const issue = findDraftQualityIssueInTurn(turn, draft);
     if (!issue) return draft;
     if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
       throw new DiagnosticPipelineError(

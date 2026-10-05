@@ -108,15 +108,6 @@ export type TechnicalSourceType =
   | "MODEL_KNOWLEDGE"
   | "UNKNOWN";
 
-/** Reference number extracted from a draft, locked so the next turn cannot contradict it. */
-/** Locked reference number. parameterKey is the unit family (voltage, resistance, …). */
-export interface TechnicalSpecClaim {
-  parameterKey: string;
-  valueText: string;
-  low: number | null;
-  high: number | null;
-}
-
 export interface DiagnosticCase {
   id: string;
   createdAt: string;
