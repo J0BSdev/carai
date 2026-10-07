@@ -142,21 +142,32 @@ function parseStoredStep(value: unknown): DiagnosticStep {
     content: reqString(raw.content),
     rationale: reqString(raw.rationale),
   };
+  if (actionType === "ASK") {
+    for (const key of ["expectedResultHint", "testGuide", "confirmedFault", "diagnosisCertainty"]) {
+      if (raw[key] != null) invalid();
+    }
+  }
   if (actionType === "TEST") {
+    for (const key of ["confirmedFault", "diagnosisCertainty"]) {
+      if (raw[key] != null) invalid();
+    }
     const expectedResultHint = optString(raw.expectedResultHint);
+    if (!expectedResultHint) invalid();
+    step.expectedResultHint = expectedResultHint;
     const testGuide = optString(raw.testGuide);
-    if (expectedResultHint) step.expectedResultHint = expectedResultHint;
     if (testGuide) step.testGuide = testGuide;
   }
   if (actionType === "FINISH") {
-    const confirmedFault = optString(raw.confirmedFault);
-    if (confirmedFault) step.confirmedFault = confirmedFault;
-    if (raw.diagnosisCertainty != null) {
-      step.diagnosisCertainty = oneOf(
-        raw.diagnosisCertainty,
-        CERTAINTIES,
-      ) as DiagnosisCertainty;
+    for (const key of ["expectedResultHint", "testGuide"]) {
+      if (raw[key] != null) invalid();
     }
+    const confirmedFault = optString(raw.confirmedFault);
+    if (!confirmedFault) invalid();
+    step.confirmedFault = confirmedFault;
+    step.diagnosisCertainty = oneOf(
+      raw.diagnosisCertainty,
+      CERTAINTIES,
+    ) as DiagnosisCertainty;
   }
   const hypotheses = parseHypotheses(raw.hypotheses);
   if (hypotheses) step.hypotheses = hypotheses;
