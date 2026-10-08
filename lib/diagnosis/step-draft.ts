@@ -24,8 +24,6 @@ const HYPOTHESIS_STATUSES = [
   "ruled_out",
 ] as const;
 const SOURCE_TYPES = [
-  "VERIFIED_OEM",
-  "VERIFIED_TECHNICAL",
   "GENERAL_PRINCIPLE",
   "MODEL_KNOWLEDGE",
   "UNKNOWN",

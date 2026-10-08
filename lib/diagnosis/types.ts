@@ -100,10 +100,8 @@ export type ObservationInput = {
   >;
 }[Observation["kind"]];
 
-/** Provenance label the model may attach to a technical claim. VERIFIED_* is always rejected. */
+/** Provenance label the model may attach to a technical claim. */
 export type TechnicalSourceType =
-  | "VERIFIED_OEM"
-  | "VERIFIED_TECHNICAL"
   | "GENERAL_PRINCIPLE"
   | "MODEL_KNOWLEDGE"
   | "UNKNOWN";

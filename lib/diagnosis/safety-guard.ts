@@ -7,7 +7,7 @@ type TechnicalClaim = {
 };
 
 /**
- * sourceType is a field the model sends. VERIFIED_* is never accepted.
+ * sourceType is a field the model sends.
  * A vehicle-specific claim cannot be labeled GENERAL_PRINCIPLE.
  * Free text is not scanned.
  */
@@ -19,12 +19,6 @@ export function findSafetyAndTechnicalRuleIssue(draft: {
       return issue(
         "SPEC",
         "TECH SOURCE GUARD: vehicle-specific vrijednost ne smije biti GENERAL_PRINCIPLE. Koristi UNKNOWN ili MODEL_KNOWLEDGE.",
-      );
-    }
-    if (claim.sourceType === "VERIFIED_OEM" || claim.sourceType === "VERIFIED_TECHNICAL") {
-      return issue(
-        "SPEC",
-        "TECH SOURCE GUARD: VERIFIED_OEM/VERIFIED_TECHNICAL nije dozvoljen. Koristi UNKNOWN ili MODEL_KNOWLEDGE.",
       );
     }
   }
