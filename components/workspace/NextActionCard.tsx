@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { DiagnosticStep } from "@/lib/diagnosis";
 import { actionLabel } from "@/lib/diagnosis/ui-helpers";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
@@ -69,6 +69,10 @@ export default function NextActionCard({
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
   const [whyOpen, setWhyOpen] = useState(false);
+
+  useEffect(() => {
+    setResult("");
+  }, [step.id]);
   const title = shortTitle(step);
   const description = shortDescription(step, title);
   const whyLabel =
@@ -154,9 +158,13 @@ export default function NextActionCard({
         </div>
 
         <div className="mt-3 flex flex-wrap gap-1">
-          <GhostBtn onClick={onCantPerform}>Ne mogu izvesti</GhostBtn>
+          {step.actionType === "TEST" ? (
+            <GhostBtn onClick={onCantPerform}>Ne mogu izvesti</GhostBtn>
+          ) : null}
           <GhostBtn onClick={onSkip}>Preskoči</GhostBtn>
-          <GhostBtn onClick={onHowTo}>Kako testirati?</GhostBtn>
+          {step.actionType === "TEST" ? (
+            <GhostBtn onClick={onHowTo}>Kako testirati?</GhostBtn>
+          ) : null}
         </div>
       </div>
 
