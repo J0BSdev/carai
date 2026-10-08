@@ -41,7 +41,6 @@ import type {
   DiagnosticEngine,
   DiagnosticStep,
   DiagnoseResponse,
-  DiagnosisCertainty,
   ExtractedCaseFacts,
   ObservationInput,
   TechnicianOutcome,
@@ -499,25 +498,9 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       );
     }
 
-    const reopen =
-      observation.kind === "REJECT_DIAGNOSIS" ||
-      observation.kind === "CONTINUE_AFTER_FINISH";
-
     const caseWithObservation: DiagnosticCase = {
       ...incoming,
       observations: [...incoming.observations, nextObservation],
-      ...(reopen
-        ? {
-            steps: incoming.steps.map((step) =>
-              step.id === currentStep.id
-                ? {
-                    ...step,
-                    diagnosisCertainty: "LIKELY" as DiagnosisCertainty,
-                  }
-                : step,
-            ),
-          }
-        : {}),
     };
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation, {
