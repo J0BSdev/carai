@@ -1,5 +1,6 @@
 import { ObservationConflictError } from "./errors";
 import {
+  assertObservationAllowed,
   assertUniqueObservations,
   parseStoredObservation,
 } from "./observation";
@@ -191,7 +192,9 @@ export function parseDiagnosticCase(value: unknown): DiagnosticCase {
       ? raw.observations.map(parseStoredObservation)
       : invalid();
     for (const obs of parsed) {
-      if (!ids.has(obs.stepId)) invalid();
+      const step = steps.find((item) => item.id === obs.stepId);
+      if (!step) invalid();
+      assertObservationAllowed(obs.kind, step.actionType);
     }
     observations = assertUniqueObservations(parsed);
   } catch (error) {
