@@ -18,7 +18,7 @@ export default function CaseIntelligencePanel({
 }: CaseIntelligencePanelProps) {
   const tests = diagnosticCase.steps.filter((s) => s.actionType === "TEST").length;
   const asks = diagnosticCase.steps.filter((s) => s.actionType === "ASK").length;
-  const measurements = diagnosticCase.observations.length;
+  const observations = diagnosticCase.observations.length;
   const leading =
     hypotheses.find((h) => h.status === "supported") ??
     hypotheses.find((h) => h.status === "plausible");
@@ -31,9 +31,9 @@ export default function CaseIntelligencePanel({
       <p className="mt-3 text-sm font-medium text-[var(--accent)]">{statusLabel}</p>
 
       <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-        <Stat label="Opažanja" value={asks + measurements} />
+        <Stat label="Opažanja" value={observations} />
         <Stat label="Testovi" value={tests} />
-        <Stat label="Unosi" value={measurements} />
+        <Stat label="Pitanja" value={asks} />
       </div>
 
       <div className="mt-5 border-t border-[var(--border)] pt-4">
