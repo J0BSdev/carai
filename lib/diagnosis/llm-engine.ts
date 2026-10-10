@@ -338,6 +338,7 @@ async function callVerifiedDiagnosticStep(
         );
       }
 
+      recordSemanticUpdate(turn, diagnosticCase, draft);
       persistSemanticUpdate(diagnosticCase, turn);
       return toDiagnosticStep(draft, stepId);
     },
