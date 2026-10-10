@@ -65,10 +65,10 @@ import type { GuardIssue } from "./guard-issue";
 const MAX_DIAGNOSTIC_RETRIES = 2;
 
 /**
- * Mutable state of one diagnostic turn. The semantic delta belongs to the turn, not
- * to a single draft: a guard retry that omits semanticUpdate must not drop facts an
- * earlier draft of the same turn already extracted.
- * technicianOutcome is REPLACE-per-draft and never accumulated across retries.
+ * Mutable state of one diagnostic turn.
+ * A rejected draft's semantic state is not committed.
+ * Guard and verifier read a candidate state of the current draft only.
+ * Only the final accepted draft is written onto the turn and persisted.
  */
 type DiagnosticTurn = {
   retriesUsed: number;
