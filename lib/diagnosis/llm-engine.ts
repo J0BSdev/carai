@@ -151,7 +151,6 @@ async function draftWithClaude(
   try {
     const draft = parseDiagnosticDraft(raw);
     logDiagnosticDraftShape(draft);
-    recordSemanticUpdate(turn, diagnosticCase, draft);
     return draft;
   } catch (error) {
     if (!(error instanceof DraftShapeError)) throw error;
@@ -160,7 +159,7 @@ async function draftWithClaude(
     }
     return regenerateWithClaude(
       turn,
-      diagnosticCase,
+      diagnosticCase, 
       {},
       [error.message],
       "draft_shape",

@@ -91,6 +91,28 @@ function mergeSemanticUpdate(
   };
 }
 
+/** Read-only facts for this draft. Does not write `turn` or the case. */
+export function deriveSemanticState(
+  prior: ExtractedCaseFacts | null | undefined,
+  semanticUpdate: LlmStepPayload["semanticUpdate"],
+  allowTechnicianOutcome: boolean,
+): {
+  extracted: ExtractedCaseFacts | null;
+  technicianOutcome: TechnicianOutcome | null;
+} {
+  const technicianOutcome = allowTechnicianOutcome
+    ? (semanticUpdate?.technicianOutcome ?? null)
+    : null;
+  if (!semanticUpdate) {
+    return { extracted: prior ?? null, technicianOutcome };
+  }
+  const merged = mergeSemanticUpdate(prior ?? {}, semanticUpdate);
+  return {
+    extracted: merged ?? prior ?? null,
+    technicianOutcome,
+  };
+}
+
 /** Fold this draft's semanticUpdate into the turn. Verifier drafts never reach here. */
 export function recordSemanticUpdate(
   turn: TurnFacts,
