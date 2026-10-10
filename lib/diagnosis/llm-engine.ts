@@ -53,6 +53,7 @@ import {
 } from "./observation";
 import {
   caseForTurn,
+  deriveSemanticState,
   persistSemanticUpdate,
   recordSemanticUpdate,
 } from "./semantic-update";
@@ -110,9 +111,15 @@ function shouldEscalateToStrongVerifier(
 
 function findDraftQualityIssueInTurn(
   turn: DiagnosticTurn,
+  diagnosticCase: DiagnosticCase,
   draft: LlmStepPayload,
 ): GuardIssue | null {
-  return findDraftQualityIssue(draft, turn.technicianOutcome);
+  const candidate = deriveSemanticState(
+    diagnosticCase.extracted,
+    draft.semanticUpdate,
+    turn.allowTechnicianOutcome,
+  );
+  return findDraftQualityIssue(draft, candidate.technicianOutcome);
 }
 
 async function draftWithClaude(
@@ -230,15 +237,23 @@ async function verifyWithOpenAi(
 
   const model = options?.model ?? getVerifierModel();
   const step = getActiveAiStep();
-  const turnCase = caseForTurn(turn, diagnosticCase);
+  const candidate = deriveSemanticState(
+    diagnosticCase.extracted,
+    draft.semanticUpdate,
+    turn.allowTechnicianOutcome,
+  );
+  const verifierCase: DiagnosticCase =
+    candidate.extracted != null
+      ? { ...diagnosticCase, extracted: candidate.extracted }
+      : diagnosticCase;
   const raw = await callOpenAiJson({
     apiKey,
     model,
     system: VERIFIER_SYSTEM_PROMPT,
-    user: buildVerifierUserPrompt(turnCase, draft, {
+    user: buildVerifierUserPrompt(verifierCase, draft, {
       previousIssues: options?.previousIssues,
       strongFinal: options?.strongFinal,
-      technicianOutcome: turn.technicianOutcome,
+      technicianOutcome: candidate.technicianOutcome,
     }),
     telemetry: step
       ? {
@@ -421,7 +436,7 @@ async function ensureDraftPassesQualityGates(
 ): Promise<LlmStepPayload> {
   let draft = initialDraft;
   for (;;) {
-    const issue = findDraftQualityIssueInTurn(turn, draft);
+    const issue = findDraftQualityIssueInTurn(turn, diagnosticCase, draft);
     if (!issue) return draft;
     if (turn.retriesUsed >= MAX_DIAGNOSTIC_RETRIES) {
       throw new DiagnosticPipelineError(
