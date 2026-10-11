@@ -24,6 +24,7 @@ export default function NextActionCard({
   onHowTo,
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const [whyOpen, setWhyOpen] = useState(false);
 
   useEffect(() => {
@@ -34,6 +35,7 @@ export default function NextActionCard({
     step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
 
   function submit() {
+    if (voiceBusy) return;
     const trimmed = result.trim();
     if (!trimmed) return;
     onSubmitResult(trimmed);
@@ -97,7 +99,7 @@ export default function NextActionCard({
             <button
               type="button"
               onClick={submit}
-              disabled={!result.trim()}
+              disabled={voiceBusy || !result.trim()}
               aria-label="Pošalji rezultat"
               className="mb-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[#061018] transition active:scale-95 disabled:opacity-35"
             >
@@ -114,6 +116,7 @@ export default function NextActionCard({
           </div>
           <VoiceNote
             key={step.id}
+            onBusyChange={setVoiceBusy}
             onTranscript={(text) => {
               setResult((current) => {
                 const prev = current.trim();

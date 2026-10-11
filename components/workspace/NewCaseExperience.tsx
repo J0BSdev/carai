@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import VoiceNote from "@/components/workspace/VoiceNote";
 
 type NewCaseExperienceProps = {
@@ -17,6 +18,12 @@ export default function NewCaseExperience({
   loading,
   error,
 }: NewCaseExperienceProps) {
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
   return (
     <section className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center px-4 py-10 sm:px-6">
       <div className="anim-in">
@@ -42,7 +49,10 @@ export default function NewCaseExperience({
         <div className="surface-3 mt-8 rounded-[var(--radius-lg)] p-3">
           <textarea
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              valueRef.current = e.target.value;
+              onChange(e.target.value);
+            }}
             rows={5}
             disabled={loading}
             placeholder="Opišite problem što detaljnije možete…"
@@ -52,9 +62,12 @@ export default function NewCaseExperience({
             <div className="flex min-w-0 flex-1 items-center gap-1 text-[var(--muted)]">
               <VoiceNote
                 disabled={loading}
+                onBusyChange={setVoiceBusy}
                 onTranscript={(text) => {
-                  const prev = value.trim();
-                  onChange(prev ? `${prev}\n${text}` : text);
+                  const prev = valueRef.current.trim();
+                  const next = prev ? `${prev}\n${text}` : text;
+                  valueRef.current = next;
+                  onChange(next);
                 }}
               />
               <span
@@ -67,7 +80,7 @@ export default function NewCaseExperience({
             <button
               type="button"
               onClick={onStart}
-              disabled={loading || !value.trim()}
+              disabled={loading || voiceBusy || !value.trim()}
               aria-label="Pokreni"
               className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--accent)] text-[#061018] disabled:opacity-35"
             >

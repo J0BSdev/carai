@@ -3,10 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 
 const MAX_SECONDS = 180;
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+
+type Phase = "idle" | "recording" | "ready" | "transcribing";
 
 type VoiceNoteProps = {
   disabled?: boolean;
   onTranscript: (text: string) => void;
+  onBusyChange?: (busy: boolean) => void;
 };
 
 function clock(total: number): string {
@@ -36,10 +40,12 @@ function preferredMime(): string {
   return types.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
 }
 
-export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
-  const [phase, setPhase] = useState<
-    "idle" | "recording" | "ready" | "transcribing"
-  >("idle");
+export default function VoiceNote({
+  disabled,
+  onTranscript,
+  onBusyChange,
+}: VoiceNoteProps) {
+  const [phase, setPhase] = useState<Phase>("idle");
   const [seconds, setSeconds] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +59,17 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
   const abortRef = useRef<AbortController | null>(null);
   const aliveRef = useRef(true);
   const startingRef = useRef(false);
+  const transcribingRef = useRef(false);
+  const generationRef = useRef(0);
+  const onBusyChangeRef = useRef(onBusyChange);
+  useEffect(() => {
+    onBusyChangeRef.current = onBusyChange;
+  }, [onBusyChange]);
+
+  function setPhaseBusy(next: Phase) {
+    setPhase(next);
+    onBusyChangeRef.current?.(next === "recording" || next === "transcribing");
+  }
 
   function clearTimer() {
     if (timerRef.current != null) {
@@ -86,6 +103,8 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
       recorderRef.current = null;
       stopStream();
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+      onBusyChangeRef.current?.(false);
     };
   }, []);
 
@@ -93,12 +112,20 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
     abortRef.current?.abort();
     abortRef.current = null;
     blobRef.current = null;
+    chunksRef.current = [];
     revokeUrl();
     setSeconds(0);
   }
 
   async function start() {
-    if (disabled || startingRef.current) return;
+    if (
+      disabled ||
+      startingRef.current ||
+      recorderRef.current ||
+      transcribingRef.current
+    ) {
+      return;
+    }
     startingRef.current = true;
     setError(null);
     try {
@@ -133,7 +160,7 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
         recorderRef.current = null;
         if (!aliveRef.current) return;
         if (blob.size === 0) {
-          setPhase("idle");
+          setPhaseBusy("idle");
           setError("Snimka je prazna.");
           return;
         }
@@ -141,13 +168,16 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
         const url = URL.createObjectURL(blob);
         urlRef.current = url;
         setAudioUrl(url);
-        setPhase("ready");
+        setPhaseBusy("ready");
+        if (blob.size > MAX_AUDIO_BYTES) {
+          setError("Audiodatoteka je prevelika.");
+        }
       };
       recorderRef.current = recorder;
       recorder.start(250);
       const startedAt = Date.now();
       setSeconds(0);
-      setPhase("recording");
+      setPhaseBusy("recording");
       timerRef.current = window.setInterval(() => {
         const elapsed = Math.floor((Date.now() - startedAt) / 1000);
         setSeconds(elapsed);
@@ -157,10 +187,17 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
         }
       }, 250);
     } catch (err) {
+      const recorder = recorderRef.current;
+      recorderRef.current = null;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.onstop = null;
+        recorder.stop();
+      }
+      clearTimer();
       stopStream();
       const name = err instanceof DOMException ? err.name : "";
       if (!aliveRef.current) return;
-      setPhase("idle");
+      setPhaseBusy("idle");
       if (name === "NotAllowedError" || name === "PermissionDeniedError") {
         setError("Dozvola za mikrofon je odbijena.");
       } else {
@@ -177,6 +214,8 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
   }
 
   function remove() {
+    generationRef.current += 1;
+    transcribingRef.current = false;
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") {
       recorder.onstop = null;
@@ -186,15 +225,21 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
     clearTimer();
     stopStream();
     discardClip();
-    setPhase("idle");
+    setPhaseBusy("idle");
     setError(null);
   }
 
   async function transcribe() {
     const blob = blobRef.current;
-    if (!blob || phase === "transcribing") return;
+    if (!blob || transcribingRef.current) return;
+    if (blob.size > MAX_AUDIO_BYTES) {
+      setError("Audiodatoteka je prevelika.");
+      return;
+    }
+    const generation = generationRef.current;
+    transcribingRef.current = true;
     setError(null);
-    setPhase("transcribing");
+    setPhaseBusy("transcribing");
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -211,6 +256,13 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
       } catch {
         throw new Error("Transkripcija nije uspjela.");
       }
+      if (
+        generationRef.current !== generation ||
+        !aliveRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
       if (!response.ok) {
         const message =
           typeof data.error === "string"
@@ -220,16 +272,24 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
       }
       const text = typeof data.text === "string" ? data.text.trim() : "";
       if (!text) throw new Error("Transkript je prazan.");
-      if (!aliveRef.current || controller.signal.aborted) return;
       onTranscript(text);
-      setPhase("ready");
+      if (generationRef.current !== generation || !aliveRef.current) return;
+      discardClip();
+      setPhaseBusy("idle");
     } catch (err) {
-      if (!aliveRef.current || controller.signal.aborted) return;
-      setPhase("ready");
+      if (
+        generationRef.current !== generation ||
+        !aliveRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+      setPhaseBusy("ready");
       setError(
         err instanceof Error ? err.message : "Transkripcija nije uspjela.",
       );
     } finally {
+      if (generationRef.current === generation) transcribingRef.current = false;
       if (abortRef.current === controller) abortRef.current = null;
     }
   }
