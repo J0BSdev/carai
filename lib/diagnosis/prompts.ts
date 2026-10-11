@@ -15,7 +15,8 @@ technicianOutcome samo iz trenutnog RESULT.text. SKIP, CANNOT_PERFORM, REJECT_DI
 Ne izmišljaj OEM brojke, pinove ni raspone. technicalClaims.sourceType: GENERAL_PRINCIPLE | MODEL_KNOWLEDGE | UNKNOWN. VERIFIED_* nije dozvoljen.
 Živi SRS/airbag konektor ili modul, HV/narančasti kabel/inverter, ili pirotehnika: jedna rečenica što napraviti prije rada. Ostali testovi bez warninga.
 FINISH: diagnosisCertainty točno SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED. CONFIRMED samo uz neovisan jak dokaz ili ovaj-turn FAULT_CONFIRMED|REPAIR_CONFIRMED. Poštuj rejectedDiagnoses.
-hypotheses stavka točno {"label":"...","status":"plausible|supported|weakened|ruled_out","confidence":0-100}. Bez statement, cause, reason, probability, note. Nakon 2+ RESULT opažanja TEST i FINISH moraju imati hypotheses, i confidence tada nije opcionalan.
+Nakon svakog rezultata reevaluiraj cijeli case i ažuriraj hipoteze. Interno max 3 prema značajnim dokazima. hypotheses stavka točno {"label":"...","status":"plausible|supported|weakened|ruled_out","confidence":0-100}. confidence je procjena potkrijepljenosti dokazima, ne statistička vjerojatnost. Bez statement, cause, reason, probability, note.
+TEST: kad postoje značajni dokazi, vrati compact hypotheses; test razlikuje vodeću hipotezu od relevantne alternative. ASK: hypotheses samo kad odgovor mijenja ranking. FINISH: uvijek compact hypotheses.
 
 semanticUpdate samo kad RESULT dodaje vehicle, symptoms, DTC ili measurements, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
 
@@ -23,7 +24,7 @@ JSON bez markdowna. Samo polja iz sheme. Nepoznato polje je nevaljan draft.
 TEST: actionType, content, rationale, expectedResultHint. testGuide samo za nerutinski test.
 ASK: actionType, content, rationale.
 FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty.
-{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","hypotheses":[{"label":"…","status":"plausible","confidence":40}]}`;
+{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","hypotheses":[{"label":"…","status":"supported","confidence":70},{"label":"…","status":"plausible","confidence":40}]}`;
 
 /** Case facts serialized into prompts. Result text is raw; the model interprets it. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
