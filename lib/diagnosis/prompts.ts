@@ -2,7 +2,7 @@ import type { DiagnosticCase, Hypothesis, Observation, TechnicianOutcome } from 
 import { observationResultText } from "./observation";
 import { findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
-import type { GuardIssue } from "./guard-issue";
+import { issue, type GuardIssue } from "./guard-issue";
 import { logDiagnosticUserPromptChars } from "./ai-telemetry";
 import type { LlmStepPayload } from "./providers";
 
@@ -139,10 +139,33 @@ export function compactCaseStateForPrompt(
   return out;
 }
 
+/** RESULT observations on accepted ASK/TEST steps. Does not read result text. */
+function acceptedAskTestResultCount(diagnosticCase: DiagnosticCase): number {
+  const stepIds = new Set(
+    diagnosticCase.steps
+      .filter((step) => step.actionType === "ASK" || step.actionType === "TEST")
+      .map((step) => step.id),
+  );
+  return diagnosticCase.observations.filter(
+    (obs) => obs.kind === "RESULT" && stepIds.has(obs.stepId),
+  ).length;
+}
+
+const HYPOTHESIS_REQUIRED_LINE =
+  "TEST/FINISH: hypotheses obavezne, svaka s confidence 0–100.";
+
+function hypothesisPromptLine(diagnosticCase: DiagnosticCase): string | null {
+  return acceptedAskTestResultCount(diagnosticCase) >= 2
+    ? HYPOTHESIS_REQUIRED_LINE
+    : null;
+}
+
 export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): string {
+  const hypothesisLine = hypothesisPromptLine(diagnosticCase);
   const prompt = [
     "CASE STATE:",
     JSON.stringify(compactCaseStateForPrompt(buildCaseState(diagnosticCase))),
+    ...(hypothesisLine ? ["", hypothesisLine] : []),
   ].join("\n");
 
   logDiagnosticUserPromptChars(prompt.length);
@@ -186,9 +209,11 @@ export function buildDiagnosticRetryPrompt(
     isGuardIssue(item) ? item.message : item,
   );
 
+  const hypothesisLine = hypothesisPromptLine(diagnosticCase);
   return [
     "CASE STATE:",
     JSON.stringify(compactCaseStateForPrompt(buildCaseState(diagnosticCase))),
+    ...(hypothesisLine ? ["", hypothesisLine] : []),
     "",
     "Vrati ispravljeni JSON koji rješava ISSUES.",
     "ISSUES:",
@@ -259,13 +284,52 @@ export function buildVerifierUserPrompt(
     .join("\n");
 }
 
-/** Structural gates only. Semantic repeat, DTC, priority and hypothesis checks belong to the model and verifier. */
+function confidenceInRange(value: number | undefined): boolean {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 100
+  );
+}
+
+/**
+ * Presence and confidence range only. Label, status and the estimate stay with the model.
+ * FINISH always. TEST only after two accepted ASK/TEST results. ASK never.
+ */
+function findHypothesisStructureIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): GuardIssue | null {
+  const resultCount = acceptedAskTestResultCount(diagnosticCase);
+  const required =
+    draft.actionType === "FINISH" ||
+    (draft.actionType === "TEST" && resultCount >= 2);
+  if (!required) return null;
+  const hypotheses = draft.hypotheses;
+  if (
+    !hypotheses?.length ||
+    hypotheses.some((row) => !confidenceInRange(row.confidence))
+  ) {
+    return issue(
+      "HYPOTHESIS",
+      draft.actionType === "FINISH" && resultCount < 2
+        ? "FINISH: hypotheses obavezne, svaka s confidence 0–100."
+        : HYPOTHESIS_REQUIRED_LINE,
+    );
+  }
+  return null;
+}
+
+/** Structural gates only. Semantic ranking of hypotheses stays with the model. */
 export function findDraftQualityIssue(
   draft: LlmStepPayload,
-  technicianOutcome?: TechnicianOutcome | null,
+  technicianOutcome: TechnicianOutcome | null | undefined,
+  diagnosticCase: DiagnosticCase,
 ): GuardIssue | null {
   return (
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
-    findSafetyAndTechnicalRuleIssue(draft)
+    findSafetyAndTechnicalRuleIssue(draft) ??
+    findHypothesisStructureIssue(diagnosticCase, draft)
   );
 }
