@@ -208,18 +208,23 @@ export function buildDiagnosticRetryPrompt(
   diagnosticCase: DiagnosticCase,
   previousDraft: unknown,
   issues: Array<GuardIssue | string>,
+  reasonCalled?: string,
 ): string {
   const issueLines = issues.map((item) =>
     isGuardIssue(item) ? item.message : item,
   );
 
   const hypothesisLine = hypothesisPromptLine(diagnosticCase);
+  const instruction =
+    reasonCalled === "verifier_rejected"
+      ? "Verifier je odbio PREVIOUS DRAFT. Razlog je u ISSUES. Reevaluiraj cijeli CASE STATE i postojeće dokaze. Ako FINISH nije potkrijepljen, vrati TEST ili ASK. Ne označi hipotezu kao ruled_out bez dokaza. FINISH samo ako dokazi opravdavaju."
+      : "Vrati ispravljeni JSON koji rješava ISSUES.";
   return [
     "CASE STATE:",
     JSON.stringify(compactCaseStateForPrompt(buildCaseState(diagnosticCase))),
     ...(hypothesisLine ? ["", hypothesisLine] : []),
     "",
-    "Vrati ispravljeni JSON koji rješava ISSUES.",
+    instruction,
     "ISSUES:",
     ...issueLines.map((line) => `- ${line}`),
     "",

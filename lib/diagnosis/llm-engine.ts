@@ -208,7 +208,12 @@ async function regenerateWithClaude(
   });
 
   const turnCase = caseForTurn(turn, diagnosticCase);
-  const retryPrompt = buildDiagnosticRetryPrompt(turnCase, draft, issues);
+  const retryPrompt = buildDiagnosticRetryPrompt(
+    turnCase,
+    draft,
+    issues,
+    reasonCalled,
+  );
   logRetryPromptChars(retryPrompt.length);
   return draftWithClaude(
     turn,
