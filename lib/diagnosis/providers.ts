@@ -73,16 +73,6 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
   }
 }
 
-function tryParseJsonObject(raw: string): string | null {
-  const extracted = extractJsonObject(raw);
-  try {
-    JSON.parse(extracted);
-    return extracted;
-  } catch {
-    return null;
-  }
-}
-
 /** Plain Claude Messages call: model + max_tokens + system + messages (no temperature). */
 async function fetchAnthropicText(params: {
   apiKey: string;
@@ -235,10 +225,7 @@ export async function callAnthropicJson(params: {
     );
   }
 
-  const parsed = tryParseJsonObject(primary.text);
-  if (parsed) return parsed;
-
-  throw new Error("Claude dijagnostički odgovor nije valjani JSON.");
+  return extractJsonObject(primary.text);
 }
 
 export async function callOpenAiJson(params: {
