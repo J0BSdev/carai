@@ -246,7 +246,10 @@ export async function callOpenAiJson(params: {
       model: params.model,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: params.system },
+        {
+          role: "system",
+          content: `${params.system}\n\nReturn the response as valid JSON only.`,
+        },
         { role: "user", content: params.user },
       ],
     }),
