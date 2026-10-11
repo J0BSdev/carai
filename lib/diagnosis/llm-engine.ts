@@ -119,11 +119,7 @@ function findDraftQualityIssueInTurn(
     draft.semanticUpdate,
     turn.allowTechnicianOutcome,
   );
-  return findDraftQualityIssue(
-    draft,
-    candidate.technicianOutcome,
-    diagnosticCase,
-  );
+  return findDraftQualityIssue(draft, candidate.technicianOutcome);
 }
 
 async function draftWithClaude(
