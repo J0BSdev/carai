@@ -1,3 +1,7 @@
+"use client";
+
+import VoiceNote from "@/components/workspace/VoiceNote";
+
 type NewCaseExperienceProps = {
   value: string;
   onChange: (v: string) => void;
@@ -45,13 +49,14 @@ export default function NewCaseExperience({
             className="min-h-36 w-full resize-y bg-transparent px-2 py-2 text-base leading-relaxed outline-none placeholder:text-[var(--muted)]"
           />
           <div className="mt-2 flex items-center justify-between gap-2">
-            <div className="flex gap-1 text-[var(--muted)]">
-              <span
-                className="flex h-10 w-10 items-center justify-center opacity-50"
-                title="Mikrofon uskoro"
-              >
-                <MicIcon />
-              </span>
+            <div className="flex min-w-0 flex-1 items-center gap-1 text-[var(--muted)]">
+              <VoiceNote
+                disabled={loading}
+                onTranscript={(text) => {
+                  const prev = value.trim();
+                  onChange(prev ? `${prev}\n${text}` : text);
+                }}
+              />
               <span
                 className="flex h-10 w-10 items-center justify-center opacity-50"
                 title="Kamera uskoro"
@@ -97,14 +102,6 @@ function FutureChip({ children }: { children: string }) {
   );
 }
 
-function MicIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
 function CameraIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
