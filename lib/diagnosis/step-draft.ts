@@ -31,6 +31,7 @@ const SOURCE_TYPES = [
 
 const TOP_KEYS = new Set([
   "actionType",
+  "title",
   "content",
   "rationale",
   "expectedResultHint",
@@ -296,7 +297,12 @@ function parseDraftObject(value: unknown): LlmStepPayload {
     }
   }
 
+  const title = optString(raw.title, "title");
+  if ((actionType === "ASK" || actionType === "TEST") && !title) {
+    fail("DRAFT: title je obavezan string.");
+  }
   const draft: LlmStepPayload = { actionType, content, rationale };
+  if (title) draft.title = title;
   if (actionType === "TEST") {
     draft.expectedResultHint = optString(raw.expectedResultHint, "expectedResultHint");
     if (!draft.expectedResultHint) {
@@ -342,6 +348,7 @@ export function toDiagnosticStep(
   return {
     id: stepId,
     actionType: payload.actionType,
+    title: payload.title,
     content: payload.content,
     rationale: payload.rationale,
     expectedResultHint: payload.expectedResultHint,

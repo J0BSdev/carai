@@ -27,6 +27,7 @@ export type SemanticUpdate = {
 
 export type LlmStepPayload = {
   actionType: AiActionType;
+  title?: string;
   content: string;
   rationale: string;
   expectedResultHint?: string;

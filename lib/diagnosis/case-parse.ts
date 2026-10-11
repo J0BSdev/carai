@@ -143,6 +143,8 @@ function parseStoredStep(value: unknown): DiagnosticStep {
     content: reqString(raw.content),
     rationale: reqString(raw.rationale),
   };
+  const title = optString(raw.title);
+  if (title) step.title = title;
   if (actionType === "ASK") {
     for (const key of ["expectedResultHint", "testGuide", "confirmedFault", "diagnosisCertainty"]) {
       if (raw[key] != null) invalid();

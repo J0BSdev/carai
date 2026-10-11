@@ -14,51 +14,6 @@ type NextActionCardProps = {
   onHowTo: () => void;
 };
 
-function shortTitle(step: DiagnosticStep): string {
-  const first =
-    step.content.split(/[.\n!?]/)[0]?.trim() || step.content.trim();
-  if (first.length <= 72) return first;
-  return `${first.slice(0, 69).trimEnd()}…`;
-}
-
-/** 1–2 short sentences of content that do not repeat the title. */
-function shortDescription(step: DiagnosticStep, title: string): string {
-  const raw = step.content.replace(/\s+/g, " ").trim();
-  if (!raw) return "";
-
-  const titleNorm = title.replace(/…$/, "").trim().toLowerCase();
-  let body = raw;
-
-  // Drop a leading sentence that is essentially the title
-  const sentences = raw
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  if (sentences.length > 1) {
-    const firstNorm = sentences[0]!.replace(/[.!?]+$/, "").trim().toLowerCase();
-    if (
-      firstNorm === titleNorm ||
-      firstNorm.startsWith(titleNorm) ||
-      titleNorm.startsWith(firstNorm)
-    ) {
-      body = sentences.slice(1).join(" ");
-    }
-  } else if (
-    raw.replace(/[.!?]+$/, "").trim().toLowerCase() === titleNorm
-  ) {
-    return "";
-  }
-
-  const kept = body
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 2);
-
-  return kept.join(" ");
-}
-
 export default function NextActionCard({
   step,
   stepNumber,
@@ -73,8 +28,7 @@ export default function NextActionCard({
   useEffect(() => {
     setResult("");
   }, [step.id]);
-  const title = shortTitle(step);
-  const description = shortDescription(step, title);
+  const title = step.title?.trim();
   const whyLabel =
     step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
 
@@ -100,11 +54,11 @@ export default function NextActionCard({
           {actionLabel(step.actionType)}
         </p>
         <h2 className="mt-3 text-xl font-semibold leading-snug tracking-tight sm:text-2xl">
-          {title}
+          {title || step.content}
         </h2>
-        {description ? (
+        {title ? (
           <p className="mt-2 text-base leading-relaxed text-[var(--muted-strong)]">
-            {description}
+            {step.content}
           </p>
         ) : null}
 

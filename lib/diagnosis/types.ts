@@ -49,7 +49,9 @@ export interface Hypothesis {
 export interface DiagnosticStep {
   id: string;
   actionType: AiActionType;
-  /** Question, test instruction, or finish summary. */
+  /** Short heading for an ASK or TEST. Claude writes it; the backend does not derive it. */
+  title?: string;
+  /** Detailed question, test instruction, or finish summary. */
   content: string;
   rationale: string;
   hypotheses?: Hypothesis[];

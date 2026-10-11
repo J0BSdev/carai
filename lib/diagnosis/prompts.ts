@@ -21,10 +21,11 @@ TEST: kad postoje značajni dokazi, vrati compact hypotheses; test razlikuje vod
 Na startu iz originalComplaint u semanticUpdate stavi samo eksplicitno navedeno: vehicle.make, vehicle.model, vehicle.year, vehicle.engine (gorivo, obujam ili oznaka), vehicle.mileage, dtcsAdd. Polje koje nije navedeno izostavi. Ne izmišljaj. Poslije semanticUpdate samo kad RESULT dodaje vehicle, symptomsAdd, dtcsAdd ili measurementsAdd, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
 
 JSON bez markdowna. Samo polja iz sheme. Nepoznato polje je nevaljan draft. semanticUpdate je polje sheme.
-TEST: actionType, content, rationale, expectedResultHint, semanticUpdate. testGuide samo za nerutinski test.
-ASK: actionType, content, rationale, semanticUpdate.
+title: kratak konkretan naslov pitanja ili testa. content: detaljnije objašnjenje i ne ponavlja title.
+TEST: actionType, title, content, rationale, expectedResultHint, semanticUpdate. testGuide samo za nerutinski test.
+ASK: actionType, title, content, rationale, semanticUpdate.
 FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty, semanticUpdate.
-{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","semanticUpdate":{"vehicle":{"make":"…","model":"…","engine":"…"}},"hypotheses":[{"label":"…","status":"supported","confidence":70},{"label":"…","status":"plausible","confidence":40}]}`;
+{"actionType":"TEST","title":"…","content":"…","rationale":"…","expectedResultHint":"…","semanticUpdate":{"vehicle":{"make":"…","model":"…","engine":"…"}},"hypotheses":[{"label":"…","status":"supported","confidence":70},{"label":"…","status":"plausible","confidence":40}]}`;
 
 /** Case facts serialized into prompts. Result text is raw; the model interprets it. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
@@ -174,6 +175,7 @@ export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): strin
 
 const RETRY_DRAFT_KEYS = [
   "actionType",
+  "title",
   "content",
   "rationale",
   "expectedResultHint",
@@ -181,6 +183,7 @@ const RETRY_DRAFT_KEYS = [
   "diagnosisCertainty",
   "testGuide",
   "semanticUpdate",
+  "hypotheses",
 ] as const;
 
 function compactRetryDraft(previousDraft: unknown): Record<string, unknown> {
