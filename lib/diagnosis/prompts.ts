@@ -15,7 +15,7 @@ technicianOutcome samo iz trenutnog RESULT.text. SKIP, CANNOT_PERFORM, REJECT_DI
 Ne izmišljaj OEM brojke, pinove ni raspone. technicalClaims.sourceType: GENERAL_PRINCIPLE | MODEL_KNOWLEDGE | UNKNOWN. VERIFIED_* nije dozvoljen.
 Živi SRS/airbag konektor ili modul, HV/narančasti kabel/inverter, ili pirotehnika: jedna rečenica što napraviti prije rada. Ostali testovi bez warninga.
 FINISH: diagnosisCertainty točno SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED. CONFIRMED samo uz neovisan jak dokaz ili ovaj-turn FAULT_CONFIRMED|REPAIR_CONFIRMED. Poštuj rejectedDiagnoses.
-hypotheses.status točno plausible|supported|weakened|ruled_out. confidence 0-100 opcionalno.
+hypotheses stavka točno {"label":"...","status":"plausible|supported|weakened|ruled_out","confidence":0-100}. Bez statement, cause, reason, probability, note. Nakon 2+ RESULT opažanja TEST i FINISH moraju imati hypotheses, i confidence tada nije opcionalan.
 
 semanticUpdate samo kad RESULT dodaje vehicle, symptoms, DTC ili measurements, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
 
@@ -23,7 +23,7 @@ JSON bez markdowna. Samo polja iz sheme. Nepoznato polje je nevaljan draft.
 TEST: actionType, content, rationale, expectedResultHint. testGuide samo za nerutinski test.
 ASK: actionType, content, rationale.
 FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty.
-{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…"}`;
+{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","hypotheses":[{"label":"…","status":"plausible","confidence":40}]}`;
 
 /** Case facts serialized into prompts. Result text is raw; the model interprets it. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
