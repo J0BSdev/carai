@@ -2,7 +2,7 @@ import type { DiagnosticCase, Hypothesis, Observation, TechnicianOutcome } from 
 import { observationResultText } from "./observation";
 import { findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
-import type { GuardIssue } from "./guard-issue";
+import { issue, type GuardIssue } from "./guard-issue";
 import { logDiagnosticUserPromptChars } from "./ai-telemetry";
 import type { LlmStepPayload } from "./providers";
 
@@ -258,13 +258,47 @@ export function buildVerifierUserPrompt(
     .join("\n");
 }
 
-/** Structural gates only. Semantic repeat, DTC, priority and hypothesis checks belong to the model and verifier. */
+/**
+ * After two RESULT observations, TEST and FINISH need a hypothesis list.
+ * Counts observations only. Does not read hypothesis text.
+ */
+function findHypothesisStructureIssue(
+  diagnosticCase: DiagnosticCase,
+  draft: LlmStepPayload,
+): GuardIssue | null {
+  const resultCount = diagnosticCase.observations.filter(
+    (obs) => obs.kind === "RESULT",
+  ).length;
+  if (resultCount < 2) return null;
+  if (draft.actionType !== "TEST" && draft.actionType !== "FINISH") return null;
+
+  const hypotheses = draft.hypotheses;
+  const confidenceOk = (value: number | undefined): boolean =>
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 100;
+  if (
+    !hypotheses?.length ||
+    hypotheses.some((row) => !confidenceOk(row.confidence))
+  ) {
+    return issue(
+      "HYPOTHESIS",
+      "HYPOTHESIS GUARD: nakon barem 2 RESULT opažanja, TEST i FINISH moraju imati barem jednu hypotheses stavku, i svaka mora imati confidence 0–100.",
+    );
+  }
+  return null;
+}
+
+/** Structural gates only. Semantic repeat, DTC and priority checks belong to the model and verifier. */
 export function findDraftQualityIssue(
   draft: LlmStepPayload,
-  technicianOutcome?: TechnicianOutcome | null,
+  technicianOutcome: TechnicianOutcome | null | undefined,
+  diagnosticCase: DiagnosticCase,
 ): GuardIssue | null {
   return (
     findTechnicianOutcomeConsistencyIssue(technicianOutcome, draft) ??
-    findSafetyAndTechnicalRuleIssue(draft)
+    findSafetyAndTechnicalRuleIssue(draft) ??
+    findHypothesisStructureIssue(diagnosticCase, draft)
   );
 }
