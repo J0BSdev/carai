@@ -9,7 +9,7 @@ import type {
   TechnicianOutcome,
 } from "./types";
 
-/** Already validated by parseDiagnosticDraft. Measurements are raw strings. */
+/** Already validated by parseDiagnosticDraft. */
 export type SemanticUpdate = {
   vehicle?: {
     make?: string;
@@ -21,7 +21,6 @@ export type SemanticUpdate = {
   symptomsAdd?: string[];
   symptomsRemove?: string[];
   dtcsAdd?: string[];
-  measurementsAdd?: string[];
   technicianOutcome?: TechnicianOutcome;
 };
 

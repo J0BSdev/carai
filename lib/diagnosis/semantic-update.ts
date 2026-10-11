@@ -36,7 +36,6 @@ function mergeSemanticUpdate(
   let vehicle = prior.vehicle;
   let symptoms = [...(prior.symptoms ?? [])];
   let dtcs = [...(prior.dtcs ?? [])];
-  let measurements = [...(prior.measurements ?? [])];
   let changed = false;
 
   const rawVehicle = update.vehicle;
@@ -71,7 +70,6 @@ function mergeSemanticUpdate(
 
   symptoms = addList(symptoms, update.symptomsAdd);
   dtcs = addList(dtcs, update.dtcsAdd);
-  measurements = addList(measurements, update.measurementsAdd);
 
   if (update.symptomsRemove?.length) {
     const removeKeys = new Set(update.symptomsRemove.map((s) => s.toLowerCase()));
@@ -87,7 +85,6 @@ function mergeSemanticUpdate(
     vehicle,
     symptoms: symptoms.length ? symptoms : undefined,
     dtcs: dtcs.length ? dtcs : undefined,
-    measurements: measurements.length ? measurements : undefined,
   };
 }
 

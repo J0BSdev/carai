@@ -160,7 +160,6 @@ function parseSemanticUpdate(value: unknown): SemanticUpdate | undefined {
       "symptomsAdd",
       "symptomsRemove",
       "dtcsAdd",
-      "measurementsAdd",
       "technicianOutcome",
     ]),
     "DRAFT: semanticUpdate",
@@ -182,22 +181,6 @@ function parseSemanticUpdate(value: unknown): SemanticUpdate | undefined {
       fail("DRAFT: dtcsAdd stavka je predugačka.");
     }
     update.dtcsAdd = codes;
-  }
-  if (raw.measurementsAdd != null) {
-    if (!Array.isArray(raw.measurementsAdd)) {
-      fail("DRAFT: measurementsAdd mora biti niz.");
-    }
-    const measurements: string[] = [];
-    for (const item of raw.measurementsAdd) {
-      const row = asObject(item, "DRAFT: measurementsAdd");
-      rejectUnknown(row, new Set(["raw"]), "DRAFT: measurementsAdd");
-      const text = optString(row.raw, "measurementsAdd.raw");
-      if (!text || text.length > 120) {
-        fail("DRAFT: measurementsAdd.raw mora biti kratak string.");
-      }
-      measurements.push(text);
-    }
-    update.measurementsAdd = measurements;
   }
   const outcome = parseTechnicianOutcome(raw.technicianOutcome);
   if (outcome) update.technicianOutcome = outcome;

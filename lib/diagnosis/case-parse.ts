@@ -102,10 +102,8 @@ function parseExtracted(value: unknown): ExtractedCaseFacts | undefined {
   if (vehicle) extracted.vehicle = vehicle;
   const symptoms = stringList(raw.symptoms);
   const dtcs = stringList(raw.dtcs);
-  const measurements = stringList(raw.measurements);
   if (symptoms) extracted.symptoms = symptoms;
   if (dtcs) extracted.dtcs = dtcs;
-  if (measurements) extracted.measurements = measurements;
   return extracted;
 }
 

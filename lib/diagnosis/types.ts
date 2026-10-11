@@ -34,8 +34,6 @@ export interface ExtractedCaseFacts {
   vehicle?: VehicleInfo;
   symptoms?: string[];
   dtcs?: string[];
-  /** Verbatim readings extracted by the diagnostic model. */
-  measurements?: string[];
 }
 
 export interface Hypothesis {

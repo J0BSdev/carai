@@ -18,7 +18,7 @@ FINISH: diagnosisCertainty točno SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED. CO
 Nakon svakog rezultata reevaluiraj cijeli case i ažuriraj hipoteze. Interno max 3 prema značajnim dokazima. hypotheses stavka točno {"label":"...","status":"plausible|supported|weakened|ruled_out","confidence":0-100}. confidence je procjena potkrijepljenosti dokazima, ne statistička vjerojatnost. Bez statement, cause, reason, probability, note.
 TEST: kad postoje značajni dokazi, vrati compact hypotheses; test razlikuje vodeću hipotezu od relevantne alternative. ASK: hypotheses samo kad odgovor mijenja ranking. FINISH: uvijek compact hypotheses.
 
-Na startu iz originalComplaint u semanticUpdate stavi samo eksplicitno navedeno: vehicle.make, vehicle.model, vehicle.year, vehicle.engine (gorivo, obujam ili oznaka), vehicle.mileage, dtcsAdd. Polje koje nije navedeno izostavi. Ne izmišljaj. Poslije semanticUpdate samo kad RESULT dodaje vehicle, symptomsAdd, dtcsAdd ili measurementsAdd, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
+Na startu iz originalComplaint u semanticUpdate stavi samo eksplicitno navedeno: vehicle.make, vehicle.model, vehicle.year, vehicle.engine (gorivo, obujam ili oznaka), vehicle.mileage, dtcsAdd. Polje koje nije navedeno izostavi. Ne izmišljaj. Poslije semanticUpdate samo kad RESULT dodaje vehicle, symptomsAdd ili dtcsAdd, ili kad postoji technicianOutcome. dtcsAdd doslovno.
 
 JSON bez markdowna. Samo polja iz sheme. Nepoznato polje je nevaljan draft. semanticUpdate je polje sheme.
 title: kratak konkretan naslov pitanja ili testa. content: detaljnije objašnjenje i ne ponavlja title.
@@ -43,7 +43,6 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     vehicle: extracted.vehicle ?? null,
     knownDtcCodes: extracted.dtcs ?? [],
     symptoms: extracted.symptoms ?? [],
-    measurements: (extracted.measurements ?? []).map((m) => m.trim()).filter(Boolean),
   };
 
   for (const step of diagnosticCase.steps) {
@@ -121,7 +120,6 @@ export function compactCaseStateForPrompt(
   if (kf.vehicle) knownFactsCompact.vehicle = kf.vehicle;
   if (kf.knownDtcCodes.length) knownFactsCompact.knownDtcCodes = kf.knownDtcCodes;
   if (kf.symptoms.length) knownFactsCompact.symptoms = kf.symptoms;
-  if (kf.measurements.length) knownFactsCompact.measurements = kf.measurements;
 
   const out: Record<string, unknown> = {
     originalComplaint: state.originalComplaint,
