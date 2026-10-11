@@ -53,11 +53,7 @@ function uploadName(file: File): string {
 }
 
 function isAudioFile(value: FormDataEntryValue | null): value is File {
-  return (
-    value instanceof Blob &&
-    typeof (value as File).name === "string" &&
-    typeof (value as File).size === "number"
-  );
+  return value instanceof Blob && typeof (value as File).name === "string";
 }
 
 function reject(error: string, status: number): Response {
@@ -98,7 +94,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const outbound = new FormData();
   outbound.append("file", file, uploadName(file));
-  outbound.append("model", "whisper-1");
+  outbound.append("model", "gpt-4o-transcribe");
   outbound.append("language", "hr");
 
   const controller = new AbortController();

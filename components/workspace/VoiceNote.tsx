@@ -26,7 +26,6 @@ function fileName(type: string): string {
 }
 
 function preferredMime(): string {
-  if (typeof MediaRecorder === "undefined") return "";
   const types = [
     "audio/webm;codecs=opus",
     "audio/webm",
@@ -111,7 +110,6 @@ export default function VoiceNote({ disabled, onTranscript }: VoiceNoteProps) {
         return;
       }
 
-      discardClip();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (!aliveRef.current) {
         stream.getTracks().forEach((track) => track.stop());
