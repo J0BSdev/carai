@@ -18,13 +18,13 @@ FINISH: diagnosisCertainty točno SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED. CO
 Nakon svakog rezultata reevaluiraj cijeli case i ažuriraj hipoteze. Interno max 3 prema značajnim dokazima. hypotheses stavka točno {"label":"...","status":"plausible|supported|weakened|ruled_out","confidence":0-100}. confidence je procjena potkrijepljenosti dokazima, ne statistička vjerojatnost. Bez statement, cause, reason, probability, note.
 TEST: kad postoje značajni dokazi, vrati compact hypotheses; test razlikuje vodeću hipotezu od relevantne alternative. ASK: hypotheses samo kad odgovor mijenja ranking. FINISH: uvijek compact hypotheses.
 
-semanticUpdate samo kad RESULT dodaje vehicle, symptoms, DTC ili measurements, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
+Na startu iz originalComplaint u semanticUpdate stavi samo eksplicitno navedeno: vehicle.make, vehicle.model, vehicle.year, vehicle.engine (gorivo, obujam ili oznaka), vehicle.mileage, dtcsAdd. Polje koje nije navedeno izostavi. Ne izmišljaj. Poslije semanticUpdate samo kad RESULT dodaje vehicle, symptomsAdd, dtcsAdd ili measurementsAdd, ili kad postoji technicianOutcome. dtcsAdd doslovno. measurementsAdd.raw verbatim.
 
-JSON bez markdowna. Samo polja iz sheme. Nepoznato polje je nevaljan draft.
-TEST: actionType, content, rationale, expectedResultHint. testGuide samo za nerutinski test.
-ASK: actionType, content, rationale.
-FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty.
-{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","hypotheses":[{"label":"…","status":"supported","confidence":70},{"label":"…","status":"plausible","confidence":40}]}`;
+JSON bez markdowna. Samo polja iz sheme. Nepoznato polje je nevaljan draft. semanticUpdate je polje sheme.
+TEST: actionType, content, rationale, expectedResultHint, semanticUpdate. testGuide samo za nerutinski test.
+ASK: actionType, content, rationale, semanticUpdate.
+FINISH: actionType, content, rationale, confirmedFault, diagnosisCertainty, semanticUpdate.
+{"actionType":"TEST","content":"…","rationale":"…","expectedResultHint":"…","semanticUpdate":{"vehicle":{"make":"…","model":"…","engine":"…"}},"hypotheses":[{"label":"…","status":"supported","confidence":70},{"label":"…","status":"plausible","confidence":40}]}`;
 
 /** Case facts serialized into prompts. Result text is raw; the model interprets it. */
 export function buildCaseState(diagnosticCase: DiagnosticCase) {
@@ -180,6 +180,7 @@ const RETRY_DRAFT_KEYS = [
   "confirmedFault",
   "diagnosisCertainty",
   "testGuide",
+  "semanticUpdate",
 ] as const;
 
 function compactRetryDraft(previousDraft: unknown): Record<string, unknown> {
