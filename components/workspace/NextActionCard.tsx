@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { DiagnosticStep } from "@/lib/diagnosis";
 import { actionLabel } from "@/lib/diagnosis/ui-helpers";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
+import VoiceNote from "@/components/workspace/VoiceNote";
 
 type NextActionCardProps = {
   step: DiagnosticStep;
@@ -78,37 +79,48 @@ export default function NextActionCard({
           </p>
         )}
 
-        <div className="mt-4 flex items-end gap-2 rounded-2xl border border-[var(--border)] bg-black/25 p-2 focus-within:border-[var(--accent)]/50">
-          <textarea
-            value={result}
-            onChange={(e) => setResult(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
+        <div className="mt-4 rounded-2xl border border-[var(--border)] bg-black/25 p-2 focus-within:border-[var(--accent)]/50">
+          <div className="flex items-end gap-2">
+            <textarea
+              value={result}
+              onChange={(e) => setResult(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              rows={3}
+              placeholder="Upiši rezultat ovdje…"
+              className="min-h-[88px] flex-1 resize-y bg-transparent px-2 py-2 text-base leading-relaxed outline-none placeholder:text-[var(--muted)]"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!result.trim()}
+              aria-label="Pošalji rezultat"
+              className="mb-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[#061018] transition active:scale-95 disabled:opacity-35"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M5 12h14M13 6l6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+          <VoiceNote
+            key={step.id}
+            onTranscript={(text) => {
+              setResult((current) => {
+                const prev = current.trim();
+                return prev ? `${prev}\n${text}` : text;
+              });
             }}
-            rows={3}
-            placeholder="Upiši rezultat ovdje…"
-            className="min-h-[88px] flex-1 resize-y bg-transparent px-2 py-2 text-base leading-relaxed outline-none placeholder:text-[var(--muted)]"
           />
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!result.trim()}
-            aria-label="Pošalji rezultat"
-            className="mb-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[#061018] transition active:scale-95 disabled:opacity-35"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path
-                d="M5 12h14M13 6l6 6-6 6"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
         </div>
 
         <div className="mt-3 flex flex-wrap gap-1">
