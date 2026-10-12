@@ -107,8 +107,14 @@ export default function DiagnosticScreen() {
   const [phase, setPhase] = useState<Phase>("intake");
   const [problemText, setProblemText] = useState("");
   const intakePhotoRef = useRef<File | null>(null);
+  const intakePhotoGen = useRef(0);
+  const preparingRef = useRef(false);
+  const [hasPhoto, setHasPhoto] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const onIntakePhoto = useCallback((file: File | null) => {
+    intakePhotoGen.current += 1;
     intakePhotoRef.current = file;
+    setHasPhoto(file != null);
   }, []);
   const [diagnosticCase, setDiagnosticCase] = useState<DiagnosticCase | null>(
     null,
@@ -250,12 +256,16 @@ export default function DiagnosticScreen() {
   }
 
   async function handleStart() {
+    if (preparingRef.current) return;
     const text = problemText.trim();
-    if (!text) return;
     const file = intakePhotoRef.current;
+    if (!text && !file) return;
+    const gen = intakePhotoGen.current;
+    preparingRef.current = true;
+    setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
-      if (intakePhotoRef.current !== file) return;
+      if (intakePhotoGen.current !== gen || intakePhotoRef.current !== file) return;
       void runDiagnose({
         action: "start",
         problemText: text,
@@ -263,6 +273,9 @@ export default function DiagnosticScreen() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Slika nije valjana.");
+    } finally {
+      preparingRef.current = false;
+      setPreparing(false);
     }
   }
 
@@ -273,8 +286,8 @@ export default function DiagnosticScreen() {
   ) {
     const base = caseOverride ?? diagnosticCase;
     if (!base) return;
-    if (observation.kind === "RESULT" && !observation.text.trim()) {
-      setError("Unesi rezultat prije nastavka.");
+    if (observation.kind === "RESULT" && !observation.text?.trim() && !image) {
+      setError("Unesi rezultat ili fotografiju prije nastavka.");
       return;
     }
     void runDiagnose({
@@ -435,6 +448,8 @@ export default function DiagnosticScreen() {
             value={problemText}
             onChange={setProblemText}
             onPhotoChange={onIntakePhoto}
+            hasPhoto={hasPhoto}
+            preparing={preparing}
             onStart={() => void handleStart()}
             loading={loading}
             error={null}
@@ -490,7 +505,13 @@ export default function DiagnosticScreen() {
                 step={nextStep}
                 stepNumber={diagnosticCase.steps.length}
                 onSubmitResult={(text, image) =>
-                  handleContinue({ kind: "RESULT", text }, undefined, image)
+                  handleContinue(
+                    text.trim()
+                      ? { kind: "RESULT", text: text.trim() }
+                      : { kind: "RESULT" },
+                    undefined,
+                    image,
+                  )
                 }
                 onCantPerform={() => setCantOpen(true)}
                 onSkip={() => handleContinue({ kind: "SKIP" })}
@@ -545,7 +566,13 @@ export default function DiagnosticScreen() {
           onClose={() => setResultOpen(false)}
           step={nextStep}
           onSubmit={(result, image) =>
-            handleContinue({ kind: "RESULT", text: result }, undefined, image)
+            handleContinue(
+              result.trim()
+                ? { kind: "RESULT", text: result.trim() }
+                : { kind: "RESULT" },
+              undefined,
+              image,
+            )
           }
         />
       )}

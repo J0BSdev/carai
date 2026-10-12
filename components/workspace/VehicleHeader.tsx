@@ -35,7 +35,7 @@ export default function VehicleHeader({
     return {
       vehicle,
       dtcs: [...new Set(stored?.dtcs ?? [])],
-      complaint: shortComplaint(diagnosticCase.problemText),
+      complaint: shortComplaint(diagnosticCase.problemText) || "Fotografija",
     };
   }, [diagnosticCase]);
 

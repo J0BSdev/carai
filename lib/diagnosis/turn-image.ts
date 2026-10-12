@@ -1,7 +1,10 @@
 import type { TurnImage } from "./types";
 
-/** Claude accepts the original file up to this size. Larger files are rejected, not resized. */
+/** Claude and the server accept at most this many bytes. Larger photos are scaled first. */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+const MAX_EDGE = 8000;
+const MIN_EDGE = 1600;
 
 const MAX_BASE64_CHARS = Math.ceil(MAX_IMAGE_BYTES / 3) * 4;
 
@@ -86,17 +89,72 @@ export function parseTurnImage(value: unknown): TurnImage | undefined {
   return { mediaType: sniffed, data: raw.data };
 }
 
-export async function fileToTurnImage(file: File): Promise<TurnImage> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.byteLength === 0) throw new Error("Slika je prazna.");
-  if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error("Slika je prevelika.");
-  const mediaType = imageMediaType(bytes);
-  if (!mediaType) throw new Error("Podržane su samo JPEG, PNG i WebP slike.");
-
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
-  const chunk = 0x8000;
+  const chunk = 0x2000;
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
-  return { mediaType, data: btoa(binary) };
+  return btoa(binary);
+}
+
+function renderJpeg(
+  bitmap: ImageBitmap,
+  edge: number,
+  quality: number,
+): Promise<Blob> {
+  const scale = edge / Math.max(bitmap.width, bitmap.height);
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Slika nije valjana.");
+  ctx.imageSmoothingEnabled = scale < 1;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("Slika nije valjana."))),
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
+/** Shrink only until the JPEG fits. Quality stays high so small text remains readable. */
+async function jpegWithinLimit(bitmap: ImageBitmap): Promise<TurnImage> {
+  let edge = Math.min(MAX_EDGE, Math.max(bitmap.width, bitmap.height));
+  let blob = await renderJpeg(bitmap, edge, 0.92);
+  while (blob.size > MAX_IMAGE_BYTES && edge > MIN_EDGE) {
+    edge = Math.max(MIN_EDGE, Math.round(edge * 0.8));
+    blob = await renderJpeg(bitmap, edge, 0.92);
+    if (edge === MIN_EDGE) break;
+  }
+  if (blob.size > MAX_IMAGE_BYTES) blob = await renderJpeg(bitmap, edge, 0.8);
+  if (blob.size > MAX_IMAGE_BYTES) throw new Error("Slika je prevelika.");
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return { mediaType: "image/jpeg", data: bytesToBase64(bytes) };
+}
+
+export async function fileToTurnImage(file: File): Promise<TurnImage> {
+  if (file.size <= 0) throw new Error("Slika je prazna.");
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error("Podržane su samo JPEG, PNG i WebP slike.");
+  }
+  try {
+    const withinEdge = Math.max(bitmap.width, bitmap.height) <= MAX_EDGE;
+    if (withinEdge && file.size <= MAX_IMAGE_BYTES) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const mediaType = imageMediaType(bytes);
+      if (mediaType) return { mediaType, data: bytesToBase64(bytes) };
+    }
+    return await jpegWithinLimit(bitmap);
+  } finally {
+    bitmap.close();
+  }
 }

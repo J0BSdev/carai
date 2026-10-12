@@ -27,17 +27,24 @@ export default function NextActionCard({
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
   const [voiceBusy, setVoiceBusy] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [hasPhoto, setHasPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
   const photoRef = useRef<File | null>(null);
+  const photoGen = useRef(0);
+  const preparingRef = useRef(false);
   const onPhoto = useCallback((file: File | null) => {
+    photoGen.current += 1;
     photoRef.current = file;
+    setHasPhoto(file != null);
     if (file) setPhotoError(null);
   }, []);
   const [photoStepId, setPhotoStepId] = useState(step.id);
   if (photoStepId !== step.id) {
     setPhotoStepId(step.id);
     setPhotoError(null);
+    setHasPhoto(false);
   }
 
   useEffect(() => {
@@ -48,18 +55,24 @@ export default function NextActionCard({
     step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
 
   async function submit() {
-    if (voiceBusy) return;
+    if (voiceBusy || preparingRef.current) return;
     const trimmed = result.trim();
-    if (!trimmed) return;
     const file = photoRef.current;
+    if (!trimmed && !file) return;
+    const gen = photoGen.current;
+    preparingRef.current = true;
+    setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
-      if (photoRef.current !== file) return;
+      if (photoGen.current !== gen || photoRef.current !== file) return;
       setPhotoError(null);
       onSubmitResult(trimmed, image);
       setResult("");
     } catch (err) {
       setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
+    } finally {
+      preparingRef.current = false;
+      setPreparing(false);
     }
   }
 
@@ -120,7 +133,7 @@ export default function NextActionCard({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={voiceBusy || !result.trim()}
+              disabled={voiceBusy || preparing || (!result.trim() && !hasPhoto)}
               aria-label="Pošalji rezultat"
               className="mb-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[#061018] transition active:scale-95 disabled:opacity-35"
             >
@@ -137,7 +150,7 @@ export default function NextActionCard({
           </div>
           <div className="flex flex-wrap items-start gap-1">
             <VoiceNote
-              key={step.id}
+              key={`${step.id}-voice`}
               onBusyChange={setVoiceBusy}
               onTranscript={(text) => {
                 setResult((current) => {
@@ -146,7 +159,7 @@ export default function NextActionCard({
                 });
               }}
             />
-            <PhotoAttach key={step.id} onChange={onPhoto} />
+            <PhotoAttach key={`${step.id}-photo`} onChange={onPhoto} />
           </div>
           {photoError ? (
             <p role="alert" className="mt-2 text-sm text-[var(--danger)]">

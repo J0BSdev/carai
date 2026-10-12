@@ -8,6 +8,8 @@ type NewCaseExperienceProps = {
   value: string;
   onChange: (v: string) => void;
   onPhotoChange: (file: File | null) => void;
+  hasPhoto: boolean;
+  preparing: boolean;
   onStart: () => void;
   loading: boolean;
   error: string | null;
@@ -17,6 +19,8 @@ export default function NewCaseExperience({
   value,
   onChange,
   onPhotoChange,
+  hasPhoto,
+  preparing,
   onStart,
   loading,
   error,
@@ -78,7 +82,12 @@ export default function NewCaseExperience({
             <button
               type="button"
               onClick={onStart}
-              disabled={loading || voiceBusy || !value.trim()}
+              disabled={
+                loading ||
+                voiceBusy ||
+                preparing ||
+                (!value.trim() && !hasPhoto)
+              }
               aria-label="Pokreni"
               className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--accent)] text-[#061018] disabled:opacity-35"
             >

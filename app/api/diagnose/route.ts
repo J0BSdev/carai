@@ -76,10 +76,11 @@ export async function POST(request: Request) {
   const engine = new LlmDiagnosticEngine();
 
   if (body.action === "start") {
-    const problemText = body.problemText?.trim();
-    if (!problemText) {
+    const problemText =
+      typeof body.problemText === "string" ? body.problemText.trim() : "";
+    if (!problemText && !body.image) {
       return Response.json(
-        { error: "problemText je obavezan kad je action start" },
+        { error: "Potreban je opis ili fotografija" },
         { status: 400 },
       );
     }

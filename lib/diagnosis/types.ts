@@ -67,7 +67,8 @@ export type Observation =
   | {
       kind: "RESULT";
       stepId: string;
-      text: string;
+      /** Omitted when the turn result is only the attached photo. */
+      text?: string;
       recordedAt: string;
     }
   | {

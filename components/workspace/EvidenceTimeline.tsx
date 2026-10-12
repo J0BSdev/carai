@@ -26,7 +26,10 @@ type Item = {
 function observationDisplay(obs: Observation): { title: string; result?: string } {
   switch (obs.kind) {
     case "RESULT":
-      return { title: obs.text, result: obs.text };
+      return {
+        title: obs.text?.trim() || "Bez teksta",
+        result: obs.text,
+      };
     case "CANNOT_PERFORM":
       return { title: obs.reason ?? "Ne mogu izvesti" };
     case "SKIP":
@@ -43,7 +46,7 @@ function buildItems(c: DiagnosticCase): Item[] {
     {
       key: "complaint",
       kind: "PRIJAVA",
-      title: c.problemText,
+      title: c.problemText.trim() || "Fotografija",
     },
   ];
 

@@ -1,19 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { imageMediaType, MAX_IMAGE_BYTES } from "@/lib/diagnosis/turn-image";
+import { useEffect, useRef, useState } from "react";
 
 type PhotoAttachProps = {
   disabled?: boolean;
   onChange: (file: File | null) => void;
 };
 
+const PICKABLE = /^image\/(jpeg|jpg|png|webp|heic|heif)$/i;
+
 export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
-  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<string | null>(null);
+  const aliveRef = useRef(true);
   const onChangeRef = useRef(onChange);
 
   useEffect(() => {
@@ -21,52 +24,55 @@ export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
   }, [onChange]);
 
   useEffect(() => {
-    return () => onChangeRef.current(null);
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+      onChangeRef.current(null);
+    };
   }, []);
 
   function choose(next: File | null) {
-    setFile(next);
+    if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+    const url = next ? URL.createObjectURL(next) : null;
+    previewRef.current = url;
+    setPreviewUrl(url);
     setMenu(false);
+    setError(null);
     onChange(next);
   }
 
-  async function pick(list: FileList | null) {
-    const picked = list?.[0];
+  function pick(list: FileList | null) {
+    if (!aliveRef.current) return;
+    const picked = list?.[0] ?? null;
     if (cameraRef.current) cameraRef.current.value = "";
     if (galleryRef.current) galleryRef.current.value = "";
     if (!picked) return;
-    try {
-      const bytes = new Uint8Array(await picked.arrayBuffer());
-      if (bytes.byteLength === 0) {
-        setError("Slika je prazna.");
-        return;
-      }
-      if (bytes.byteLength > MAX_IMAGE_BYTES) {
-        setError("Slika je prevelika.");
-        return;
-      }
-      if (!imageMediaType(bytes)) {
-        setError("Podržane su samo JPEG, PNG i WebP slike.");
-        return;
-      }
-      setError(null);
-      choose(picked);
-    } catch {
-      setError("Slika nije valjana.");
+    if (picked.size <= 0) {
+      setError("Slika je prazna.");
+      return;
     }
+    if (picked.type && !PICKABLE.test(picked.type)) {
+      setError("Podržane su samo JPEG, PNG i WebP slike.");
+      return;
+    }
+    choose(picked);
   }
 
   return (
     <div className="min-w-0">
-      {file ? (
+      {previewUrl ? (
         <div className="flex items-center gap-2">
-          <Preview file={file} />
+          {/* blob: preview. next/image does not accept object URLs. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={previewUrl}
+            alt="Odabrana fotografija"
+            className="h-16 w-16 rounded-xl object-cover"
+          />
           <button
             type="button"
-            onClick={() => {
-              setError(null);
-              choose(null);
-            }}
+            onClick={() => choose(null)}
             className="min-h-11 rounded-xl px-3 text-sm text-[var(--muted-strong)] transition hover:bg-white/5 hover:text-[var(--foreground)]"
           >
             Obriši
@@ -106,19 +112,19 @@ export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
       <input
         ref={cameraRef}
         type="file"
-        accept="image/jpeg,image/png,image/webp"
+        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
         capture="environment"
         className="pointer-events-none absolute h-0 w-0 opacity-0"
         tabIndex={-1}
-        onChange={(event) => void pick(event.target.files)}
+        onChange={(event) => pick(event.target.files)}
       />
       <input
         ref={galleryRef}
         type="file"
-        accept="image/jpeg,image/png,image/webp"
+        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
         className="pointer-events-none absolute h-0 w-0 opacity-0"
         tabIndex={-1}
-        onChange={(event) => void pick(event.target.files)}
+        onChange={(event) => pick(event.target.files)}
       />
       {error ? (
         <p role="alert" className="mt-2 text-sm text-[var(--danger)]">
@@ -126,20 +132,6 @@ export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
         </p>
       ) : null}
     </div>
-  );
-}
-
-function Preview({ file }: { file: File }) {
-  const url = useMemo(() => URL.createObjectURL(file), [file]);
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
-  return (
-    // blob: preview. next/image does not accept object URLs.
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={url}
-      alt="Odabrana fotografija"
-      className="h-16 w-16 rounded-xl object-cover"
-    />
   );
 }
 

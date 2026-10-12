@@ -54,7 +54,9 @@ export function assertUniqueObservations(observations: Observation[]): Observati
 /** Same step, kind, and payload. recordedAt is not part of identity. */
 export function sameObservation(a: Observation, b: Observation): boolean {
   if (a.stepId !== b.stepId || a.kind !== b.kind) return false;
-  if (a.kind === "RESULT" && b.kind === "RESULT") return a.text === b.text;
+  if (a.kind === "RESULT" && b.kind === "RESULT") {
+    return (a.text ?? "") === (b.text ?? "");
+  }
   if (a.kind === "CANNOT_PERFORM" && b.kind === "CANNOT_PERFORM") {
     return a.reason === b.reason;
   }
@@ -68,7 +70,9 @@ export function stampObservation(
   const recordedAt = new Date().toISOString();
   switch (input.kind) {
     case "RESULT":
-      return { kind: "RESULT", stepId, text: input.text, recordedAt };
+      return input.text
+        ? { kind: "RESULT", stepId, text: input.text, recordedAt }
+        : { kind: "RESULT", stepId, recordedAt };
     case "CANNOT_PERFORM":
       return input.reason
         ? { kind: "CANNOT_PERFORM", stepId, reason: input.reason, recordedAt }
@@ -86,7 +90,8 @@ export function stampObservation(
 export function observationResultText(
   obs: Observation | undefined,
 ): string | null {
-  return obs?.kind === "RESULT" ? obs.text : null;
+  if (obs?.kind !== "RESULT") return null;
+  return obs.text?.trim() ? obs.text : null;
 }
 
 function parsePayload(raw: Record<string, unknown>): ObservationInput {
@@ -109,10 +114,12 @@ function parsePayload(raw: Record<string, unknown>): ObservationInput {
 
   switch (kind) {
     case "RESULT": {
-      if (typeof raw.text !== "string" || !raw.text.trim()) {
-        throw new Error("observation.text je obavezan za RESULT");
+      if (raw.text == null) return { kind: "RESULT" };
+      if (typeof raw.text !== "string") {
+        throw new Error("observation.text mora biti string");
       }
-      return { kind: "RESULT", text: raw.text.trim() };
+      const text = raw.text.trim();
+      return text ? { kind: "RESULT", text } : { kind: "RESULT" };
     }
     case "CANNOT_PERFORM": {
       if (raw.reason == null) return { kind: "CANNOT_PERFORM" };

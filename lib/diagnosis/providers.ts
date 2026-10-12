@@ -249,9 +249,22 @@ export async function callOpenAiJson(params: {
   model: string;
   system: string;
   user: string;
+  image?: TurnImage;
   telemetry?: AiCallMeta;
 }): Promise<string> {
   const started = Date.now();
+  const userContent = params.image
+    ? [
+        { type: "text", text: params.user },
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${params.image.mediaType};base64,${params.image.data}`,
+            detail: "high",
+          },
+        },
+      ]
+    : params.user;
   const response = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -266,7 +279,7 @@ export async function callOpenAiJson(params: {
           role: "system",
           content: `${params.system}\n\nReturn the response as valid JSON only.`,
         },
-        { role: "user", content: params.user },
+        { role: "user", content: userContent },
       ],
     }),
   });

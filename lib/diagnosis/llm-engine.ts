@@ -129,6 +129,12 @@ function findDraftQualityIssueInTurn(
   );
 }
 
+function attachedPhotoNote(diagnosticCase: DiagnosticCase): string {
+  const step = diagnosticCase.steps[diagnosticCase.steps.length - 1];
+  if (!step) return "Fotografija pripada originalComplaint ovog turna.";
+  return `Fotografija pripada koraku ${step.id} (${step.actionType}).`;
+}
+
 async function draftWithClaude(
   turn: DiagnosticTurn,
   diagnosticCase: DiagnosticCase,
@@ -146,7 +152,7 @@ async function draftWithClaude(
 
   const step = getActiveAiStep();
   const user = turn.image
-    ? `${userPrompt}\n\nFotografija ovog turna je priložena uz poruku. Gledaj original. Ne upisuj sliku ni base64 u JSON.`
+    ? `${userPrompt}\n\n${attachedPhotoNote(diagnosticCase)} Ne upisuj sliku ni base64 u JSON.`
     : userPrompt;
   const raw = await callAnthropicJson({
     apiKey,
@@ -262,15 +268,19 @@ async function verifyWithOpenAi(
     candidate.extracted != null
       ? { ...diagnosticCase, extracted: candidate.extracted }
       : diagnosticCase;
+  const verifierPrompt = buildVerifierUserPrompt(verifierCase, draft, {
+    previousIssues: options?.previousIssues,
+    strongFinal: options?.strongFinal,
+    technicianOutcome: candidate.technicianOutcome,
+  });
   const raw = await callOpenAiJson({
     apiKey,
     model,
     system: VERIFIER_SYSTEM_PROMPT,
-    user: buildVerifierUserPrompt(verifierCase, draft, {
-      previousIssues: options?.previousIssues,
-      strongFinal: options?.strongFinal,
-      technicianOutcome: candidate.technicianOutcome,
-    }),
+    user: turn.image
+      ? `${verifierPrompt}\n\n${attachedPhotoNote(verifierCase)}`
+      : verifierPrompt,
+    image: turn.image ?? undefined,
     telemetry: step
       ? {
           caseId: step.caseId,
@@ -473,8 +483,8 @@ async function ensureDraftPassesQualityGates(
 export class LlmDiagnosticEngine implements DiagnosticEngine {
   async startCase(problemText: string, image?: TurnImage): Promise<DiagnoseResponse> {
     const trimmed = problemText.trim();
-    if (!trimmed) {
-      throw new Error("Za pokretanje dijagnoze potreban je opis kvara");
+    if (!trimmed && !image) {
+      throw new Error("Za pokretanje dijagnoze potreban je opis kvara ili fotografija");
     }
 
     const baseCase: DiagnosticCase = {
@@ -515,6 +525,11 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     }
 
     assertObservationAllowed(observation.kind, currentStep.actionType);
+    if (observation.kind === "RESULT" && !observation.text?.trim() && !image) {
+      throw new InvalidObservationError(
+        "observation.text je obavezan za RESULT bez fotografije",
+      );
+    }
 
     const nextObservation = stampObservation(currentStep.id, observation);
     const existing = incoming.observations.find(

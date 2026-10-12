@@ -43,6 +43,11 @@ function reqString(value: unknown): string {
   return value.trim();
 }
 
+function storedText(value: unknown): string {
+  if (typeof value !== "string") invalid();
+  return value.trim();
+}
+
 function optString(value: unknown): string | undefined {
   if (value == null) return undefined;
   if (typeof value !== "string" || !value.trim()) invalid();
@@ -205,7 +210,7 @@ export function parseDiagnosticCase(value: unknown): DiagnosticCase {
   const diagnosticCase: DiagnosticCase = {
     id: reqString(raw.id),
     createdAt: reqString(raw.createdAt),
-    problemText: reqString(raw.problemText),
+    problemText: storedText(raw.problemText),
     observations,
     steps,
   };

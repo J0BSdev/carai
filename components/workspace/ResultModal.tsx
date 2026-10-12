@@ -23,15 +23,22 @@ export default function ResultModal({
   const [stepId, setStepId] = useState(step.id);
   const [photoKey, setPhotoKey] = useState(0);
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [hasPhoto, setHasPhoto] = useState(false);
   const photoRef = useRef<File | null>(null);
+  const photoGen = useRef(0);
+  const preparingRef = useRef(false);
   const onPhoto = useCallback((file: File | null) => {
+    photoGen.current += 1;
     photoRef.current = file;
+    setHasPhoto(file != null);
     if (file) setPhotoError(null);
   }, []);
   if (step.id !== stepId) {
     setStepId(step.id);
     setText("");
     setPhotoError(null);
+    setHasPhoto(false);
   }
 
   const title = step.content.split(/[.\n]/)[0]?.trim() || "Rezultat testa";
@@ -52,17 +59,24 @@ export default function ResultModal({
   }
 
   async function submit(extra?: string) {
-    const payload = extra ?? (text.trim() || null);
-    if (!payload) return;
+    if (preparingRef.current) return;
+    const payload = (extra ?? text).trim();
     const file = photoRef.current;
+    if (!payload && !file) return;
+    const gen = photoGen.current;
+    preparingRef.current = true;
+    setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
-      if (photoRef.current !== file) return;
+      if (photoGen.current !== gen || photoRef.current !== file) return;
       setPhotoError(null);
       onSubmit(payload, image);
       reset();
     } catch (err) {
       setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
+    } finally {
+      preparingRef.current = false;
+      setPreparing(false);
     }
   }
 
@@ -89,7 +103,8 @@ export default function ResultModal({
               key={q}
               type="button"
               onClick={() => void submit(q)}
-              className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm text-[var(--muted-strong)] transition hover:border-[var(--accent)]/40 hover:text-[var(--foreground)]"
+              disabled={preparing}
+              className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm text-[var(--muted-strong)] transition hover:border-[var(--accent)]/40 hover:text-[var(--foreground)] disabled:opacity-35"
             >
               {q}
             </button>
@@ -98,13 +113,6 @@ export default function ResultModal({
       </div>
 
       <div className="mt-4 flex flex-col gap-2">
-        <button
-          type="button"
-          disabled
-          className="min-h-11 rounded-xl border border-dashed border-[var(--border)] px-3 text-left text-sm text-[var(--muted)]"
-        >
-          + Dodaj mjerenje (uskoro)
-        </button>
         <PhotoAttach key={`${step.id}-${photoKey}`} onChange={onPhoto} />
         {photoError ? (
           <p role="alert" className="text-sm text-[var(--danger)]">
@@ -116,7 +124,7 @@ export default function ResultModal({
       <button
         type="button"
         onClick={() => void submit()}
-        disabled={!text.trim()}
+        disabled={preparing || (!text.trim() && !hasPhoto)}
         className="mt-5 flex min-h-12 w-full items-center justify-center rounded-2xl bg-[var(--accent)] text-base font-semibold text-[#061018] disabled:opacity-35"
       >
         POŠALJI REZULTAT →
