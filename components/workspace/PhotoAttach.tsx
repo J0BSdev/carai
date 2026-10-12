@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import {
+  HEIC_UNSUPPORTED_MESSAGE,
+  isHeicFile,
+} from "@/lib/diagnosis/turn-image";
 
 type PhotoAttachProps = {
   disabled?: boolean;
@@ -42,7 +46,7 @@ export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
     onChange(next);
   }
 
-  function pick(list: FileList | null) {
+  async function pick(list: FileList | null) {
     if (!aliveRef.current) return;
     const picked = list?.[0] ?? null;
     if (cameraRef.current) cameraRef.current.value = "";
@@ -56,6 +60,17 @@ export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
       setError("Podržane su samo JPEG, PNG i WebP slike.");
       return;
     }
+    if (isHeicFile(picked)) {
+      try {
+        const bitmap = await createImageBitmap(picked);
+        bitmap.close();
+      } catch {
+        if (!aliveRef.current) return;
+        setError(HEIC_UNSUPPORTED_MESSAGE);
+        return;
+      }
+    }
+    if (!aliveRef.current) return;
     choose(picked);
   }
 
@@ -116,7 +131,7 @@ export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
         capture="environment"
         className="pointer-events-none absolute h-0 w-0 opacity-0"
         tabIndex={-1}
-        onChange={(event) => pick(event.target.files)}
+        onChange={(event) => void pick(event.target.files)}
       />
       <input
         ref={galleryRef}
@@ -124,7 +139,7 @@ export default function PhotoAttach({ disabled, onChange }: PhotoAttachProps) {
         accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
         className="pointer-events-none absolute h-0 w-0 opacity-0"
         tabIndex={-1}
-        onChange={(event) => pick(event.target.files)}
+        onChange={(event) => void pick(event.target.files)}
       />
       {error ? (
         <p role="alert" className="mt-2 text-sm text-[var(--danger)]">

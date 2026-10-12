@@ -35,6 +35,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
     result: string | null;
     kind?: Observation["kind"];
     reason?: string;
+    hasPhoto?: boolean;
     testGuide?: string;
   }> = [];
 
@@ -57,6 +58,7 @@ export function buildCaseState(diagnosticCase: DiagnosticCase) {
       ...(obs?.kind === "CANNOT_PERFORM" && obs.reason
         ? { reason: obs.reason }
         : {}),
+      ...(obs?.kind === "RESULT" && obs.hasPhoto ? { hasPhoto: true } : {}),
       ...(step.testGuide ? { testGuide: step.testGuide } : {}),
     });
   }
@@ -107,6 +109,7 @@ function historyRow(s: CaseStepHistoryRow): Record<string, unknown> {
   if (s.result != null) row.result = s.result;
   if (s.kind) row.kind = s.kind;
   if (s.reason) row.reason = s.reason;
+  if (s.hasPhoto) row.hasPhoto = true;
   if (s.testGuide) row.testGuide = s.testGuide;
   return row;
 }

@@ -10,7 +10,7 @@ const ALLOWED_ON: Record<Observation["kind"], readonly AiActionType[]> = {
 };
 
 const PAYLOAD_KEYS: Record<Observation["kind"], readonly string[]> = {
-  RESULT: ["kind", "text"],
+  RESULT: ["kind", "text", "hasPhoto"],
   SKIP: ["kind"],
   CANNOT_PERFORM: ["kind", "reason"],
   REJECT_DIAGNOSIS: ["kind"],
@@ -55,7 +55,10 @@ export function assertUniqueObservations(observations: Observation[]): Observati
 export function sameObservation(a: Observation, b: Observation): boolean {
   if (a.stepId !== b.stepId || a.kind !== b.kind) return false;
   if (a.kind === "RESULT" && b.kind === "RESULT") {
-    return (a.text ?? "") === (b.text ?? "");
+    return (
+      (a.text ?? "") === (b.text ?? "") &&
+      (a.hasPhoto === true) === (b.hasPhoto === true)
+    );
   }
   if (a.kind === "CANNOT_PERFORM" && b.kind === "CANNOT_PERFORM") {
     return a.reason === b.reason;
@@ -70,9 +73,13 @@ export function stampObservation(
   const recordedAt = new Date().toISOString();
   switch (input.kind) {
     case "RESULT":
-      return input.text
-        ? { kind: "RESULT", stepId, text: input.text, recordedAt }
-        : { kind: "RESULT", stepId, recordedAt };
+      return {
+        kind: "RESULT",
+        stepId,
+        recordedAt,
+        ...(input.text ? { text: input.text } : {}),
+        ...(input.hasPhoto ? { hasPhoto: true } : {}),
+      };
     case "CANNOT_PERFORM":
       return input.reason
         ? { kind: "CANNOT_PERFORM", stepId, reason: input.reason, recordedAt }
@@ -114,12 +121,22 @@ function parsePayload(raw: Record<string, unknown>): ObservationInput {
 
   switch (kind) {
     case "RESULT": {
-      if (raw.text == null) return { kind: "RESULT" };
-      if (typeof raw.text !== "string") {
-        throw new Error("observation.text mora biti string");
+      let text: string | undefined;
+      if (raw.text != null) {
+        if (typeof raw.text !== "string") {
+          throw new Error("observation.text mora biti string");
+        }
+        const trimmed = raw.text.trim();
+        if (trimmed) text = trimmed;
       }
-      const text = raw.text.trim();
-      return text ? { kind: "RESULT", text } : { kind: "RESULT" };
+      if (raw.hasPhoto != null && raw.hasPhoto !== false && raw.hasPhoto !== true) {
+        throw new Error("observation.hasPhoto mora biti boolean");
+      }
+      return {
+        kind: "RESULT",
+        ...(text ? { text } : {}),
+        ...(raw.hasPhoto === true ? { hasPhoto: true } : {}),
+      };
     }
     case "CANNOT_PERFORM": {
       if (raw.reason == null) return { kind: "CANNOT_PERFORM" };

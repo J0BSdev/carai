@@ -69,6 +69,8 @@ export type Observation =
       stepId: string;
       /** Omitted when the turn result is only the attached photo. */
       text?: string;
+      /** The photo bytes are not stored. True only when this result included one. */
+      hasPhoto?: boolean;
       recordedAt: string;
     }
   | {

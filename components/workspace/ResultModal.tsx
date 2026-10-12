@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DiagnosticStep, TurnImage } from "@/lib/diagnosis";
 import { fileToTurnImage } from "@/lib/diagnosis/turn-image";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
@@ -11,6 +11,8 @@ type ResultModalProps = {
   onClose: () => void;
   step: DiagnosticStep;
   onSubmit: (result: string, image?: TurnImage) => void;
+  pending?: boolean;
+  error?: string | null;
 };
 
 export default function ResultModal({
@@ -18,6 +20,8 @@ export default function ResultModal({
   onClose,
   step,
   onSubmit,
+  pending = false,
+  error = null,
 }: ResultModalProps) {
   const [text, setText] = useState("");
   const [stepId, setStepId] = useState(step.id);
@@ -28,6 +32,15 @@ export default function ResultModal({
   const photoRef = useRef<File | null>(null);
   const photoGen = useRef(0);
   const preparingRef = useRef(false);
+  const stepIdRef = useRef(step.id);
+  const openRef = useRef(open);
+  useLayoutEffect(() => {
+    stepIdRef.current = step.id;
+    openRef.current = open;
+    return () => {
+      if (stepIdRef.current === step.id) stepIdRef.current = "";
+    };
+  }, [open, step.id]);
   const onPhoto = useCallback((file: File | null) => {
     photoGen.current += 1;
     photoRef.current = file;
@@ -59,19 +72,26 @@ export default function ResultModal({
   }
 
   async function submit(extra?: string) {
-    if (preparingRef.current) return;
+    if (pending || preparingRef.current) return;
     const payload = (extra ?? text).trim();
     const file = photoRef.current;
     if (!payload && !file) return;
     const gen = photoGen.current;
+    const stepAtStart = step.id;
     preparingRef.current = true;
     setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
-      if (photoGen.current !== gen || photoRef.current !== file) return;
+      if (
+        !openRef.current ||
+        stepIdRef.current !== stepAtStart ||
+        photoGen.current !== gen ||
+        photoRef.current !== file
+      ) {
+        return;
+      }
       setPhotoError(null);
       onSubmit(payload, image);
-      reset();
     } catch (err) {
       setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
     } finally {
@@ -82,6 +102,11 @@ export default function ResultModal({
 
   return (
     <ResponsiveOverlay open={open} onClose={handleClose} title="Rezultat testa">
+      {error ? (
+        <p role="alert" className="mb-3 text-sm text-[var(--danger)]">
+          {error}
+        </p>
+      ) : null}
       <p className="text-sm text-[var(--muted-strong)]">{title}</p>
       <p className="mt-1 text-xs text-[var(--muted)]">Što si pronašao?</p>
 
@@ -103,7 +128,7 @@ export default function ResultModal({
               key={q}
               type="button"
               onClick={() => void submit(q)}
-              disabled={preparing}
+              disabled={pending || preparing}
               className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm text-[var(--muted-strong)] transition hover:border-[var(--accent)]/40 hover:text-[var(--foreground)] disabled:opacity-35"
             >
               {q}
@@ -124,7 +149,7 @@ export default function ResultModal({
       <button
         type="button"
         onClick={() => void submit()}
-        disabled={preparing || (!text.trim() && !hasPhoto)}
+        disabled={pending || preparing || (!text.trim() && !hasPhoto)}
         className="mt-5 flex min-h-12 w-full items-center justify-center rounded-2xl bg-[var(--accent)] text-base font-semibold text-[#061018] disabled:opacity-35"
       >
         POŠALJI REZULTAT →

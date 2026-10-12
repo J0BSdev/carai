@@ -25,11 +25,12 @@ type Item = {
 
 function observationDisplay(obs: Observation): { title: string; result?: string } {
   switch (obs.kind) {
-    case "RESULT":
-      return {
-        title: obs.text?.trim() || "Bez teksta",
-        result: obs.text,
-      };
+    case "RESULT": {
+      const text = obs.text?.trim();
+      if (text) return { title: text, result: text };
+      if (obs.hasPhoto) return { title: "Fotografija" };
+      return { title: "Bez teksta" };
+    }
     case "CANNOT_PERFORM":
       return { title: obs.reason ?? "Ne mogu izvesti" };
     case "SKIP":

@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type { DiagnosticStep, TurnImage } from "@/lib/diagnosis";
 import { fileToTurnImage } from "@/lib/diagnosis/turn-image";
 import { actionLabel } from "@/lib/diagnosis/ui-helpers";
@@ -15,6 +22,7 @@ type NextActionCardProps = {
   onCantPerform: () => void;
   onSkip: () => void;
   onHowTo: () => void;
+  pending?: boolean;
 };
 
 export default function NextActionCard({
@@ -24,6 +32,7 @@ export default function NextActionCard({
   onCantPerform,
   onSkip,
   onHowTo,
+  pending = false,
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
   const [voiceBusy, setVoiceBusy] = useState(false);
@@ -34,6 +43,13 @@ export default function NextActionCard({
   const photoRef = useRef<File | null>(null);
   const photoGen = useRef(0);
   const preparingRef = useRef(false);
+  const stepIdRef = useRef(step.id);
+  useLayoutEffect(() => {
+    stepIdRef.current = step.id;
+    return () => {
+      if (stepIdRef.current === step.id) stepIdRef.current = "";
+    };
+  }, [step.id]);
   const onPhoto = useCallback((file: File | null) => {
     photoGen.current += 1;
     photoRef.current = file;
@@ -55,19 +71,25 @@ export default function NextActionCard({
     step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
 
   async function submit() {
-    if (voiceBusy || preparingRef.current) return;
+    if (voiceBusy || pending || preparingRef.current) return;
     const trimmed = result.trim();
     const file = photoRef.current;
     if (!trimmed && !file) return;
     const gen = photoGen.current;
+    const stepAtStart = step.id;
     preparingRef.current = true;
     setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
-      if (photoGen.current !== gen || photoRef.current !== file) return;
+      if (
+        stepIdRef.current !== stepAtStart ||
+        photoGen.current !== gen ||
+        photoRef.current !== file
+      ) {
+        return;
+      }
       setPhotoError(null);
       onSubmitResult(trimmed, image);
-      setResult("");
     } catch (err) {
       setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
     } finally {
@@ -133,7 +155,12 @@ export default function NextActionCard({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={voiceBusy || preparing || (!result.trim() && !hasPhoto)}
+              disabled={
+                voiceBusy ||
+                pending ||
+                preparing ||
+                (!result.trim() && !hasPhoto)
+              }
               aria-label="Pošalji rezultat"
               className="mb-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[#061018] transition active:scale-95 disabled:opacity-35"
             >

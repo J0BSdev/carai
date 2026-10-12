@@ -531,7 +531,15 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       );
     }
 
-    const nextObservation = stampObservation(currentStep.id, observation);
+    const recorded: ObservationInput =
+      observation.kind === "RESULT"
+        ? {
+            kind: "RESULT",
+            ...(observation.text ? { text: observation.text } : {}),
+            ...(image ? { hasPhoto: true } : {}),
+          }
+        : observation;
+    const nextObservation = stampObservation(currentStep.id, recorded);
     const existing = incoming.observations.find(
       (item) => item.stepId === currentStep.id,
     );

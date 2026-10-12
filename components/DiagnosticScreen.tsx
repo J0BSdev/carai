@@ -156,13 +156,13 @@ export default function DiagnosticScreen() {
   const showActiveStep =
     phase === "active" &&
     nextStep != null &&
-    nextStep.actionType !== "FINISH" &&
-    !loading;
+    nextStep.actionType !== "FINISH";
 
   const applyResponse = useCallback((data: DiagnoseResponse) => {
     const finished = data.nextStep?.actionType === "FINISH";
     const finish = lastFinishStep(data.case, data.nextStep);
 
+    setResultOpen(false);
     setDiagnosticCase(data.case);
     setNav("active");
 
@@ -224,7 +224,6 @@ export default function DiagnosticScreen() {
     setLoading(true);
     if (isStart) setInitLoading(true);
     setError(null);
-    setResultOpen(false);
     setCantOpen(false);
     try {
       const data = await callDiagnose(payload);
@@ -354,7 +353,7 @@ export default function DiagnosticScreen() {
     {
       id: "result",
       label: "Unesi rezultat",
-      enabled: Boolean(showActiveStep),
+      enabled: showActiveStep && !loading,
       run: () => setResultOpen(true),
     },
     {
@@ -430,8 +429,8 @@ export default function DiagnosticScreen() {
         </div>
       )}
 
-      {phase === "intake" && !initLoading && (
-        <>
+      {phase === "intake" && (
+        <div hidden={initLoading || loading}>
           {error ? (
             <div className="mx-auto w-full max-w-2xl px-4 pt-6 sm:px-6">
               <AnalysisInterrupted
@@ -454,7 +453,7 @@ export default function DiagnosticScreen() {
             loading={loading}
             error={null}
           />
-        </>
+        </div>
       )}
 
       {(initLoading || (loading && phase === "intake")) && (
@@ -466,7 +465,7 @@ export default function DiagnosticScreen() {
       {phase !== "intake" && diagnosticCase && (
         <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-4 sm:px-6 sm:py-6 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div className="flex min-w-0 flex-col gap-4">
-            {error && !missingFinish && (
+            {error && !missingFinish && !resultOpen && (
               <AnalysisInterrupted
                 error={error}
                 savedHint={interruptedSavedHint}
@@ -516,6 +515,7 @@ export default function DiagnosticScreen() {
                 onCantPerform={() => setCantOpen(true)}
                 onSkip={() => handleContinue({ kind: "SKIP" })}
                 onHowTo={() => setHowToOpen(true)}
+                pending={loading}
               />
             )}
 
@@ -556,7 +556,7 @@ export default function DiagnosticScreen() {
         </div>
       )}
 
-      {phase === "active" && showActiveStep && nextStep && (
+      {phase === "active" && showActiveStep && !loading && nextStep && (
         <QuickAddMenu onEnterResult={() => setResultOpen(true)} />
       )}
 
@@ -565,6 +565,8 @@ export default function DiagnosticScreen() {
           open={resultOpen}
           onClose={() => setResultOpen(false)}
           step={nextStep}
+          pending={loading}
+          error={resultOpen ? error : null}
           onSubmit={(result, image) =>
             handleContinue(
               result.trim()

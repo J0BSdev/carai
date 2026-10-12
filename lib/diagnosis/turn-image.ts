@@ -138,12 +138,22 @@ async function jpegWithinLimit(bitmap: ImageBitmap): Promise<TurnImage> {
   return { mediaType: "image/jpeg", data: bytesToBase64(bytes) };
 }
 
+export const HEIC_UNSUPPORTED_MESSAGE =
+  "Preglednik ne podržava HEIC/HEIF. Spremi fotografiju kao JPEG ili PNG.";
+
+export function isHeicFile(file: File): boolean {
+  return (
+    /image\/(heic|heif)/i.test(file.type) || /\.(heic|heif)$/i.test(file.name)
+  );
+}
+
 export async function fileToTurnImage(file: File): Promise<TurnImage> {
   if (file.size <= 0) throw new Error("Slika je prazna.");
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file);
   } catch {
+    if (isHeicFile(file)) throw new Error(HEIC_UNSUPPORTED_MESSAGE);
     throw new Error("Podržane su samo JPEG, PNG i WebP slike.");
   }
   try {
