@@ -44,6 +44,7 @@ import type {
   ExtractedCaseFacts,
   ObservationInput,
   TechnicianOutcome,
+  TurnImage,
 } from "./types";
 import {
   assertObservationAllowed,
@@ -76,6 +77,8 @@ type DiagnosticTurn = {
   technicianOutcome: TechnicianOutcome | null;
   /** True only on continue after a mechanic result. startCase is always false. */
   allowTechnicianOutcome: boolean;
+  /** Current request only. Not written onto the case or semanticUpdate. */
+  image: TurnImage | null;
 };
 
 type VerifierRouteReason =
@@ -142,11 +145,15 @@ async function draftWithClaude(
   }
 
   const step = getActiveAiStep();
+  const user = turn.image
+    ? `${userPrompt}\n\nFotografija ovog turna je priložena uz poruku. Gledaj original. Ne upisuj sliku ni base64 u JSON.`
+    : userPrompt;
   const raw = await callAnthropicJson({
     apiKey,
     model: getDiagnosticModel(),
     system: DIAGNOSTIC_SYSTEM_PROMPT,
-    user: userPrompt,
+    user,
+    image: turn.image ?? undefined,
     telemetry: step
       ? {
           caseId: step.caseId,
@@ -306,7 +313,7 @@ function retryIssuesFor(issue: GuardIssue): Array<GuardIssue | string> {
 
 async function callVerifiedDiagnosticStep(
   diagnosticCase: DiagnosticCase,
-  options?: { allowTechnicianOutcome?: boolean },
+  options?: { allowTechnicianOutcome?: boolean; image?: TurnImage },
 ): Promise<DiagnosticStep> {
   const stepNumber = diagnosticCase.steps.length + 1;
   const stepId = `step-${stepNumber}`;
@@ -315,6 +322,7 @@ async function callVerifiedDiagnosticStep(
     extracted: null,
     technicianOutcome: null,
     allowTechnicianOutcome: options?.allowTechnicianOutcome === true,
+    image: options?.image ?? null,
   };
 
   return runAiStep(
@@ -463,7 +471,7 @@ async function ensureDraftPassesQualityGates(
 }
 
 export class LlmDiagnosticEngine implements DiagnosticEngine {
-  async startCase(problemText: string): Promise<DiagnoseResponse> {
+  async startCase(problemText: string, image?: TurnImage): Promise<DiagnoseResponse> {
     const trimmed = problemText.trim();
     if (!trimmed) {
       throw new Error("Za pokretanje dijagnoze potreban je opis kvara");
@@ -479,7 +487,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       steps: [],
     };
 
-    const nextStep = await callVerifiedDiagnosticStep(baseCase);
+    const nextStep = await callVerifiedDiagnosticStep(baseCase, { image });
     const diagnosticCase: DiagnosticCase = {
       ...baseCase,
       extracted: baseCase.extracted,
@@ -493,6 +501,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
   async continueCase(
     diagnosticCase: DiagnosticCase,
     observation: ObservationInput,
+    image?: TurnImage,
   ): Promise<DiagnoseResponse> {
     const incoming: DiagnosticCase = {
       ...diagnosticCase,
@@ -529,6 +538,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
 
     const nextStep = await callVerifiedDiagnosticStep(caseWithObservation, {
       allowTechnicianOutcome: observation.kind === "RESULT",
+      image,
     });
     const updated: DiagnosticCase = {
       ...caseWithObservation,

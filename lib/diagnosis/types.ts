@@ -124,11 +124,18 @@ export interface DiagnosticCase {
 /** HTTP API body action (start/continue case), not AI actionType. */
 export type DiagnoseAction = "start" | "continue";
 
+/** One photo for the current request. Never written onto DiagnosticCase. */
+export type TurnImage = {
+  mediaType: "image/jpeg" | "image/png" | "image/webp";
+  data: string;
+};
+
 export interface DiagnoseRequest {
   action: DiagnoseAction;
   problemText?: string;
   case?: DiagnosticCase;
   observation?: ObservationInput;
+  image?: TurnImage;
 }
 
 export interface DiagnoseResponse {
@@ -138,9 +145,10 @@ export interface DiagnoseResponse {
 }
 
 export interface DiagnosticEngine {
-  startCase(problemText: string): Promise<DiagnoseResponse>;
+  startCase(problemText: string, image?: TurnImage): Promise<DiagnoseResponse>;
   continueCase(
     diagnosticCase: DiagnosticCase,
     observation: ObservationInput,
+    image?: TurnImage,
   ): Promise<DiagnoseResponse>;
 }

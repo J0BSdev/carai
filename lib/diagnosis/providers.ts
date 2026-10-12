@@ -7,6 +7,7 @@ import type {
   Hypothesis,
   TechnicalSourceType,
   TechnicianOutcome,
+  TurnImage,
 } from "./types";
 
 /** Already validated by parseDiagnosticDraft. */
@@ -80,8 +81,22 @@ async function fetchAnthropicText(params: {
   system: string;
   user: string;
   maxTokens?: number;
+  image?: TurnImage;
 }): Promise<AnthropicResult> {
   const started = Date.now();
+  const content = params.image
+    ? [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: params.image.mediaType,
+            data: params.image.data,
+          },
+        },
+        { type: "text", text: params.user },
+      ]
+    : params.user;
   const response = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -102,7 +117,7 @@ async function fetchAnthropicText(params: {
           cache_control: { type: "ephemeral", ttl: "1h" },
         },
       ],
-      messages: [{ role: "user", content: params.user }],
+      messages: [{ role: "user", content }],
     }),
   });
 
@@ -201,6 +216,7 @@ export async function callAnthropicJson(params: {
   system: string;
   user: string;
   maxTokens?: number;
+  image?: TurnImage;
   telemetry?: AiCallMeta;
 }): Promise<string> {
   const primary = await fetchAnthropicText(params);

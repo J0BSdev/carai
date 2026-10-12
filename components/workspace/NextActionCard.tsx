@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
-import type { DiagnosticStep } from "@/lib/diagnosis";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { DiagnosticStep, TurnImage } from "@/lib/diagnosis";
+import { fileToTurnImage } from "@/lib/diagnosis/turn-image";
 import { actionLabel } from "@/lib/diagnosis/ui-helpers";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
+import PhotoAttach from "@/components/workspace/PhotoAttach";
 import VoiceNote from "@/components/workspace/VoiceNote";
 
 type NextActionCardProps = {
   step: DiagnosticStep;
   stepNumber: number;
-  onSubmitResult: (result: string) => void;
+  onSubmitResult: (result: string, image?: TurnImage) => void;
   onCantPerform: () => void;
   onSkip: () => void;
   onHowTo: () => void;
@@ -25,7 +27,18 @@ export default function NextActionCard({
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
   const [voiceBusy, setVoiceBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
+  const photoRef = useRef<File | null>(null);
+  const onPhoto = useCallback((file: File | null) => {
+    photoRef.current = file;
+    if (file) setPhotoError(null);
+  }, []);
+  const [photoStepId, setPhotoStepId] = useState(step.id);
+  if (photoStepId !== step.id) {
+    setPhotoStepId(step.id);
+    setPhotoError(null);
+  }
 
   useEffect(() => {
     setResult("");
@@ -34,12 +47,20 @@ export default function NextActionCard({
   const whyLabel =
     step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
 
-  function submit() {
+  async function submit() {
     if (voiceBusy) return;
     const trimmed = result.trim();
     if (!trimmed) return;
-    onSubmitResult(trimmed);
-    setResult("");
+    const file = photoRef.current;
+    try {
+      const image = file ? await fileToTurnImage(file) : undefined;
+      if (photoRef.current !== file) return;
+      setPhotoError(null);
+      onSubmitResult(trimmed, image);
+      setResult("");
+    } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
+    }
   }
 
   return (
@@ -89,7 +110,7 @@ export default function NextActionCard({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  submit();
+                  void submit();
                 }
               }}
               rows={3}
@@ -98,7 +119,7 @@ export default function NextActionCard({
             />
             <button
               type="button"
-              onClick={submit}
+              onClick={() => void submit()}
               disabled={voiceBusy || !result.trim()}
               aria-label="Pošalji rezultat"
               className="mb-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[#061018] transition active:scale-95 disabled:opacity-35"
@@ -114,16 +135,24 @@ export default function NextActionCard({
               </svg>
             </button>
           </div>
-          <VoiceNote
-            key={step.id}
-            onBusyChange={setVoiceBusy}
-            onTranscript={(text) => {
-              setResult((current) => {
-                const prev = current.trim();
-                return prev ? `${prev}\n${text}` : text;
-              });
-            }}
-          />
+          <div className="flex flex-wrap items-start gap-1">
+            <VoiceNote
+              key={step.id}
+              onBusyChange={setVoiceBusy}
+              onTranscript={(text) => {
+                setResult((current) => {
+                  const prev = current.trim();
+                  return prev ? `${prev}\n${text}` : text;
+                });
+              }}
+            />
+            <PhotoAttach key={step.id} onChange={onPhoto} />
+          </div>
+          {photoError ? (
+            <p role="alert" className="mt-2 text-sm text-[var(--danger)]">
+              {photoError}
+            </p>
+          ) : null}
         </div>
 
         <div className="mt-3 flex flex-wrap gap-1">

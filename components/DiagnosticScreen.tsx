@@ -7,8 +7,10 @@ import type {
   DiagnosticCase,
   DiagnosticStep,
   ObservationInput,
+  TurnImage,
 } from "@/lib/diagnosis";
 import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis/errors";
+import { fileToTurnImage } from "@/lib/diagnosis/turn-image";
 import {
   diagnosticStatusLabel,
   latestHypotheses,
@@ -104,6 +106,10 @@ function AnalysisInterrupted({
 export default function DiagnosticScreen() {
   const [phase, setPhase] = useState<Phase>("intake");
   const [problemText, setProblemText] = useState("");
+  const intakePhotoRef = useRef<File | null>(null);
+  const onIntakePhoto = useCallback((file: File | null) => {
+    intakePhotoRef.current = file;
+  }, []);
   const [diagnosticCase, setDiagnosticCase] = useState<DiagnosticCase | null>(
     null,
   );
@@ -243,15 +249,27 @@ export default function DiagnosticScreen() {
     }
   }
 
-  function handleStart() {
+  async function handleStart() {
     const text = problemText.trim();
     if (!text) return;
-    void runDiagnose({ action: "start", problemText: text });
+    const file = intakePhotoRef.current;
+    try {
+      const image = file ? await fileToTurnImage(file) : undefined;
+      if (intakePhotoRef.current !== file) return;
+      void runDiagnose({
+        action: "start",
+        problemText: text,
+        ...(image ? { image } : {}),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Slika nije valjana.");
+    }
   }
 
   function handleContinue(
     observation: ObservationInput,
     caseOverride?: DiagnosticCase,
+    image?: TurnImage,
   ) {
     const base = caseOverride ?? diagnosticCase;
     if (!base) return;
@@ -263,6 +281,7 @@ export default function DiagnosticScreen() {
       action: "continue",
       case: base,
       observation,
+      ...(image ? { image } : {}),
     });
   }
 
@@ -415,7 +434,8 @@ export default function DiagnosticScreen() {
           <NewCaseExperience
             value={problemText}
             onChange={setProblemText}
-            onStart={handleStart}
+            onPhotoChange={onIntakePhoto}
+            onStart={() => void handleStart()}
             loading={loading}
             error={null}
           />
@@ -469,8 +489,8 @@ export default function DiagnosticScreen() {
               <NextActionCard
                 step={nextStep}
                 stepNumber={diagnosticCase.steps.length}
-                onSubmitResult={(text) =>
-                  handleContinue({ kind: "RESULT", text })
+                onSubmitResult={(text, image) =>
+                  handleContinue({ kind: "RESULT", text }, undefined, image)
                 }
                 onCantPerform={() => setCantOpen(true)}
                 onSkip={() => handleContinue({ kind: "SKIP" })}
@@ -524,8 +544,8 @@ export default function DiagnosticScreen() {
           open={resultOpen}
           onClose={() => setResultOpen(false)}
           step={nextStep}
-          onSubmit={(result) =>
-            handleContinue({ kind: "RESULT", text: result })
+          onSubmit={(result, image) =>
+            handleContinue({ kind: "RESULT", text: result }, undefined, image)
           }
         />
       )}

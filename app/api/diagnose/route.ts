@@ -8,6 +8,7 @@ import {
 import { parseDiagnosticCase } from "@/lib/diagnosis/case-parse";
 import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
 import { parseObservationInput } from "@/lib/diagnosis/observation";
+import { parseTurnImage } from "@/lib/diagnosis/turn-image";
 
 function parseBody(body: unknown): DiagnoseRequest {
   if (!body || typeof body !== "object") {
@@ -29,6 +30,7 @@ function parseBody(body: unknown): DiagnoseRequest {
       raw.observation === undefined
         ? undefined
         : parseObservationInput(raw.observation),
+    image: parseTurnImage(raw.image),
   };
 }
 
@@ -81,7 +83,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    return runPipeline(() => engine.startCase(problemText));
+    return runPipeline(() => engine.startCase(problemText, body.image));
   }
 
   const diagnosticCase = body.case;
@@ -100,5 +102,7 @@ export async function POST(request: Request) {
     );
   }
 
-  return runPipeline(() => engine.continueCase(diagnosticCase, observation));
+  return runPipeline(() =>
+    engine.continueCase(diagnosticCase, observation, body.image),
+  );
 }

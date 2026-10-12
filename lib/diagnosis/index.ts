@@ -13,6 +13,7 @@ export type {
   Observation,
   ObservationInput,
   TechnicianOutcome,
+  TurnImage,
   VehicleInfo,
 } from "./types";
 

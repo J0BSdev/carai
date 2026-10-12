@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import PhotoAttach from "@/components/workspace/PhotoAttach";
 import VoiceNote from "@/components/workspace/VoiceNote";
 
 type NewCaseExperienceProps = {
   value: string;
   onChange: (v: string) => void;
+  onPhotoChange: (file: File | null) => void;
   onStart: () => void;
   loading: boolean;
   error: string | null;
@@ -14,6 +16,7 @@ type NewCaseExperienceProps = {
 export default function NewCaseExperience({
   value,
   onChange,
+  onPhotoChange,
   onStart,
   loading,
   error,
@@ -70,12 +73,7 @@ export default function NewCaseExperience({
                   onChange(next);
                 }}
               />
-              <span
-                className="flex h-10 w-10 items-center justify-center opacity-50"
-                title="Kamera uskoro"
-              >
-                <CameraIcon />
-              </span>
+              <PhotoAttach disabled={loading} onChange={onPhotoChange} />
             </div>
             <button
               type="button"
@@ -115,14 +113,6 @@ function FutureChip({ children }: { children: string }) {
   );
 }
 
-function CameraIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M4 8h3l2-2h6l2 2h3v11H4V8Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-      <circle cx="12" cy="13" r="3.5" stroke="currentColor" strokeWidth="1.6" />
-    </svg>
-  );
-}
 function ArrowIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
