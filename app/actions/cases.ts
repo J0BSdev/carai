@@ -30,6 +30,8 @@ export type CaseSummary = {
 };
 
 export type ManualResolvedFaultInput = {
+  /** When set, updates that manual row. Create when omitted. */
+  id?: string;
   vehicleMake: string;
   vehicleModel: string;
   vehicleEngine?: string;
@@ -191,13 +193,17 @@ export async function saveDiagnosticCase(
   return { ok: true, data: { id: stored.id } };
 }
 
-/** Mechanic-entered resolved fault. No AI steps and no model calls. */
-export async function saveManualResolvedFault(
-  input: ManualResolvedFaultInput,
-): Promise<CaseStoreResult<{ id: string }>> {
-  const auth = await userId();
-  if ("ok" in auth) return auth;
+type ParsedManualFault = {
+  vehicleMake: string;
+  vehicleModel: string;
+  vehicleEngine: string | null;
+  vehicleYear: number | null;
+  confirmedFault: string;
+};
 
+function parseManualFault(
+  input: ManualResolvedFaultInput,
+): ParsedManualFault | CaseStoreFailure {
   const vehicleMake = trimRequired(input.vehicleMake, 200);
   const vehicleModel = trimRequired(input.vehicleModel, 200);
   const confirmedFault = trimRequired(input.confirmedFault, 4000);
@@ -235,32 +241,85 @@ export async function saveManualResolvedFault(
     vehicleYear = input.vehicleYear;
   }
 
-  const id = crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-  const caseData = {
-    entry: "manual_resolved_fault",
-    vehicle: {
-      make: vehicleMake,
-      model: vehicleModel,
-      ...(vehicleEngine ? { engine: vehicleEngine } : {}),
-      ...(vehicleYear != null ? { year: vehicleYear } : {}),
-    },
+  return {
+    vehicleMake,
+    vehicleModel,
+    vehicleEngine,
+    vehicleYear,
     confirmedFault,
   };
+}
 
+function manualCaseData(fields: ParsedManualFault) {
+  return {
+    entry: "manual_resolved_fault",
+    vehicle: {
+      make: fields.vehicleMake,
+      model: fields.vehicleModel,
+      ...(fields.vehicleEngine ? { engine: fields.vehicleEngine } : {}),
+      ...(fields.vehicleYear != null ? { year: fields.vehicleYear } : {}),
+    },
+    confirmedFault: fields.confirmedFault,
+  };
+}
+
+/** Mechanic-entered resolved fault. No AI steps and no model calls. */
+export async function saveManualResolvedFault(
+  input: ManualResolvedFaultInput,
+): Promise<CaseStoreResult<{ id: string }>> {
+  const auth = await userId();
+  if ("ok" in auth) return auth;
+
+  const parsed = parseManualFault(input);
+  if ("ok" in parsed) return parsed;
+
+  const caseData = manualCaseData(parsed);
+  const columns = {
+    problem_text: "",
+    vehicle_make: parsed.vehicleMake,
+    vehicle_model: parsed.vehicleModel,
+    vehicle_year: parsed.vehicleYear,
+    vehicle_engine: parsed.vehicleEngine,
+    confirmed_fault: parsed.confirmedFault,
+    status: "finished" as const,
+    case_data: caseData,
+  };
+
+  if (input.id) {
+    const { data, error } = await auth.supabase
+      .from("diagnostic_cases")
+      .update(columns)
+      .eq("id", input.id)
+      .eq("source", "manual")
+      .eq("user_id", auth.id)
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      console.error("saveManualResolvedFault", error.code);
+      return {
+        ok: false,
+        code: "FAILED",
+        message: "Spremanje kvara nije uspjelo.",
+      };
+    }
+    if (!data?.id) {
+      return {
+        ok: false,
+        code: "NOT_FOUND",
+        message: "Ručno unesen kvar nije pronađen.",
+      };
+    }
+    return { ok: true, data: { id: data.id } };
+  }
+
+  const id = crypto.randomUUID();
   const { error } = await auth.supabase.from("diagnostic_cases").insert({
     id,
     user_id: auth.id,
-    created_at: createdAt,
-    problem_text: "",
-    vehicle_make: vehicleMake,
-    vehicle_model: vehicleModel,
-    vehicle_year: vehicleYear,
-    vehicle_engine: vehicleEngine,
-    confirmed_fault: confirmedFault,
-    status: "finished",
+    created_at: new Date().toISOString(),
     source: "manual",
-    case_data: caseData,
+    ...columns,
   });
 
   if (error) {

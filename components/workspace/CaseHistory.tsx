@@ -91,16 +91,24 @@ function Field({
 function CaseCard({
   item,
   expanded,
+  editing,
   openingId,
   onToggle,
   onOpen,
+  onEdit,
+  onCancelEdit,
+  onSaved,
   showFaultOnCard,
 }: {
   item: CaseSummary;
   expanded: boolean;
+  editing: boolean;
   openingId: string | null;
   onToggle: () => void;
   onOpen: (id: string) => void;
+  onEdit: () => void;
+  onCancelEdit: () => void;
+  onSaved: () => void;
   showFaultOnCard: boolean;
 }) {
   const manual = item.source === "manual";
@@ -135,7 +143,25 @@ function CaseCard({
         </span>
       </button>
 
-      {expanded && (
+      {expanded && editing && manual ? (
+        <div className="border-t border-[var(--border)] px-4 py-3">
+          <ManualFaultForm
+            caseId={item.id}
+            embedded
+            initial={{
+              vehicleMake: item.vehicleMake ?? "",
+              vehicleModel: item.vehicleModel ?? "",
+              vehicleEngine: item.vehicleEngine ?? "",
+              vehicleYear: item.vehicleYear,
+              confirmedFault: item.confirmedFault ?? "",
+            }}
+            onCancel={onCancelEdit}
+            onSaved={onSaved}
+          />
+        </div>
+      ) : null}
+
+      {expanded && !editing && (
         <div className="border-t border-[var(--border)] px-4 py-3">
           <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
             {item.vehicleMake ? (
@@ -176,9 +202,18 @@ function CaseCard({
             <Field label="Status" value={statusLabel(item.status)} />
           </dl>
           {manual ? (
-            <p className="mt-3 text-xs text-[var(--muted)]">
-              Ručno unesen kvar nema CarAI dijagnostiku za nastavak.
-            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={onEdit}
+                className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm text-[var(--accent)]"
+              >
+                Uredi
+              </button>
+              <p className="text-xs text-[var(--muted)]">
+                Ručno unesen kvar nema CarAI dijagnostiku za nastavak.
+              </p>
+            </div>
           ) : (
             <button
               type="button"
@@ -200,18 +235,26 @@ function CaseSection({
   cases,
   empty,
   expandedId,
+  editingId,
   openingId,
   onToggle,
   onOpen,
+  onEdit,
+  onCancelEdit,
+  onSaved,
   showFaultOnCard,
 }: {
   title: string;
   cases: CaseSummary[];
   empty: string;
   expandedId: string | null;
+  editingId: string | null;
   openingId: string | null;
   onToggle: (id: string) => void;
   onOpen: (id: string) => void;
+  onEdit: (id: string) => void;
+  onCancelEdit: () => void;
+  onSaved: () => void;
   showFaultOnCard: boolean;
 }) {
   return (
@@ -228,9 +271,13 @@ function CaseSection({
               key={item.id}
               item={item}
               expanded={expandedId === item.id}
+              editing={editingId === item.id}
               openingId={openingId}
               onToggle={() => onToggle(item.id)}
               onOpen={onOpen}
+              onEdit={() => onEdit(item.id)}
+              onCancelEdit={onCancelEdit}
+              onSaved={onSaved}
               showFaultOnCard={showFaultOnCard}
             />
           ))}
@@ -240,18 +287,35 @@ function CaseSection({
   );
 }
 
+type ManualFaultFormValues = {
+  vehicleMake: string;
+  vehicleModel: string;
+  vehicleEngine: string;
+  vehicleYear: number | null;
+  confirmedFault: string;
+};
+
 function ManualFaultForm({
+  caseId,
+  initial,
+  embedded,
   onCancel,
   onSaved,
 }: {
+  caseId?: string;
+  initial?: ManualFaultFormValues;
+  embedded?: boolean;
   onCancel: () => void;
   onSaved: () => void;
 }) {
-  const [make, setMake] = useState("");
-  const [model, setModel] = useState("");
-  const [engine, setEngine] = useState("");
-  const [year, setYear] = useState("");
-  const [fault, setFault] = useState("");
+  const editing = caseId != null;
+  const [make, setMake] = useState(initial?.vehicleMake ?? "");
+  const [model, setModel] = useState(initial?.vehicleModel ?? "");
+  const [engine, setEngine] = useState(initial?.vehicleEngine ?? "");
+  const [year, setYear] = useState(
+    initial?.vehicleYear != null ? String(initial.vehicleYear) : "",
+  );
+  const [fault, setFault] = useState(initial?.confirmedFault ?? "");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -272,6 +336,7 @@ function ManualFaultForm({
       }
 
       const result = await saveManualResolvedFault({
+        ...(caseId ? { id: caseId } : {}),
         vehicleMake: make,
         vehicleModel: model,
         vehicleEngine: engine,
@@ -292,14 +357,17 @@ function ManualFaultForm({
 
   const fieldClass =
     "mt-1 min-h-11 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 text-sm outline-none";
+  const formClass = embedded
+    ? ""
+    : "surface-2 mt-4 rounded-2xl px-4 py-4";
 
   return (
     <form
       onSubmit={(event) => void onSubmit(event)}
-      className="surface-2 mt-4 rounded-2xl px-4 py-4"
+      className={formClass}
     >
       <p className="text-xs font-semibold tracking-[0.16em] text-[var(--muted)]">
-        NOVI RIJEŠENI KVAR
+        {editing ? "UREDI RIJEŠENI KVAR" : "NOVI RIJEŠENI KVAR"}
       </p>
       <label className="mt-3 block text-xs text-[var(--muted)]" htmlFor="manual-make">
         Marka vozila
@@ -368,7 +436,7 @@ function ManualFaultForm({
           disabled={saving}
           className="min-h-11 rounded-xl border border-[var(--border-strong)] px-4 text-sm disabled:opacity-35"
         >
-          {saving ? "Spremam…" : "Spremi kvar"}
+          {saving ? "Spremam…" : "Spremi"}
         </button>
         <button
           type="button"
@@ -395,12 +463,36 @@ export default function CaseHistory({
   onRefresh,
 }: CaseHistoryProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const highConfidence = cases.filter(isHighConfidenceFault);
   const other = cases.filter((item) => !isHighConfidenceFault(item));
 
   function toggle(id: string) {
-    setExpandedId((current) => (current === id ? null : id));
+    setExpandedId((current) => {
+      if (current === id) {
+        setEditingId(null);
+        return null;
+      }
+      setEditingId(null);
+      return id;
+    });
+  }
+
+  function startEdit(id: string) {
+    setShowForm(false);
+    setExpandedId(id);
+    setEditingId(id);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  function afterManualSaved() {
+    setShowForm(false);
+    setEditingId(null);
+    onRefresh();
   }
 
   return (
@@ -413,7 +505,10 @@ export default function CaseHistory({
         {signedIn && configured && (
           <button
             type="button"
-            onClick={() => setShowForm(true)}
+            onClick={() => {
+              setEditingId(null);
+              setShowForm(true);
+            }}
             className="min-h-11 rounded-xl border border-[var(--border-strong)] px-4 text-sm text-[var(--accent)]"
           >
             + Dodaj riješeni kvar
@@ -451,10 +546,7 @@ export default function CaseHistory({
       {signedIn && showForm && (
         <ManualFaultForm
           onCancel={() => setShowForm(false)}
-          onSaved={() => {
-            setShowForm(false);
-            onRefresh();
-          }}
+          onSaved={afterManualSaved}
         />
       )}
 
@@ -475,9 +567,13 @@ export default function CaseHistory({
             cases={highConfidence}
             empty="Nema potvrđenih ni visokopouzdanih kvarova."
             expandedId={expandedId}
+            editingId={editingId}
             openingId={openingId}
             onToggle={toggle}
             onOpen={onOpen}
+            onEdit={startEdit}
+            onCancelEdit={cancelEdit}
+            onSaved={afterManualSaved}
             showFaultOnCard
           />
           <CaseSection
@@ -485,9 +581,13 @@ export default function CaseHistory({
             cases={other}
             empty="Nema nepotvrđenih ni nedovršenih slučajeva."
             expandedId={expandedId}
+            editingId={editingId}
             openingId={openingId}
             onToggle={toggle}
             onOpen={onOpen}
+            onEdit={startEdit}
+            onCancelEdit={cancelEdit}
+            onSaved={afterManualSaved}
             showFaultOnCard={false}
           />
         </>
