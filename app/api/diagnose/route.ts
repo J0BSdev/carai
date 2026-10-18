@@ -9,6 +9,7 @@ import { parseDiagnosticCase } from "@/lib/diagnosis/case-parse";
 import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
 import { parseObservationInput } from "@/lib/diagnosis/observation";
 import { parseTurnImage } from "@/lib/diagnosis/turn-image";
+import { authorizeUsage, usageDeniedResponse } from "@/lib/access";
 
 function parseBody(body: unknown): DiagnoseRequest {
   if (!body || typeof body !== "object") {
@@ -58,6 +59,9 @@ async function runPipeline(run: () => Promise<unknown>): Promise<Response> {
 }
 
 export async function POST(request: Request) {
+  const access = await authorizeUsage(request.headers.get("host"));
+  if (!access.ok) return usageDeniedResponse(access.reason);
+
   let body: DiagnoseRequest;
   try {
     body = parseBody(await request.json());

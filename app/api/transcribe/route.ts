@@ -1,3 +1,4 @@
+import { authorizeUsage, usageDeniedResponse } from "@/lib/access";
 import { AI_REQUEST_TIMEOUT_MS, getOpenAiApiKey } from "@/lib/diagnosis/config";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
@@ -61,6 +62,9 @@ function reject(error: string, status: number): Response {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const access = await authorizeUsage(request.headers.get("host"));
+  if (!access.ok) return usageDeniedResponse(access.reason);
+
   const apiKey = getOpenAiApiKey();
   if (!apiKey) {
     return reject("Glasovni unos trenutno nije dostupan.", 503);

@@ -67,7 +67,6 @@ export default function AppShell({
             label="Povijest"
             onClick={() => onNavigate("history")}
             icon={<ClockIcon />}
-            future
           />
           <NavBtn
             active={activeNav === "settings"}
@@ -75,7 +74,6 @@ export default function AppShell({
             label="Postavke"
             onClick={() => onNavigate("settings")}
             icon={<GearIcon />}
-            future
           />
         </nav>
 
@@ -130,14 +128,12 @@ export default function AppShell({
             label="Povijest"
             onClick={() => onNavigate("history")}
             icon={<ClockIcon />}
-            future
           />
           <MobileNav
             active={activeNav === "settings"}
             label="Više"
             onClick={() => onNavigate("settings")}
             icon={<GearIcon />}
-            future
           />
         </nav>
       </div>

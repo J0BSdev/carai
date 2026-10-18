@@ -1,6 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  listDiagnosticCases,
+  loadDiagnosticCase,
+  saveDiagnosticCase,
+  type CaseSummary,
+} from "@/app/actions/cases";
+import type { SessionUser } from "@/lib/supabase/env";
+import { createClient } from "@/lib/supabase/client";
 import type {
   DiagnoseRequest,
   DiagnoseResponse,
@@ -15,7 +24,9 @@ import {
   diagnosticStatusLabel,
   latestHypotheses,
 } from "@/lib/diagnosis/ui-helpers";
+import AccountPanel from "@/components/workspace/AccountPanel";
 import AppShell from "@/components/workspace/AppShell";
+import CaseHistory from "@/components/workspace/CaseHistory";
 import AIAnalysisState from "@/components/workspace/AIAnalysisState";
 import CannotPerformModal from "@/components/workspace/CannotPerformModal";
 import CaseIntelligencePanel from "@/components/workspace/CaseIntelligencePanel";
@@ -103,7 +114,16 @@ function AnalysisInterrupted({
   );
 }
 
-export default function DiagnosticScreen() {
+export default function DiagnosticScreen({
+  user,
+  persistenceConfigured,
+  role,
+}: {
+  user: SessionUser | null;
+  persistenceConfigured: boolean;
+  role: "admin" | "member" | "local";
+}) {
+  const router = useRouter();
   const [phase, setPhase] = useState<Phase>("intake");
   const [problemText, setProblemText] = useState("");
   const intakePhotoRef = useRef<File | null>(null);
@@ -137,6 +157,14 @@ export default function DiagnosticScreen() {
   const [hypOpen, setHypOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [futureNotice, setFutureNotice] = useState<string | null>(null);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const [history, setHistory] = useState<CaseSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const saveGeneration = useRef(0);
+  const saveQueue = useRef(Promise.resolve());
 
   const statusLabel = useMemo(
     () => diagnosticStatusLabel(phase, diagnosticCase, nextStep),
@@ -183,6 +211,7 @@ export default function DiagnosticScreen() {
 
   function resetCase() {
     requestGeneration.current += 1;
+    saveGeneration.current += 1;
     requestInFlight.current = false;
     setPhase("intake");
     setProblemText("");
@@ -196,7 +225,27 @@ export default function DiagnosticScreen() {
     setCantOpen(false);
     setHowToOpen(false);
     setHypOpen(false);
+    setSaveNote(null);
     setNav("new");
+  }
+
+  function openStoredCase(stored: DiagnosticCase) {
+    requestGeneration.current += 1;
+    requestInFlight.current = false;
+    setFailedRequest(null);
+    setError(null);
+    setLoading(false);
+    setInitLoading(false);
+    setResultOpen(false);
+    setCantOpen(false);
+    setHowToOpen(false);
+    setHypOpen(false);
+    setProblemText(stored.problemText);
+    setDiagnosticCase(stored);
+    const last = stored.steps[stored.steps.length - 1] ?? null;
+    setNextStep(last);
+    setPhase(last?.actionType === "FINISH" ? "completed" : "active");
+    setNav("active");
   }
 
   async function callDiagnose(
@@ -325,13 +374,84 @@ export default function DiagnosticScreen() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const userId = user?.id ?? null;
+  useEffect(() => {
+    if (!userId || !diagnosticCase) return;
+    const snapshot = diagnosticCase;
+    const generation = saveGeneration.current + 1;
+    saveGeneration.current = generation;
+    saveQueue.current = saveQueue.current.then(async () => {
+      try {
+        const result = await saveDiagnosticCase(snapshot);
+        if (generation !== saveGeneration.current) return;
+        if (
+          result.ok ||
+          result.code === "UNAUTHENTICATED" ||
+          result.code === "UNCONFIGURED"
+        ) {
+          setSaveNote(null);
+          return;
+        }
+        setSaveNote(result.message);
+      } catch {
+        if (generation !== saveGeneration.current) return;
+        setSaveNote("Spremanje slučaja nije uspjelo.");
+      }
+    });
+  }, [userId, diagnosticCase]);
+
+  async function refreshHistory() {
+    if (!user) {
+      setHistory([]);
+      setHistoryError(null);
+      setHistoryLoading(false);
+      return;
+    }
+    setHistoryLoading(true);
+    setHistoryError(null);
+    const result = await listDiagnosticCases();
+    setHistoryLoading(false);
+    if (!result.ok) {
+      setHistoryError(result.message);
+      return;
+    }
+    setHistory(result.data);
+  }
+
+  async function openHistoryCase(id: string) {
+    if (openingId) return;
+    setOpeningId(id);
+    setHistoryError(null);
+    const result = await loadDiagnosticCase(id);
+    setOpeningId(null);
+    if (!result.ok) {
+      setHistoryError(result.message);
+      return;
+    }
+    openStoredCase(result.data);
+  }
+
+  async function signOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      const supabase = createClient();
+      if (supabase) await supabase.auth.signOut();
+      resetCase();
+      router.refresh();
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
   function onNavigate(key: NavKey) {
-    if (key === "history" || key === "settings") {
-      setFutureNotice(
-        key === "history"
-          ? "Povijest slučajeva dolazi u sljedećem milestonu."
-          : "Postavke dolaze u sljedećem milestonu.",
-      );
+    if (key === "history") {
+      setNav("history");
+      void refreshHistory();
+      return;
+    }
+    if (key === "settings") {
+      setNav("settings");
       return;
     }
     if (key === "new") {
@@ -377,11 +497,13 @@ export default function DiagnosticScreen() {
     },
     {
       id: "search",
-      label: "Pretraži slučajeve",
-      enabled: false,
-      run: () => undefined,
+      label: "Spremljeni slučajevi",
+      enabled: true,
+      run: () => onNavigate("history"),
     },
   ];
+
+  const showWorkspace = nav === "new" || nav === "active";
 
   return (
     <AppShell
@@ -402,6 +524,34 @@ export default function DiagnosticScreen() {
           >
             ⌘K
           </button>
+          {role === "admin" ? (
+            <span className="rounded-lg bg-[var(--accent-soft)] px-2 py-1 text-[10px] font-semibold tracking-wide text-[var(--accent)]">
+              ADMIN
+            </span>
+          ) : null}
+          {user ? (
+            <span className="hidden max-w-40 truncate text-xs text-[var(--muted)] sm:inline">
+              {user.email}
+            </span>
+          ) : null}
+          {user ? (
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              disabled={signingOut}
+              className="min-h-10 rounded-xl border border-[var(--border)] px-3 text-sm disabled:opacity-35"
+            >
+              Odjava
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onNavigate("settings")}
+              className="min-h-10 rounded-xl border border-[var(--border)] px-3 text-sm"
+            >
+              Prijava
+            </button>
+          )}
           {phase !== "intake" && (
             <button
               type="button"
@@ -414,7 +564,43 @@ export default function DiagnosticScreen() {
         </>
       }
     >
-      {futureNotice && (
+      {role === "local" && (
+        <p className="mx-auto w-full max-w-6xl px-4 pt-3 text-xs text-[var(--muted)] sm:px-6">
+          Lokalni razvoj. Prijava nije obavezna.
+        </p>
+      )}
+
+      {nav === "history" && (
+        <CaseHistory
+          configured={persistenceConfigured}
+          signedIn={user != null}
+          loading={historyLoading}
+          error={historyError}
+          cases={history}
+          openingId={openingId}
+          onOpen={(id) => void openHistoryCase(id)}
+          onSignIn={() => onNavigate("settings")}
+        />
+      )}
+
+      {nav === "settings" && (
+        <AccountPanel
+          email={user?.email ?? null}
+          configured={persistenceConfigured}
+          onSignOut={() => void signOut()}
+          signingOut={signingOut}
+        />
+      )}
+
+      {showWorkspace && saveNote && (
+        <div className="mx-auto w-full max-w-6xl px-4 pt-3 sm:px-6">
+          <p role="status" className="text-sm text-[var(--warning)]">
+            {saveNote}
+          </p>
+        </div>
+      )}
+
+      {showWorkspace && futureNotice && (
         <div className="mx-auto w-full max-w-6xl px-4 pt-3 sm:px-6">
           <p className="rounded-2xl border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-sm text-[var(--muted-strong)]">
             {futureNotice}{" "}
@@ -429,7 +615,7 @@ export default function DiagnosticScreen() {
         </div>
       )}
 
-      {phase === "intake" && (
+      {showWorkspace && phase === "intake" && (
         <div hidden={initLoading || loading}>
           {error ? (
             <div className="mx-auto w-full max-w-2xl px-4 pt-6 sm:px-6">
@@ -456,13 +642,13 @@ export default function DiagnosticScreen() {
         </div>
       )}
 
-      {(initLoading || (loading && phase === "intake")) && (
+      {showWorkspace && (initLoading || (loading && phase === "intake")) && (
         <div className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6">
           <AIAnalysisState active mode="init" />
         </div>
       )}
 
-      {phase !== "intake" && diagnosticCase && (
+      {showWorkspace && phase !== "intake" && diagnosticCase && (
         <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-4 sm:px-6 sm:py-6 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div className="flex min-w-0 flex-col gap-4">
             {error && !missingFinish && !resultOpen && (
@@ -556,11 +742,11 @@ export default function DiagnosticScreen() {
         </div>
       )}
 
-      {phase === "active" && showActiveStep && !loading && nextStep && (
+      {showWorkspace && phase === "active" && showActiveStep && !loading && nextStep && (
         <QuickAddMenu onEnterResult={() => setResultOpen(true)} />
       )}
 
-      {nextStep && nextStep.actionType !== "FINISH" && (
+      {showWorkspace && nextStep && nextStep.actionType !== "FINISH" && (
         <ResultModal
           open={resultOpen}
           onClose={() => setResultOpen(false)}
@@ -579,6 +765,8 @@ export default function DiagnosticScreen() {
         />
       )}
 
+      {showWorkspace && (
+      <>
       <CannotPerformModal
         open={cantOpen}
         onClose={() => setCantOpen(false)}
@@ -603,6 +791,8 @@ export default function DiagnosticScreen() {
         hypotheses={hypotheses}
         evidenceNeeded={nextStep?.expectedResultHint}
       />
+      </>
+      )}
 
       <CommandPalette
         open={cmdOpen}
