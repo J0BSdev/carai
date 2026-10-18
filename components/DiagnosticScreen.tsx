@@ -703,6 +703,7 @@ export default function DiagnosticScreen({
                 onSkip={() => handleContinue({ kind: "SKIP" })}
                 onHowTo={() => setHowToOpen(true)}
                 pending={loading}
+                error={resultOpen ? null : error}
               />
             )}
 

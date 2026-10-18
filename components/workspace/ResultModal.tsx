@@ -30,11 +30,11 @@ export default function ResultModal({
   error = null,
 }: ResultModalProps) {
   const [text, setText] = useState("");
+  const [snapshot, setSnapshot] = useState<string | null>(null);
   const [stepId, setStepId] = useState(step.id);
   const [photoKey, setPhotoKey] = useState(0);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
-  const [keepDraft, setKeepDraft] = useState(false);
   const [hasPhoto, setHasPhoto] = useState(false);
   const photoRef = useRef<File | null>(null);
   const photoGen = useRef(0);
@@ -59,11 +59,17 @@ export default function ResultModal({
     setStepId(step.id);
     setPhotoError(null);
     setHasPhoto(false);
-    if (!keepDraft) {
+    if (snapshot === null) {
       setText("");
       setPhotoKey((key) => key + 1);
+    } else {
+      setSnapshot(null);
     }
-    setKeepDraft(false);
+  }
+
+  if (error && snapshot !== null) {
+    if (text === "") setText(snapshot);
+    setSnapshot(null);
   }
 
   if (pending && preparing) {
@@ -82,16 +88,12 @@ export default function ResultModal({
     return ["Ispravno", "Neispravno", "Nisam mogao utvrditi"];
   }, [step.actionType]);
 
-  function noteEdit() {
-    if (pending || preparing) setKeepDraft(true);
-  }
-
   function reset() {
     setText("");
+    setSnapshot(null);
     setPhotoKey((key) => key + 1);
     setPhotoError(null);
     setHasPhoto(false);
-    setKeepDraft(false);
   }
 
   function handleClose() {
@@ -106,8 +108,8 @@ export default function ResultModal({
     if (!payload && !file) return;
     const gen = photoGen.current;
     const stepAtStart = step.id;
+    const draft = extra ?? text;
     preparingRef.current = true;
-    setKeepDraft(false);
     setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
@@ -122,8 +124,9 @@ export default function ResultModal({
         return;
       }
       setPhotoError(null);
+      setSnapshot(draft);
+      setText("");
       onSubmit(payload, image);
-      // Keep preparing true until pending arrives so submit cannot double-fire.
     } catch (err) {
       preparingRef.current = false;
       setPreparing(false);
@@ -143,10 +146,7 @@ export default function ResultModal({
 
       <textarea
         value={text}
-        onChange={(e) => {
-          noteEdit();
-          setText(e.target.value);
-        }}
+        onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();

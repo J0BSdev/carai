@@ -22,6 +22,7 @@ type NextActionCardProps = {
   onSkip: () => void;
   onHowTo: () => void;
   pending?: boolean;
+  error?: string | null;
 };
 
 export default function NextActionCard({
@@ -32,11 +33,12 @@ export default function NextActionCard({
   onSkip,
   onHowTo,
   pending = false,
+  error = null,
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
+  const [snapshot, setSnapshot] = useState<string | null>(null);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [preparing, setPreparing] = useState(false);
-  const [keepDraft, setKeepDraft] = useState(false);
   const [hasPhoto, setHasPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
@@ -62,14 +64,19 @@ export default function NextActionCard({
     setBoundStepId(step.id);
     setPhotoError(null);
     setHasPhoto(false);
-    // New step after success: clear unless the user edited while waiting.
-    if (!keepDraft) {
+    if (snapshot === null) {
       setResult("");
+    } else {
+      setSnapshot(null);
     }
-    setKeepDraft(false);
   }
 
-  // Parent pending has taken over; release local preparing lock.
+  // Failed request: put the sent text back unless the user already typed something new.
+  if (error && snapshot !== null) {
+    if (result === "") setResult(snapshot);
+    setSnapshot(null);
+  }
+
   if (pending && preparing) {
     setPreparing(false);
   }
@@ -83,10 +90,6 @@ export default function NextActionCard({
     step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
   const busy = voiceBusy || pending || preparing;
 
-  function noteEdit() {
-    if (pending || preparing) setKeepDraft(true);
-  }
-
   async function submit() {
     if (busy || preparingRef.current) return;
     const trimmed = result.trim();
@@ -94,8 +97,8 @@ export default function NextActionCard({
     if (!trimmed && !file) return;
     const gen = photoGen.current;
     const stepAtStart = step.id;
+    const draft = result;
     preparingRef.current = true;
-    setKeepDraft(false);
     setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
@@ -109,8 +112,9 @@ export default function NextActionCard({
         return;
       }
       setPhotoError(null);
+      setSnapshot(draft);
+      setResult("");
       onSubmitResult(trimmed, image);
-      // Keep preparing true until pending arrives so Enter cannot double-fire.
     } catch (err) {
       preparingRef.current = false;
       setPreparing(false);
@@ -161,10 +165,7 @@ export default function NextActionCard({
           <div className="flex items-end gap-2">
             <textarea
               value={result}
-              onChange={(e) => {
-                noteEdit();
-                setResult(e.target.value);
-              }}
+              onChange={(e) => setResult(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -198,7 +199,6 @@ export default function NextActionCard({
               key={`${step.id}-voice`}
               onBusyChange={setVoiceBusy}
               onTranscript={(text) => {
-                noteEdit();
                 setResult((current) => {
                   const prev = current.trim();
                   return prev ? `${prev}\n${text}` : text;

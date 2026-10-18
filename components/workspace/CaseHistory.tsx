@@ -244,31 +244,34 @@ function ManualFaultForm({
     if (saving) return;
     setSaving(true);
     setFormError(null);
+    try {
+      const yearText = year.trim();
+      let vehicleYear: number | null = null;
+      if (yearText) {
+        if (!/^\d{4}$/.test(yearText)) {
+          setFormError("Godina mora biti četiri znamenke.");
+          return;
+        }
+        vehicleYear = Number(yearText);
+      }
 
-    const yearText = year.trim();
-    let vehicleYear: number | null = null;
-    if (yearText) {
-      if (!/^\d{4}$/.test(yearText)) {
-        setFormError("Godina mora biti četiri znamenke.");
-        setSaving(false);
+      const result = await saveManualResolvedFault({
+        vehicleMake: make,
+        vehicleModel: model,
+        vehicleEngine: engine,
+        vehicleYear,
+        confirmedFault: fault,
+      });
+      if (!result.ok) {
+        setFormError(result.message);
         return;
       }
-      vehicleYear = Number(yearText);
+      onSaved();
+    } catch {
+      setFormError("Spremanje nije uspjelo. Provjeri vezu i pokušaj ponovo.");
+    } finally {
+      setSaving(false);
     }
-
-    const result = await saveManualResolvedFault({
-      vehicleMake: make,
-      vehicleModel: model,
-      vehicleEngine: engine,
-      vehicleYear,
-      confirmedFault: fault,
-    });
-    setSaving(false);
-    if (!result.ok) {
-      setFormError(result.message);
-      return;
-    }
-    onSaved();
   }
 
   const fieldClass =
