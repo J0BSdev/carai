@@ -36,6 +36,7 @@ export default function NextActionCard({
   error = null,
 }: NextActionCardProps) {
   const [result, setResult] = useState("");
+  /** Text cleared on send; restored on error unless the user already typed again. */
   const [snapshot, setSnapshot] = useState<string | null>(null);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -64,6 +65,8 @@ export default function NextActionCard({
     setBoundStepId(step.id);
     setPhotoError(null);
     setHasPhoto(false);
+    // Success (or opened another case): drop the send snapshot.
+    // Keep whatever is in the field — "" after a normal send, or edits typed while waiting.
     if (snapshot === null) {
       setResult("");
     } else {
@@ -71,19 +74,11 @@ export default function NextActionCard({
     }
   }
 
-  // Failed request: put the sent text back unless the user already typed something new.
+  // failedRequest / network error: put the sent text back if the field is still empty.
   if (error && snapshot !== null) {
     if (result === "") setResult(snapshot);
     setSnapshot(null);
   }
-
-  if (pending && preparing) {
-    setPreparing(false);
-  }
-
-  useLayoutEffect(() => {
-    if (pending) preparingRef.current = false;
-  }, [pending]);
 
   const title = step.title?.trim();
   const whyLabel =
@@ -107,8 +102,6 @@ export default function NextActionCard({
         photoGen.current !== gen ||
         photoRef.current !== file
       ) {
-        preparingRef.current = false;
-        setPreparing(false);
         return;
       }
       setPhotoError(null);
@@ -116,9 +109,11 @@ export default function NextActionCard({
       setResult("");
       onSubmitResult(trimmed, image);
     } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
+    } finally {
+      // Parent pending / requestInFlight covers the server round-trip.
       preparingRef.current = false;
       setPreparing(false);
-      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
     }
   }
 

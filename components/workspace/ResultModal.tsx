@@ -30,6 +30,7 @@ export default function ResultModal({
   error = null,
 }: ResultModalProps) {
   const [text, setText] = useState("");
+  /** Text cleared on send; restored on error unless the user already typed again. */
   const [snapshot, setSnapshot] = useState<string | null>(null);
   const [stepId, setStepId] = useState(step.id);
   const [photoKey, setPhotoKey] = useState(0);
@@ -72,14 +73,6 @@ export default function ResultModal({
     setSnapshot(null);
   }
 
-  if (pending && preparing) {
-    setPreparing(false);
-  }
-
-  useLayoutEffect(() => {
-    if (pending) preparingRef.current = false;
-  }, [pending]);
-
   const title = step.content.split(/[.\n]/)[0]?.trim() || "Rezultat testa";
   const busy = pending || preparing;
 
@@ -119,8 +112,6 @@ export default function ResultModal({
         photoGen.current !== gen ||
         photoRef.current !== file
       ) {
-        preparingRef.current = false;
-        setPreparing(false);
         return;
       }
       setPhotoError(null);
@@ -128,9 +119,10 @@ export default function ResultModal({
       setText("");
       onSubmit(payload, image);
     } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
+    } finally {
       preparingRef.current = false;
       setPreparing(false);
-      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
     }
   }
 
