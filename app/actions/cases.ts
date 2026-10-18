@@ -83,6 +83,22 @@ export async function saveDiagnosticCase(
   }
 
   const fields = storedCaseFields(stored);
+  const { data: existing, error: readError } = await auth.supabase
+    .from("diagnostic_cases")
+    .select("case_data")
+    .eq("id", stored.id)
+    .maybeSingle();
+  if (!readError && existing?.case_data) {
+    try {
+      const previous = caseForStorage(existing.case_data);
+      if (JSON.stringify(previous) === JSON.stringify(stored)) {
+        return { ok: true, data: { id: stored.id } };
+      }
+    } catch {
+      // The stored row is not comparable, so replace it.
+    }
+  }
+
   const { error } = await auth.supabase.from("diagnostic_cases").upsert(
     {
       id: stored.id,

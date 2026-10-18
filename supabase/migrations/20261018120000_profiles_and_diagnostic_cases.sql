@@ -145,7 +145,14 @@ begin
     raise exception 'case user mismatch';
   end if;
   new.case_data := private.strip_media_keys(new.case_data);
-  new.updated_at := now();
+  if tg_op = 'UPDATE'
+    and new.case_data is not distinct from old.case_data
+    and new.problem_text is not distinct from old.problem_text
+  then
+    new.updated_at := old.updated_at;
+  else
+    new.updated_at := now();
+  end if;
   if octet_length(new.case_data::text) > 400000 then
     raise exception 'case is too large';
   end if;
