@@ -13,6 +13,8 @@ export type CaseSummary = {
   problemText: string;
   confirmedFault: string | null;
   status: StoredCaseStatus;
+  /** Last step is FINISH with diagnosisCertainty CONFIRMED. */
+  faultConfirmed: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -34,12 +36,28 @@ type CaseListRow = {
   problem_text: string;
   confirmed_fault: string | null;
   status: string;
+  case_data: unknown;
   created_at: string;
   updated_at: string;
 };
 
 function summaryStatus(value: string): StoredCaseStatus {
   return value === "finished" ? "finished" : "active";
+}
+
+/** True only when the open step is FINISH with CONFIRMED certainty. */
+function faultConfirmedFromCaseData(caseData: unknown): boolean {
+  if (!caseData || typeof caseData !== "object" || Array.isArray(caseData)) {
+    return false;
+  }
+  const steps = (caseData as { steps?: unknown }).steps;
+  if (!Array.isArray(steps) || steps.length === 0) return false;
+  const last = steps[steps.length - 1];
+  if (!last || typeof last !== "object" || Array.isArray(last)) return false;
+  const step = last as { actionType?: unknown; diagnosisCertainty?: unknown };
+  return (
+    step.actionType === "FINISH" && step.diagnosisCertainty === "CONFIRMED"
+  );
 }
 
 async function userId(): Promise<
@@ -134,7 +152,7 @@ export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary
   const { data, error } = await auth.supabase
     .from("diagnostic_cases")
     .select(
-      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, status, created_at, updated_at",
+      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, status, case_data, created_at, updated_at",
     )
     .order("updated_at", { ascending: false })
     .limit(50);
@@ -160,6 +178,7 @@ export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary
       problemText: row.problem_text,
       confirmedFault: row.confirmed_fault,
       status: summaryStatus(row.status),
+      faultConfirmed: faultConfirmedFromCaseData(row.case_data),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     })),
