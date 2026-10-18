@@ -1,8 +1,15 @@
 "use server";
 
 import { caseForStorage, storedCaseFields, type StoredCaseStatus } from "@/lib/cases/stored-case";
-import type { DiagnosticCase } from "@/lib/diagnosis/types";
+import type { DiagnosisCertainty, DiagnosticCase } from "@/lib/diagnosis/types";
 import { createClient } from "@/lib/supabase/server";
+
+const CERTAINTIES = new Set<DiagnosisCertainty>([
+  "SUSPECTED",
+  "LIKELY",
+  "HIGH_CONFIDENCE",
+  "CONFIRMED",
+]);
 
 export type CaseSummary = {
   id: string;
@@ -13,8 +20,8 @@ export type CaseSummary = {
   problemText: string;
   confirmedFault: string | null;
   status: StoredCaseStatus;
-  /** Last step is FINISH with diagnosisCertainty CONFIRMED. */
-  faultConfirmed: boolean;
+  /** From the open FINISH step; null while ASK/TEST is open. */
+  diagnosisCertainty: DiagnosisCertainty | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -45,19 +52,24 @@ function summaryStatus(value: string): StoredCaseStatus {
   return value === "finished" ? "finished" : "active";
 }
 
-/** True only when the open step is FINISH with CONFIRMED certainty. */
-function faultConfirmedFromCaseData(caseData: unknown): boolean {
+/** Certainty on the open FINISH step; null for ASK/TEST or unknown values. */
+function diagnosisCertaintyFromCaseData(
+  caseData: unknown,
+): DiagnosisCertainty | null {
   if (!caseData || typeof caseData !== "object" || Array.isArray(caseData)) {
-    return false;
+    return null;
   }
   const steps = (caseData as { steps?: unknown }).steps;
-  if (!Array.isArray(steps) || steps.length === 0) return false;
+  if (!Array.isArray(steps) || steps.length === 0) return null;
   const last = steps[steps.length - 1];
-  if (!last || typeof last !== "object" || Array.isArray(last)) return false;
+  if (!last || typeof last !== "object" || Array.isArray(last)) return null;
   const step = last as { actionType?: unknown; diagnosisCertainty?: unknown };
-  return (
-    step.actionType === "FINISH" && step.diagnosisCertainty === "CONFIRMED"
-  );
+  if (step.actionType !== "FINISH") return null;
+  if (typeof step.diagnosisCertainty !== "string") return null;
+  if (!CERTAINTIES.has(step.diagnosisCertainty as DiagnosisCertainty)) {
+    return null;
+  }
+  return step.diagnosisCertainty as DiagnosisCertainty;
 }
 
 async function userId(): Promise<
@@ -178,7 +190,7 @@ export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary
       problemText: row.problem_text,
       confirmedFault: row.confirmed_fault,
       status: summaryStatus(row.status),
-      faultConfirmed: faultConfirmedFromCaseData(row.case_data),
+      diagnosisCertainty: diagnosisCertaintyFromCaseData(row.case_data),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     })),

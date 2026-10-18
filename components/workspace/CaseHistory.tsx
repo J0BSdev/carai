@@ -35,6 +35,13 @@ function statusLabel(status: CaseSummary["status"]): string {
   return status === "finished" ? "Završen" : "Aktivan";
 }
 
+function isHighConfidenceFault(item: CaseSummary): boolean {
+  return (
+    item.diagnosisCertainty === "CONFIRMED" ||
+    item.diagnosisCertainty === "HIGH_CONFIDENCE"
+  );
+}
+
 function vehicleTitle(item: CaseSummary): string {
   const parts = [
     item.vehicleMake?.trim(),
@@ -123,6 +130,10 @@ function CaseCard({
               value={shown(item.confirmedFault)}
               wide
             />
+            <Field
+              label="Pouzdanost (diagnosisCertainty)"
+              value={shown(item.diagnosisCertainty)}
+            />
             <Field label="Status" value={statusLabel(item.status)} />
           </dl>
           <button
@@ -195,8 +206,8 @@ export default function CaseHistory({
   onSignIn,
 }: CaseHistoryProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const confirmed = cases.filter((item) => item.faultConfirmed);
-  const other = cases.filter((item) => !item.faultConfirmed);
+  const highConfidence = cases.filter(isHighConfidenceFault);
+  const other = cases.filter((item) => !isHighConfidenceFault(item));
 
   function toggle(id: string) {
     setExpandedId((current) => (current === id ? null : id));
@@ -249,9 +260,9 @@ export default function CaseHistory({
       {signedIn && cases.length > 0 && (
         <>
           <CaseSection
-            title="POTVRĐENI KVAROVI"
-            cases={confirmed}
-            empty="Nema potvrđenih kvarova."
+            title="POTVRĐENI I VISOKOPOUZDANI KVAROVI"
+            cases={highConfidence}
+            empty="Nema potvrđenih ni visokopouzdanih kvarova."
             expandedId={expandedId}
             openingId={openingId}
             onToggle={toggle}
@@ -259,9 +270,9 @@ export default function CaseHistory({
             showFaultOnCard
           />
           <CaseSection
-            title="NEDOVRŠENI / NEPOTVRĐENI SLUČAJEVI"
+            title="NEPOTVRĐENI I NEDOVRŠENI SLUČAJEVI"
             cases={other}
-            empty="Nema nedovršenih ni nepotvrđenih slučajeva."
+            empty="Nema nepotvrđenih ni nedovršenih slučajeva."
             expandedId={expandedId}
             openingId={openingId}
             onToggle={toggle}
