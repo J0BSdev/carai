@@ -65,17 +65,25 @@ function Field({
   label,
   value,
   wide,
+  accent,
 }: {
   label: string;
   value: string;
   wide?: boolean;
+  accent?: boolean;
 }) {
   return (
     <div className={wide ? "col-span-2 sm:col-span-3" : "min-w-0"}>
       <dt className="text-[10px] font-semibold tracking-wide text-[var(--muted)]">
         {label}
       </dt>
-      <dd className="mt-0.5 text-sm text-[var(--muted-strong)]">{value}</dd>
+      <dd
+        className={`mt-0.5 text-sm ${
+          accent ? "text-[var(--accent)]/70" : "text-[var(--muted-strong)]"
+        }`}
+      >
+        {value}
+      </dd>
     </div>
   );
 }
@@ -114,7 +122,11 @@ function CaseCard({
               {item.confirmedFault}
             </span>
           ) : null}
-          <span className="mt-1 block text-[10px] font-semibold tracking-wide text-[var(--muted)]">
+          <span
+            className={`mt-1 block text-[10px] font-semibold tracking-wide ${
+              manual ? "text-[var(--muted)]" : "text-[var(--accent)]/70"
+            }`}
+          >
             {sourceLabel(item.source)}
           </span>
         </span>
@@ -150,7 +162,11 @@ function CaseCard({
               value={shown(item.confirmedFault)}
               wide
             />
-            <Field label="Izvor" value={sourceLabel(item.source)} />
+            <Field
+              label="Izvor"
+              value={sourceLabel(item.source)}
+              accent={!manual}
+            />
             {!manual ? (
               <Field
                 label="Pouzdanost (diagnosisCertainty)"
