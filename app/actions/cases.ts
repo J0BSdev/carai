@@ -55,7 +55,7 @@ type CaseListRow = {
   confirmed_fault: string | null;
   status: string;
   source: string;
-  case_data: unknown;
+  diagnosis_certainty: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -93,24 +93,9 @@ function trimOptional(value: string | undefined, maxOctets: number): string | nu
   return text;
 }
 
-/** Certainty on the open FINISH step; null for ASK/TEST or unknown values. */
-function diagnosisCertaintyFromCaseData(
-  caseData: unknown,
-): DiagnosisCertainty | null {
-  if (!caseData || typeof caseData !== "object" || Array.isArray(caseData)) {
-    return null;
-  }
-  const steps = (caseData as { steps?: unknown }).steps;
-  if (!Array.isArray(steps) || steps.length === 0) return null;
-  const last = steps[steps.length - 1];
-  if (!last || typeof last !== "object" || Array.isArray(last)) return null;
-  const step = last as { actionType?: unknown; diagnosisCertainty?: unknown };
-  if (step.actionType !== "FINISH") return null;
-  if (typeof step.diagnosisCertainty !== "string") return null;
-  if (!CERTAINTIES.has(step.diagnosisCertainty as DiagnosisCertainty)) {
-    return null;
-  }
-  return step.diagnosisCertainty as DiagnosisCertainty;
+function summaryCertainty(value: string | null): DiagnosisCertainty | null {
+  if (!value || !CERTAINTIES.has(value as DiagnosisCertainty)) return null;
+  return value as DiagnosisCertainty;
 }
 
 async function userId(): Promise<
@@ -296,7 +281,7 @@ export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary
   const { data, error } = await auth.supabase
     .from("diagnostic_cases")
     .select(
-      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, status, source, case_data, created_at, updated_at",
+      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, status, source, diagnosis_certainty, created_at, updated_at",
     )
     .order("updated_at", { ascending: false })
     .limit(50);
@@ -326,9 +311,7 @@ export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary
         status: summaryStatus(row.status),
         source,
         diagnosisCertainty:
-          source === "manual"
-            ? null
-            : diagnosisCertaintyFromCaseData(row.case_data),
+          source === "manual" ? null : summaryCertainty(row.diagnosis_certainty),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
