@@ -580,6 +580,7 @@ export default function DiagnosticScreen({
           openingId={openingId}
           onOpen={(id) => void openHistoryCase(id)}
           onSignIn={() => onNavigate("settings")}
+          onRefresh={() => void refreshHistory()}
         />
       )}
 

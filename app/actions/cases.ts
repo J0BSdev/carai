@@ -11,6 +11,8 @@ const CERTAINTIES = new Set<DiagnosisCertainty>([
   "CONFIRMED",
 ]);
 
+export type CaseSource = "carai" | "manual";
+
 export type CaseSummary = {
   id: string;
   vehicleMake: string | null;
@@ -20,10 +22,19 @@ export type CaseSummary = {
   problemText: string;
   confirmedFault: string | null;
   status: StoredCaseStatus;
-  /** From the open FINISH step; null while ASK/TEST is open. */
+  source: CaseSource;
+  /** From the open FINISH step; null for manual entries and open ASK/TEST. */
   diagnosisCertainty: DiagnosisCertainty | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ManualResolvedFaultInput = {
+  vehicleMake: string;
+  vehicleModel: string;
+  vehicleEngine?: string;
+  vehicleYear?: number | null;
+  confirmedFault: string;
 };
 
 export type CaseStoreFailure = {
@@ -43,6 +54,7 @@ type CaseListRow = {
   problem_text: string;
   confirmed_fault: string | null;
   status: string;
+  source: string;
   case_data: unknown;
   created_at: string;
   updated_at: string;
@@ -50,6 +62,35 @@ type CaseListRow = {
 
 function summaryStatus(value: string): StoredCaseStatus {
   return value === "finished" ? "finished" : "active";
+}
+
+function summarySource(value: string): CaseSource {
+  return value === "manual" ? "manual" : "carai";
+}
+
+function octetLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function rejectImageText(value: string): boolean {
+  return value.includes("data:image/");
+}
+
+function trimRequired(value: string, maxOctets: number): string | null {
+  const text = value.trim();
+  if (!text) return null;
+  if (octetLength(text) > maxOctets) return null;
+  if (rejectImageText(text)) return null;
+  return text;
+}
+
+function trimOptional(value: string | undefined, maxOctets: number): string | null {
+  if (value == null) return null;
+  const text = value.trim();
+  if (!text) return null;
+  if (octetLength(text) > maxOctets) return null;
+  if (rejectImageText(text)) return null;
+  return text;
 }
 
 /** Certainty on the open FINISH step; null for ASK/TEST or unknown values. */
@@ -115,9 +156,16 @@ export async function saveDiagnosticCase(
   const fields = storedCaseFields(stored);
   const { data: existing, error: readError } = await auth.supabase
     .from("diagnostic_cases")
-    .select("case_data")
+    .select("case_data, source")
     .eq("id", stored.id)
     .maybeSingle();
+  if (!readError && existing?.source === "manual") {
+    return {
+      ok: false,
+      code: "INVALID",
+      message: "Ručno unesen kvar nije AI dijagnostika.",
+    };
+  }
   if (!readError && existing?.case_data) {
     try {
       const previous = caseForStorage(existing.case_data);
@@ -141,6 +189,7 @@ export async function saveDiagnosticCase(
       vehicle_engine: fields.vehicleEngine,
       confirmed_fault: fields.confirmedFault,
       status: fields.status,
+      source: "carai",
       case_data: stored,
     },
     { onConflict: "id" },
@@ -157,6 +206,89 @@ export async function saveDiagnosticCase(
   return { ok: true, data: { id: stored.id } };
 }
 
+/** Mechanic-entered resolved fault. No AI steps and no model calls. */
+export async function saveManualResolvedFault(
+  input: ManualResolvedFaultInput,
+): Promise<CaseStoreResult<{ id: string }>> {
+  const auth = await userId();
+  if ("ok" in auth) return auth;
+
+  const vehicleMake = trimRequired(input.vehicleMake, 200);
+  const vehicleModel = trimRequired(input.vehicleModel, 200);
+  const confirmedFault = trimRequired(input.confirmedFault, 4000);
+  if (!vehicleMake || !vehicleModel || !confirmedFault) {
+    return {
+      ok: false,
+      code: "INVALID",
+      message: "Marka, model i utvrđeni kvar su obavezni.",
+    };
+  }
+
+  const vehicleEngine = trimOptional(input.vehicleEngine, 200);
+  if (input.vehicleEngine?.trim() && vehicleEngine == null) {
+    return {
+      ok: false,
+      code: "INVALID",
+      message: "Motor nije valjan.",
+    };
+  }
+
+  let vehicleYear: number | null = null;
+  if (input.vehicleYear != null && input.vehicleYear !== undefined) {
+    if (
+      typeof input.vehicleYear !== "number" ||
+      !Number.isInteger(input.vehicleYear) ||
+      input.vehicleYear < 1900 ||
+      input.vehicleYear > 2100
+    ) {
+      return {
+        ok: false,
+        code: "INVALID",
+        message: "Godina mora biti između 1900 i 2100.",
+      };
+    }
+    vehicleYear = input.vehicleYear;
+  }
+
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const caseData = {
+    entry: "manual_resolved_fault",
+    vehicle: {
+      make: vehicleMake,
+      model: vehicleModel,
+      ...(vehicleEngine ? { engine: vehicleEngine } : {}),
+      ...(vehicleYear != null ? { year: vehicleYear } : {}),
+    },
+    confirmedFault,
+  };
+
+  const { error } = await auth.supabase.from("diagnostic_cases").insert({
+    id,
+    user_id: auth.id,
+    created_at: createdAt,
+    problem_text: "",
+    vehicle_make: vehicleMake,
+    vehicle_model: vehicleModel,
+    vehicle_year: vehicleYear,
+    vehicle_engine: vehicleEngine,
+    confirmed_fault: confirmedFault,
+    status: "finished",
+    source: "manual",
+    case_data: caseData,
+  });
+
+  if (error) {
+    console.error("saveManualResolvedFault", error.code);
+    return {
+      ok: false,
+      code: "FAILED",
+      message: "Spremanje kvara nije uspjelo.",
+    };
+  }
+  return { ok: true, data: { id } };
+}
+
 export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary[]>> {
   const auth = await userId();
   if ("ok" in auth) return auth;
@@ -164,7 +296,7 @@ export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary
   const { data, error } = await auth.supabase
     .from("diagnostic_cases")
     .select(
-      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, status, case_data, created_at, updated_at",
+      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, status, source, case_data, created_at, updated_at",
     )
     .order("updated_at", { ascending: false })
     .limit(50);
@@ -181,19 +313,26 @@ export async function listDiagnosticCases(): Promise<CaseStoreResult<CaseSummary
   const rows = (data ?? []) as CaseListRow[];
   return {
     ok: true,
-    data: rows.map((row) => ({
-      id: row.id,
-      vehicleMake: row.vehicle_make,
-      vehicleModel: row.vehicle_model,
-      vehicleYear: row.vehicle_year,
-      vehicleEngine: row.vehicle_engine,
-      problemText: row.problem_text,
-      confirmedFault: row.confirmed_fault,
-      status: summaryStatus(row.status),
-      diagnosisCertainty: diagnosisCertaintyFromCaseData(row.case_data),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    })),
+    data: rows.map((row) => {
+      const source = summarySource(row.source);
+      return {
+        id: row.id,
+        vehicleMake: row.vehicle_make,
+        vehicleModel: row.vehicle_model,
+        vehicleYear: row.vehicle_year,
+        vehicleEngine: row.vehicle_engine,
+        problemText: row.problem_text,
+        confirmedFault: row.confirmed_fault,
+        status: summaryStatus(row.status),
+        source,
+        diagnosisCertainty:
+          source === "manual"
+            ? null
+            : diagnosisCertaintyFromCaseData(row.case_data),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    }),
   };
 }
 
@@ -205,7 +344,7 @@ export async function loadDiagnosticCase(
 
   const { data, error } = await auth.supabase
     .from("diagnostic_cases")
-    .select("case_data")
+    .select("case_data, source")
     .eq("id", id)
     .maybeSingle();
 
@@ -222,6 +361,13 @@ export async function loadDiagnosticCase(
       ok: false,
       code: "NOT_FOUND",
       message: "Slučaj nije pronađen.",
+    };
+  }
+  if (data.source === "manual") {
+    return {
+      ok: false,
+      code: "INVALID",
+      message: "Ručno unesen kvar nema CarAI dijagnostiku.",
     };
   }
 

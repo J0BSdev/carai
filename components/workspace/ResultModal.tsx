@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { DiagnosticStep, TurnImage } from "@/lib/diagnosis";
 import { fileToTurnImage } from "@/lib/diagnosis/turn-image";
 import ResponsiveOverlay from "@/components/ui/ResponsiveOverlay";
@@ -28,6 +34,7 @@ export default function ResultModal({
   const [photoKey, setPhotoKey] = useState(0);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
+  const [keepDraft, setKeepDraft] = useState(false);
   const [hasPhoto, setHasPhoto] = useState(false);
   const photoRef = useRef<File | null>(null);
   const photoGen = useRef(0);
@@ -47,23 +54,44 @@ export default function ResultModal({
     setHasPhoto(file != null);
     if (file) setPhotoError(null);
   }, []);
+
   if (step.id !== stepId) {
     setStepId(step.id);
-    setText("");
     setPhotoError(null);
     setHasPhoto(false);
+    if (!keepDraft) {
+      setText("");
+      setPhotoKey((key) => key + 1);
+    }
+    setKeepDraft(false);
   }
 
+  if (pending && preparing) {
+    setPreparing(false);
+  }
+
+  useLayoutEffect(() => {
+    if (pending) preparingRef.current = false;
+  }, [pending]);
+
   const title = step.content.split(/[.\n]/)[0]?.trim() || "Rezultat testa";
+  const busy = pending || preparing;
 
   const quick = useMemo(() => {
     if (step.actionType === "ASK") return ["Da", "Ne", "Nisam siguran"];
     return ["Ispravno", "Neispravno", "Nisam mogao utvrditi"];
   }, [step.actionType]);
 
+  function noteEdit() {
+    if (pending || preparing) setKeepDraft(true);
+  }
+
   function reset() {
     setText("");
     setPhotoKey((key) => key + 1);
+    setPhotoError(null);
+    setHasPhoto(false);
+    setKeepDraft(false);
   }
 
   function handleClose() {
@@ -72,13 +100,14 @@ export default function ResultModal({
   }
 
   async function submit(extra?: string) {
-    if (pending || preparingRef.current) return;
+    if (busy || preparingRef.current) return;
     const payload = (extra ?? text).trim();
     const file = photoRef.current;
     if (!payload && !file) return;
     const gen = photoGen.current;
     const stepAtStart = step.id;
     preparingRef.current = true;
+    setKeepDraft(false);
     setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
@@ -88,15 +117,17 @@ export default function ResultModal({
         photoGen.current !== gen ||
         photoRef.current !== file
       ) {
+        preparingRef.current = false;
+        setPreparing(false);
         return;
       }
       setPhotoError(null);
       onSubmit(payload, image);
+      // Keep preparing true until pending arrives so submit cannot double-fire.
     } catch (err) {
-      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
-    } finally {
       preparingRef.current = false;
       setPreparing(false);
+      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
     }
   }
 
@@ -112,7 +143,16 @@ export default function ResultModal({
 
       <textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          noteEdit();
+          setText(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            void submit();
+          }
+        }}
         rows={4}
         className="mt-4 w-full resize-y rounded-2xl border border-[var(--border)] bg-black/25 px-3 py-3 text-base outline-none focus:border-[var(--accent)]"
         placeholder="Opiši rezultat ili što si primijetio…"
@@ -128,7 +168,7 @@ export default function ResultModal({
               key={q}
               type="button"
               onClick={() => void submit(q)}
-              disabled={pending || preparing}
+              disabled={busy}
               className="min-h-11 rounded-xl border border-[var(--border)] px-3 text-sm text-[var(--muted-strong)] transition hover:border-[var(--accent)]/40 hover:text-[var(--foreground)] disabled:opacity-35"
             >
               {q}
@@ -149,7 +189,7 @@ export default function ResultModal({
       <button
         type="button"
         onClick={() => void submit()}
-        disabled={pending || preparing || (!text.trim() && !hasPhoto)}
+        disabled={busy || (!text.trim() && !hasPhoto)}
         className="mt-5 flex min-h-12 w-full items-center justify-center rounded-2xl bg-[var(--accent)] text-base font-semibold text-[#061018] disabled:opacity-35"
       >
         POŠALJI REZULTAT →

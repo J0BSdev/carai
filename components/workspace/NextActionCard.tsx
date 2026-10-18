@@ -2,7 +2,6 @@
 
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -37,6 +36,7 @@ export default function NextActionCard({
   const [result, setResult] = useState("");
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [keepDraft, setKeepDraft] = useState(false);
   const [hasPhoto, setHasPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [whyOpen, setWhyOpen] = useState(false);
@@ -56,28 +56,46 @@ export default function NextActionCard({
     setHasPhoto(file != null);
     if (file) setPhotoError(null);
   }, []);
-  const [photoStepId, setPhotoStepId] = useState(step.id);
-  if (photoStepId !== step.id) {
-    setPhotoStepId(step.id);
+
+  const [boundStepId, setBoundStepId] = useState(step.id);
+  if (boundStepId !== step.id) {
+    setBoundStepId(step.id);
     setPhotoError(null);
     setHasPhoto(false);
+    // New step after success: clear unless the user edited while waiting.
+    if (!keepDraft) {
+      setResult("");
+    }
+    setKeepDraft(false);
   }
 
-  useEffect(() => {
-    setResult("");
-  }, [step.id]);
+  // Parent pending has taken over; release local preparing lock.
+  if (pending && preparing) {
+    setPreparing(false);
+  }
+
+  useLayoutEffect(() => {
+    if (pending) preparingRef.current = false;
+  }, [pending]);
+
   const title = step.title?.trim();
   const whyLabel =
     step.actionType === "ASK" ? "Zašto ovo pitanje?" : "Zašto ovaj test?";
+  const busy = voiceBusy || pending || preparing;
+
+  function noteEdit() {
+    if (pending || preparing) setKeepDraft(true);
+  }
 
   async function submit() {
-    if (voiceBusy || pending || preparingRef.current) return;
+    if (busy || preparingRef.current) return;
     const trimmed = result.trim();
     const file = photoRef.current;
     if (!trimmed && !file) return;
     const gen = photoGen.current;
     const stepAtStart = step.id;
     preparingRef.current = true;
+    setKeepDraft(false);
     setPreparing(true);
     try {
       const image = file ? await fileToTurnImage(file) : undefined;
@@ -86,15 +104,17 @@ export default function NextActionCard({
         photoGen.current !== gen ||
         photoRef.current !== file
       ) {
+        preparingRef.current = false;
+        setPreparing(false);
         return;
       }
       setPhotoError(null);
       onSubmitResult(trimmed, image);
+      // Keep preparing true until pending arrives so Enter cannot double-fire.
     } catch (err) {
-      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
-    } finally {
       preparingRef.current = false;
       setPreparing(false);
+      setPhotoError(err instanceof Error ? err.message : "Slika nije valjana.");
     }
   }
 
@@ -141,7 +161,10 @@ export default function NextActionCard({
           <div className="flex items-end gap-2">
             <textarea
               value={result}
-              onChange={(e) => setResult(e.target.value)}
+              onChange={(e) => {
+                noteEdit();
+                setResult(e.target.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -155,12 +178,7 @@ export default function NextActionCard({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={
-                voiceBusy ||
-                pending ||
-                preparing ||
-                (!result.trim() && !hasPhoto)
-              }
+              disabled={busy || (!result.trim() && !hasPhoto)}
               aria-label="Pošalji rezultat"
               className="mb-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[#061018] transition active:scale-95 disabled:opacity-35"
             >
@@ -180,6 +198,7 @@ export default function NextActionCard({
               key={`${step.id}-voice`}
               onBusyChange={setVoiceBusy}
               onTranscript={(text) => {
+                noteEdit();
                 setResult((current) => {
                   const prev = current.trim();
                   return prev ? `${prev}\n${text}` : text;
