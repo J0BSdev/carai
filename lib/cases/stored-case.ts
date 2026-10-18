@@ -42,3 +42,36 @@ export function caseForStorage(value: unknown): DiagnosticCase {
   }
   return parseDiagnosticCase(stripped);
 }
+
+export type StoredCaseStatus = "active" | "finished";
+
+export type StoredCaseFields = {
+  vehicleMake: string | null;
+  vehicleModel: string | null;
+  vehicleYear: number | null;
+  vehicleEngine: string | null;
+  problemText: string;
+  confirmedFault: string | null;
+  status: StoredCaseStatus;
+};
+
+function storedText(value: string | undefined): string | null {
+  const text = value?.trim();
+  return text ? text : null;
+}
+
+/** Columns copied from the case. No model call. An open case has no fault. */
+export function storedCaseFields(diagnosticCase: DiagnosticCase): StoredCaseFields {
+  const vehicle = diagnosticCase.extracted?.vehicle;
+  const last = diagnosticCase.steps[diagnosticCase.steps.length - 1];
+  const finished = last?.actionType === "FINISH";
+  return {
+    vehicleMake: storedText(vehicle?.make),
+    vehicleModel: storedText(vehicle?.model),
+    vehicleYear: typeof vehicle?.year === "number" ? vehicle.year : null,
+    vehicleEngine: storedText(vehicle?.engine),
+    problemText: diagnosticCase.problemText,
+    confirmedFault: finished ? storedText(last?.confirmedFault) : null,
+    status: finished ? "finished" : "active",
+  };
+}

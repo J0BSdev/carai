@@ -134,7 +134,14 @@ language plpgsql
 set search_path = ''
 as $$
 begin
-  if new.user_id is distinct from auth.uid() then
+  -- A signed-in API request has auth.uid(). The SQL editor does not.
+  if auth.uid() is not null and new.user_id is distinct from auth.uid() then
+    raise exception 'case user mismatch';
+  end if;
+  if tg_op = 'UPDATE'
+    and auth.uid() is not null
+    and new.user_id is distinct from old.user_id
+  then
     raise exception 'case user mismatch';
   end if;
   new.case_data := private.strip_media_keys(new.case_data);
