@@ -9,7 +9,6 @@ import type {
 /** Safety cap after SQL filters — not "newest N before rank". */
 const FETCH_CAP = 500;
 const TOP_N = 5;
-const MIN_SCORE = 12;
 const PROBLEM_SNIPPET = 120;
 const CACHE_MAX_ENTRIES = 200;
 
@@ -25,7 +24,7 @@ type PriorCaseRow = {
   diagnosis_certainty: string | null;
 };
 
-export type PriorCaseSearchInput = {
+type PriorCaseSearchInput = {
   excludeCaseId: string;
   problemText: string;
   vehicle?: VehicleInfo;
@@ -41,10 +40,6 @@ type CacheEntry = {
 
 const priorHintsCache = new Map<string, CacheEntry>();
 
-function cacheKey(userId: string, caseId: string): string {
-  return `${userId}:${caseId}`;
-}
-
 function rememberCache(key: string, entry: CacheEntry): void {
   if (priorHintsCache.size >= CACHE_MAX_ENTRIES && !priorHintsCache.has(key)) {
     const oldest = priorHintsCache.keys().next().value;
@@ -57,55 +52,17 @@ function norm(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-/** Weak fillers — not enough alone for technical relevance. */
-const STOP_TOKENS = new Set([
-  "auto",
-  "vozilo",
-  "motor",
-  "problem",
-  "kvar",
-  "greška",
-  "greska",
-  "fault",
-  "error",
-  "code",
-  "kod",
-  "kodovi",
-  "lampica",
-  "check",
-  "engine",
-  "light",
-  "nešto",
-  "nesto",
-  "radi",
-  "ima",
-  "the",
-  "and",
-  "ili",
-  "kad",
-  "kada",
-  "while",
-  "with",
-  "from",
-]);
-
-function rawTokens(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9čćžšđüöä]+/i)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 4);
-}
-
-function technicalTokens(text: string, drop: Iterable<string> = []): Set<string> {
+/** Tokens for symptom/problem overlap. Vehicle fields are dropped separately. */
+function tokens(text: string, drop: Iterable<string> = []): Set<string> {
   const dropSet = new Set<string>();
   for (const d of drop) {
-    for (const t of rawTokens(d)) dropSet.add(t);
+    for (const t of norm(d).split(/[^a-z0-9čćžšđüöä]+/i)) {
+      if (t.length >= 4) dropSet.add(t);
+    }
   }
   const out = new Set<string>();
-  for (const t of rawTokens(text)) {
-    if (STOP_TOKENS.has(t) || dropSet.has(t)) continue;
-    out.add(t);
+  for (const t of norm(text).split(/[^a-z0-9čćžšđüöä]+/i)) {
+    if (t.length >= 4 && !dropSet.has(t)) out.add(t);
   }
   return out;
 }
@@ -117,11 +74,6 @@ function extractDtcCodes(...parts: Array<string | null | undefined>): string[] {
     for (const m of part.toUpperCase().matchAll(/\b[PCBU][0-9A-F]{4}\b/g)) {
       found.add(m[0]);
     }
-  }
-  for (const part of parts) {
-    if (!part) continue;
-    const trimmed = part.trim().toUpperCase();
-    if (/^[PCBU][0-9A-F]{4}$/.test(trimmed)) found.add(trimmed);
   }
   return [...found];
 }
@@ -150,65 +102,56 @@ function ilikeContains(value: string): string {
   return `%${escapeIlike(value)}%`;
 }
 
-function partialMatch(a: string, b: string): boolean {
-  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+function fieldMatch(
+  query: string,
+  row: string,
+): "exact" | "partial" | "mismatch" | "none" {
+  if (!query) return "none";
+  if (!row) return "none";
+  if (row === query) return "exact";
+  if (row.includes(query) || query.includes(row)) return "partial";
+  return "mismatch";
 }
 
-type ScoredRow = {
-  row: PriorCaseRow;
-  score: number;
-  include: boolean;
-};
-
 /**
- * Vehicle match only boosts rank. Inclusion requires a technical signal:
- * DTC overlap, or meaningful symptom/problem token overlap (optionally with model/engine).
- * Make alone is never enough.
+ * Vehicle fields only affect rank. Inclusion needs a technical signal:
+ * shared DTC, or token overlap on problem/symptoms (stricter alone than with model/engine).
+ * Make alone never qualifies.
  */
-function scoreRow(row: PriorCaseRow, query: PriorCaseSearchInput): ScoredRow {
+function scoreRow(
+  row: PriorCaseRow,
+  query: PriorCaseSearchInput,
+): { row: PriorCaseRow; score: number } | null {
   const qMake = norm(query.vehicle?.make);
   const qModel = norm(query.vehicle?.model);
   const qEngine = norm(query.vehicle?.engine);
-  const qYear = query.vehicle?.year;
   const rMake = norm(row.vehicle_make);
   const rModel = norm(row.vehicle_model);
   const rEngine = norm(row.vehicle_engine);
 
-  let vehicleScore = 0;
-  let modelMatch = false;
-  let engineMatch = false;
+  const make = fieldMatch(qMake, rMake);
+  const model = fieldMatch(qModel, rModel);
+  const engine = fieldMatch(qEngine, rEngine);
+  const modelOrEngine =
+    model === "exact" ||
+    model === "partial" ||
+    engine === "exact" ||
+    engine === "partial";
 
-  if (qMake) {
-    if (rMake === qMake) {
-      vehicleScore += 25;
-    } else if (partialMatch(rMake, qMake)) {
-      vehicleScore += 12;
-    } else if (rMake) {
-      vehicleScore -= 20;
-    }
+  let score = 0;
+  if (make === "exact") score += 3;
+  else if (make === "partial") score += 1;
+  else if (make === "mismatch") score -= 2;
+  if (model === "exact") score += 3;
+  else if (model === "partial") score += 1;
+  if (engine === "exact") score += 2;
+  else if (engine === "partial") score += 1;
+  if (
+    query.vehicle?.year != null &&
+    row.vehicle_year === query.vehicle.year
+  ) {
+    score += 1;
   }
-
-  if (qModel) {
-    if (rModel === qModel) {
-      vehicleScore += 20;
-      modelMatch = true;
-    } else if (partialMatch(rModel, qModel)) {
-      vehicleScore += 10;
-      modelMatch = true;
-    }
-  }
-
-  if (qEngine) {
-    if (rEngine === qEngine) {
-      vehicleScore += 12;
-      engineMatch = true;
-    } else if (partialMatch(rEngine, qEngine)) {
-      vehicleScore += 6;
-      engineMatch = true;
-    }
-  }
-
-  if (qYear != null && row.vehicle_year === qYear) vehicleScore += 4;
 
   const vehicleDrop = [
     query.vehicle?.make,
@@ -219,96 +162,62 @@ function scoreRow(row: PriorCaseRow, query: PriorCaseSearchInput): ScoredRow {
     row.vehicle_engine,
   ].filter(Boolean) as string[];
 
-  const queryTechText = [
-    query.problemText,
-    ...(query.symptoms ?? []),
-    ...(query.dtcs ?? []),
-  ].join(" ");
-  const rowTechText = [row.problem_text, row.confirmed_fault].join(" ");
-
-  const qTokens = technicalTokens(queryTechText, vehicleDrop);
-  const rTokens = technicalTokens(rowTechText, vehicleDrop);
+  const qTokens = tokens(
+    [query.problemText, ...(query.symptoms ?? []), ...(query.dtcs ?? [])].join(
+      " ",
+    ),
+    vehicleDrop,
+  );
+  const rTokens = tokens(
+    [row.problem_text, row.confirmed_fault].join(" "),
+    vehicleDrop,
+  );
 
   let overlap = 0;
   for (const t of rTokens) {
     if (qTokens.has(t)) overlap += 1;
   }
 
-  const queryDtcs = new Set([
-    ...extractDtcCodes(query.problemText, ...(query.dtcs ?? [])),
-    ...(query.dtcs ?? []).map((d) => d.trim().toUpperCase()).filter(Boolean),
-  ]);
-  const rowDtcs = extractDtcCodes(row.problem_text, row.confirmed_fault);
+  const queryDtcs = new Set(
+    extractDtcCodes(query.problemText, ...(query.dtcs ?? [])),
+  );
+  const rowDtcs = new Set(
+    extractDtcCodes(row.problem_text, row.confirmed_fault),
+  );
   let dtcHits = 0;
   for (const code of queryDtcs) {
-    if (code.length >= 5 && rowDtcs.includes(code)) dtcHits += 1;
-    else if (
-      code.length >= 5 &&
-      rowTechText.toUpperCase().includes(code)
-    ) {
-      dtcHits += 1;
-    }
+    if (rowDtcs.has(code)) dtcHits += 1;
   }
 
   const technical =
     dtcHits > 0 ||
     overlap >= 2 ||
-    (overlap >= 1 && (modelMatch || engineMatch));
+    (overlap >= 1 && modelOrEngine);
 
-  if (!technical) {
-    return { row, score: 0, include: false };
-  }
+  if (!technical) return null;
 
-  let score = vehicleScore + Math.min(30, overlap * 6) + dtcHits * 14;
-  if (row.confirmed_fault?.trim()) score += 2;
-
-  return {
-    row,
-    score,
-    include: score >= MIN_SCORE,
-  };
+  score += overlap + dtcHits * 3;
+  return { row, score };
 }
 
 function toHint(row: PriorCaseRow): PriorResolvedCaseHint {
-  const certainty =
-    row.source === "manual"
-      ? "manual"
-      : row.diagnosis_certainty ?? "unknown";
   return {
     vehicle: vehicleLabel(row),
-    problem: row.problem_text ? truncate(row.problem_text, PROBLEM_SNIPPET) : null,
+    problem: row.problem_text
+      ? truncate(row.problem_text, PROBLEM_SNIPPET)
+      : null,
     resolvedFault: row.confirmed_fault?.trim() || null,
     source: row.source === "manual" ? "manual" : "carai",
-    certainty,
+    certainty:
+      row.source === "manual"
+        ? "manual"
+        : row.diagnosis_certainty ?? "unknown",
   };
-}
-
-/**
- * Search the signed-in user's resolved cases (manual + finished AI with
- * CONFIRMED/HIGH_CONFIDENCE). Uses the user Supabase client and RLS.
- * Never throws — empty on missing auth, Supabase, or errors.
- */
-export async function searchPriorResolvedCases(
-  query: PriorCaseSearchInput,
-): Promise<PriorResolvedCaseHint[]> {
-  try {
-    const supabase = await createClient();
-    if (!supabase) return [];
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return [];
-
-    return searchPriorResolvedCasesWithClient(supabase, query);
-  } catch {
-    return [];
-  }
 }
 
 type UserSupabase = NonNullable<Awaited<ReturnType<typeof createClient>>>;
 
-async function searchPriorResolvedCasesWithClient(
+async function searchPriorResolvedCases(
   supabase: UserSupabase,
   query: PriorCaseSearchInput,
 ): Promise<PriorResolvedCaseHint[]> {
@@ -323,9 +232,7 @@ async function searchPriorResolvedCasesWithClient(
     );
 
   const make = query.vehicle?.make?.trim();
-  const hasMake = Boolean(make && make.length >= 2);
-  if (hasMake && make) {
-    // All ages for this make; technical relevance is decided in-memory.
+  if (make && make.length >= 2) {
     builder = builder.ilike("vehicle_make", ilikeContains(make));
   } else {
     const dtcCodes = extractDtcCodes(
@@ -336,15 +243,12 @@ async function searchPriorResolvedCasesWithClient(
       const dtcOr = dtcCodes
         .flatMap((code) => {
           const p = ilikeContains(code);
-          return [
-            `problem_text.ilike.${p}`,
-            `confirmed_fault.ilike.${p}`,
-          ];
+          return [`problem_text.ilike.${p}`, `confirmed_fault.ilike.${p}`];
         })
         .join(",");
       builder = builder.or(dtcOr);
     } else {
-      const sig = [...technicalTokens(query.problemText)].slice(0, 6);
+      const sig = [...tokens(query.problemText)].slice(0, 6);
       if (sig.length === 0) return [];
       const tokenOr = sig
         .map((t) => `problem_text.ilike.${ilikeContains(t)}`)
@@ -353,21 +257,18 @@ async function searchPriorResolvedCasesWithClient(
     }
   }
 
-  // Filtered set (all ages). Cap only as safety — not "newest 80 then rank".
   const { data, error } = await builder.limit(FETCH_CAP);
-
   if (error || !data?.length) return [];
 
   return (data as PriorCaseRow[])
     .map((row) => scoreRow(row, query))
-    .filter((item) => item.include)
+    .filter((item): item is { row: PriorCaseRow; score: number } => item != null)
     .sort((a, b) => b.score - a.score)
     .slice(0, TOP_N)
     .map((item) => toHint(item.row));
 }
 
-/** Stable key for vehicle / symptoms / DTCs / complaint — skip re-search when unchanged. */
-export function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
+function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
   const v = diagnosticCase.extracted?.vehicle;
   const symptoms = [...(diagnosticCase.extracted?.symptoms ?? [])]
     .map((s) => norm(s))
@@ -395,7 +296,6 @@ export function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
 export async function attachPriorResolvedHints(
   diagnosticCase: DiagnosticCase,
 ): Promise<DiagnosticCase> {
-  // Never reuse client-supplied hints (fingerprint/cache spoofing).
   const clean: DiagnosticCase = { ...diagnosticCase };
   delete clean.priorResolvedHints;
 
@@ -409,17 +309,16 @@ export async function attachPriorResolvedHints(
     if (!user) return clean;
 
     const fingerprint = priorSearchFingerprint(clean);
-    const key = cacheKey(user.id, clean.id);
+    const key = `${user.id}:${clean.id}`;
     const cached = priorHintsCache.get(key);
-    if (cached && cached.fingerprint === fingerprint) {
-      const priorResolvedHints: PriorResolvedHints = {
-        fingerprint,
-        items: cached.items,
+    if (cached?.fingerprint === fingerprint) {
+      return {
+        ...clean,
+        priorResolvedHints: { fingerprint, items: cached.items },
       };
-      return { ...clean, priorResolvedHints };
     }
 
-    const items = await searchPriorResolvedCasesWithClient(supabase, {
+    const items = await searchPriorResolvedCases(supabase, {
       excludeCaseId: clean.id,
       problemText: clean.problemText,
       vehicle: clean.extracted?.vehicle,
@@ -428,8 +327,10 @@ export async function attachPriorResolvedHints(
     });
 
     rememberCache(key, { fingerprint, items });
-    const priorResolvedHints: PriorResolvedHints = { fingerprint, items };
-    return { ...clean, priorResolvedHints };
+    return {
+      ...clean,
+      priorResolvedHints: { fingerprint, items },
+    };
   } catch {
     return clean;
   }

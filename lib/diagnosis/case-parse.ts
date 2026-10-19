@@ -220,6 +220,5 @@ export function parseDiagnosticCase(value: unknown): DiagnosticCase {
     if (typeof raw.strongVerifierUsed !== "boolean") invalid();
     diagnosticCase.strongVerifierUsed = raw.strongVerifierUsed;
   }
-  // priorResolvedHints from the client are ignored (server search + cache only).
   return diagnosticCase;
 }

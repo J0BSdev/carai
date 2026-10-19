@@ -40,11 +40,8 @@ export function caseForStorage(value: unknown): DiagnosticCase {
   if (encoded.length > MAX_STORED_CHARS) {
     throw new Error("Slučaj je prevelik za spremanje.");
   }
-  const parsed = parseDiagnosticCase(stripped);
-  if (!parsed.priorResolvedHints) return parsed;
-  const rest = { ...parsed };
-  delete rest.priorResolvedHints;
-  return rest;
+  // priorResolvedHints are never accepted by parseDiagnosticCase.
+  return parseDiagnosticCase(stripped);
 }
 
 export type StoredCaseStatus = "active" | "finished";
