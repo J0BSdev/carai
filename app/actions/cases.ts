@@ -36,6 +36,8 @@ export type ManualResolvedFaultInput = {
   vehicleModel: string;
   vehicleEngine?: string;
   vehicleYear?: number | null;
+  /** Optional symptoms / reason for visit. Stored in problem_text. */
+  problemText?: string;
   confirmedFault: string;
 };
 
@@ -198,6 +200,7 @@ type ParsedManualFault = {
   vehicleModel: string;
   vehicleEngine: string | null;
   vehicleYear: number | null;
+  problemText: string;
   confirmedFault: string;
 };
 
@@ -241,11 +244,22 @@ function parseManualFault(
     vehicleYear = input.vehicleYear;
   }
 
+  const problemRaw = input.problemText ?? "";
+  if (problemRaw.trim() && trimOptional(problemRaw, 20000) == null) {
+    return {
+      ok: false,
+      code: "INVALID",
+      message: "Simptomi / razlog dolaska nisu valjani.",
+    };
+  }
+  const problemText = trimOptional(problemRaw, 20000) ?? "";
+
   return {
     vehicleMake,
     vehicleModel,
     vehicleEngine,
     vehicleYear,
+    problemText,
     confirmedFault,
   };
 }
@@ -259,6 +273,7 @@ function manualCaseData(fields: ParsedManualFault) {
       ...(fields.vehicleEngine ? { engine: fields.vehicleEngine } : {}),
       ...(fields.vehicleYear != null ? { year: fields.vehicleYear } : {}),
     },
+    ...(fields.problemText ? { problemText: fields.problemText } : {}),
     confirmedFault: fields.confirmedFault,
   };
 }
@@ -275,7 +290,7 @@ export async function saveManualResolvedFault(
 
   const caseData = manualCaseData(parsed);
   const columns = {
-    problem_text: "",
+    problem_text: parsed.problemText,
     vehicle_make: parsed.vehicleMake,
     vehicle_model: parsed.vehicleModel,
     vehicle_year: parsed.vehicleYear,

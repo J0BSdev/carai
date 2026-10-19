@@ -153,6 +153,7 @@ function CaseCard({
               vehicleModel: item.vehicleModel ?? "",
               vehicleEngine: item.vehicleEngine ?? "",
               vehicleYear: item.vehicleYear,
+              problemText: item.problemText ?? "",
               confirmedFault: item.confirmedFault ?? "",
             }}
             onCancel={onCancelEdit}
@@ -180,6 +181,12 @@ function CaseCard({
               <Field
                 label="Opis problema"
                 value={shown(item.problemText)}
+                wide
+              />
+            ) : item.problemText.trim() ? (
+              <Field
+                label="Simptomi / razlog dolaska"
+                value={item.problemText}
                 wide
               />
             ) : null}
@@ -292,6 +299,7 @@ type ManualFaultFormValues = {
   vehicleModel: string;
   vehicleEngine: string;
   vehicleYear: number | null;
+  problemText: string;
   confirmedFault: string;
 };
 
@@ -315,6 +323,7 @@ function ManualFaultForm({
   const [year, setYear] = useState(
     initial?.vehicleYear != null ? String(initial.vehicleYear) : "",
   );
+  const [symptoms, setSymptoms] = useState(initial?.problemText ?? "");
   const [fault, setFault] = useState(initial?.confirmedFault ?? "");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -341,6 +350,7 @@ function ManualFaultForm({
         vehicleModel: model,
         vehicleEngine: engine,
         vehicleYear,
+        problemText: symptoms,
         confirmedFault: fault,
       });
       if (!result.ok) {
@@ -412,6 +422,17 @@ function ManualFaultForm({
         maxLength={4}
         placeholder="npr. 2016"
         className={fieldClass}
+      />
+      <label className="mt-3 block text-xs text-[var(--muted)]" htmlFor="manual-symptoms">
+        Simptomi / razlog dolaska (neobavezno)
+      </label>
+      <textarea
+        id="manual-symptoms"
+        value={symptoms}
+        onChange={(e) => setSymptoms(e.target.value)}
+        rows={3}
+        maxLength={20000}
+        className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm outline-none"
       />
       <label className="mt-3 block text-xs text-[var(--muted)]" htmlFor="manual-fault">
         Utvrđeni kvar
