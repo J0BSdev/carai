@@ -1,4 +1,5 @@
 import type { DiagnosticCase, Hypothesis, Observation, TechnicianOutcome } from "./types";
+import { formatPriorResolvedHintsForPrompt } from "@/lib/cases/prior-cases";
 import { observationResultText } from "./observation";
 import { findTechnicianOutcomeConsistencyIssue } from "./confirmation-guard";
 import { findSafetyAndTechnicalRuleIssue } from "./safety-guard";
@@ -17,6 +18,7 @@ Ne izmišljaj OEM brojke, pinove ni raspone. technicalClaims.sourceType: GENERAL
 FINISH: diagnosisCertainty točno SUSPECTED|LIKELY|HIGH_CONFIDENCE|CONFIRMED. CONFIRMED samo uz neovisan jak dokaz ili ovaj-turn FAULT_CONFIRMED|REPAIR_CONFIRMED. Poštuj rejectedDiagnoses.
 Nakon svakog rezultata reevaluiraj cijeli case i ažuriraj hipoteze. Interno max 3 prema značajnim dokazima. hypotheses stavka točno {"label":"...","status":"plausible|supported|weakened|ruled_out","confidence":0-100}. confidence je procjena potkrijepljenosti dokazima, ne statistička vjerojatnost. Bez statement, cause, reason, probability, note.
 TEST: kad postoje značajni dokazi, vrati compact hypotheses; test razlikuje vodeću hipotezu od relevantne alternative. ASK: hypotheses samo kad odgovor mijenja ranking. FINISH: uvijek compact hypotheses.
+PRIOR_RESOLVED_CASES ako postoje: samo mogući tragovi iz prošlih kvarova istog korisnika. Nikad dokaz trenutačnog kvara. I dalje ASK/TEST dok nema potvrde na ovom slučaju.
 
 Na startu iz originalComplaint u semanticUpdate stavi samo eksplicitno navedeno: vehicle.make, vehicle.model, vehicle.year, vehicle.engine (gorivo, obujam ili oznaka), vehicle.mileage, dtcsAdd. Polje koje nije navedeno izostavi. Ne izmišljaj. Poslije semanticUpdate samo kad RESULT dodaje vehicle, symptomsAdd ili dtcsAdd, ili kad postoji technicianOutcome. dtcsAdd doslovno.
 
@@ -164,9 +166,13 @@ function hypothesisPromptLine(diagnosticCase: DiagnosticCase): string | null {
 
 export function buildDiagnosticUserPrompt(diagnosticCase: DiagnosticCase): string {
   const hypothesisLine = hypothesisPromptLine(diagnosticCase);
+  const priorLine = formatPriorResolvedHintsForPrompt(
+    diagnosticCase.priorResolvedHints,
+  );
   const prompt = [
     "CASE STATE:",
     JSON.stringify(compactCaseStateForPrompt(buildCaseState(diagnosticCase))),
+    ...(priorLine ? ["", priorLine] : []),
     ...(hypothesisLine ? ["", hypothesisLine] : []),
   ].join("\n");
 
@@ -216,6 +222,9 @@ export function buildDiagnosticRetryPrompt(
   );
 
   const hypothesisLine = hypothesisPromptLine(diagnosticCase);
+  const priorLine = formatPriorResolvedHintsForPrompt(
+    diagnosticCase.priorResolvedHints,
+  );
   const instruction =
     reasonCalled === "verifier_rejected"
       ? "Verifier je odbio PREVIOUS DRAFT. Razlog je u ISSUES. Reevaluiraj cijeli CASE STATE i postojeće dokaze. Ako FINISH nije potkrijepljen, vrati TEST ili ASK. Ne označi hipotezu kao ruled_out bez dokaza. FINISH samo ako dokazi opravdavaju."
@@ -223,6 +232,7 @@ export function buildDiagnosticRetryPrompt(
   return [
     "CASE STATE:",
     JSON.stringify(compactCaseStateForPrompt(buildCaseState(diagnosticCase))),
+    ...(priorLine ? ["", priorLine] : []),
     ...(hypothesisLine ? ["", hypothesisLine] : []),
     "",
     instruction,

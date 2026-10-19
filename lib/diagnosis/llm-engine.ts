@@ -35,6 +35,7 @@ import {
   buildVerifierUserPrompt,
   findDraftQualityIssue,
 } from "./prompts";
+import { attachPriorResolvedHints } from "@/lib/cases/prior-cases";
 import { draftHasSpecRisk } from "./safety-guard";
 import type {
   DiagnosticCase,
@@ -497,12 +498,13 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       steps: [],
     };
 
-    const nextStep = await callVerifiedDiagnosticStep(baseCase, { image });
+    const withHints = await attachPriorResolvedHints(baseCase);
+    const nextStep = await callVerifiedDiagnosticStep(withHints, { image });
     const diagnosticCase: DiagnosticCase = {
-      ...baseCase,
-      extracted: baseCase.extracted,
+      ...withHints,
+      extracted: withHints.extracted,
       steps: [nextStep],
-      strongVerifierUsed: baseCase.strongVerifierUsed,
+      strongVerifierUsed: withHints.strongVerifierUsed,
     };
 
     return { case: diagnosticCase, nextStep };
@@ -559,14 +561,15 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       observations: [...incoming.observations, nextObservation],
     };
 
-    const nextStep = await callVerifiedDiagnosticStep(caseWithObservation, {
+    const withHints = await attachPriorResolvedHints(caseWithObservation);
+    const nextStep = await callVerifiedDiagnosticStep(withHints, {
       allowTechnicianOutcome: observation.kind === "RESULT",
       image,
     });
     const updated: DiagnosticCase = {
-      ...caseWithObservation,
-      steps: [...caseWithObservation.steps, nextStep],
-      strongVerifierUsed: caseWithObservation.strongVerifierUsed,
+      ...withHints,
+      steps: [...withHints.steps, nextStep],
+      strongVerifierUsed: withHints.strongVerifierUsed,
     };
 
     return { case: updated, nextStep };

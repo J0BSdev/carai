@@ -109,6 +109,22 @@ export type TechnicalSourceType =
   | "MODEL_KNOWLEDGE"
   | "UNKNOWN";
 
+/** Short hint from a past resolved case. Never treated as proof of the current fault. */
+export interface PriorResolvedCaseHint {
+  vehicle: string | null;
+  problem: string | null;
+  resolvedFault: string | null;
+  source: "manual" | "carai";
+  /** CONFIRMED | HIGH_CONFIDENCE | manual | unknown */
+  certainty: string;
+}
+
+/** Client-carried cache so ASK/TEST continues skip re-search when keys are unchanged. */
+export interface PriorResolvedHints {
+  fingerprint: string;
+  items: PriorResolvedCaseHint[];
+}
+
 export interface DiagnosticCase {
   id: string;
   createdAt: string;
@@ -122,6 +138,10 @@ export interface DiagnosticCase {
    * requests, so this flag cannot live only on the current turn.
    */
   strongVerifierUsed?: boolean;
+  /**
+   * Ephemeral prior-case hints for Claude. Not proof. Stripped before DB save.
+   */
+  priorResolvedHints?: PriorResolvedHints;
 }
 
 /** HTTP API body action (start/continue case), not AI actionType. */
