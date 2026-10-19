@@ -109,14 +109,17 @@ export type TechnicalSourceType =
   | "MODEL_KNOWLEDGE"
   | "UNKNOWN";
 
-/** Short hint from a past resolved case. Never treated as proof of the current fault. */
+/** Short candidate from a past resolved case. Claude judges relevance; never proof. */
 export interface PriorResolvedCaseHint {
   vehicle: string | null;
   problem: string | null;
   resolvedFault: string | null;
   source: "manual" | "carai";
-  /** CONFIRMED | HIGH_CONFIDENCE | manual | unknown */
-  certainty: string;
+  /**
+   * How that past fault was established.
+   * technician_confirmed = manual entry or CONFIRMED; ai_high_confidence = AI HIGH_CONFIDENCE only.
+   */
+  priorEvidence: "technician_confirmed" | "ai_high_confidence";
 }
 
 /** Server-attached prior hints for the current request prompt. Not trusted from the client. */

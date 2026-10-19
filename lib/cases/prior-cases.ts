@@ -6,11 +6,14 @@ import type {
   VehicleInfo,
 } from "@/lib/diagnosis/types";
 
-/** Safety cap after SQL filters — not "newest N before rank". */
-const FETCH_CAP = 500;
-const TOP_N = 5;
-const PROBLEM_SNIPPET = 120;
+/** Max short candidates sent to Claude (Claude judges relevance). */
+const MAX_CANDIDATES = 8;
+/** Pool fetched before vehicle preference trim (make-filtered or recent). */
+const FETCH_POOL = 40;
+const PROBLEM_SNIPPET = 100;
+const FAULT_SNIPPET = 80;
 const CACHE_MAX_ENTRIES = 200;
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 type PriorCaseRow = {
   id: string;
@@ -22,20 +25,20 @@ type PriorCaseRow = {
   confirmed_fault: string | null;
   source: string;
   diagnosis_certainty: string | null;
+  updated_at?: string;
 };
 
 type PriorCaseSearchInput = {
   excludeCaseId: string;
   problemText: string;
   vehicle?: VehicleInfo;
-  symptoms?: string[];
   dtcs?: string[];
 };
 
-/** Server-only cache. Never trust client-sent priorResolvedHints. */
 type CacheEntry = {
   fingerprint: string;
   items: PriorResolvedCaseHint[];
+  expiresAt: number;
 };
 
 const priorHintsCache = new Map<string, CacheEntry>();
@@ -48,23 +51,19 @@ function rememberCache(key: string, entry: CacheEntry): void {
   priorHintsCache.set(key, entry);
 }
 
-function norm(value: string | null | undefined): string {
-  return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+function cacheGet(key: string, fingerprint: string): PriorResolvedCaseHint[] | null {
+  const cached = priorHintsCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    priorHintsCache.delete(key);
+    return null;
+  }
+  if (cached.fingerprint !== fingerprint) return null;
+  return cached.items;
 }
 
-/** Tokens for symptom/problem overlap. Vehicle fields are dropped separately. */
-function tokens(text: string, drop: Iterable<string> = []): Set<string> {
-  const dropSet = new Set<string>();
-  for (const d of drop) {
-    for (const t of norm(d).split(/[^a-z0-9čćžšđüöä]+/i)) {
-      if (t.length >= 4) dropSet.add(t);
-    }
-  }
-  const out = new Set<string>();
-  for (const t of norm(text).split(/[^a-z0-9čćžšđüöä]+/i)) {
-    if (t.length >= 4 && !dropSet.has(t)) out.add(t);
-  }
-  return out;
+function norm(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function extractDtcCodes(...parts: Array<string | null | undefined>): string[] {
@@ -102,121 +101,67 @@ function ilikeContains(value: string): string {
   return `%${escapeIlike(value)}%`;
 }
 
-function fieldMatch(
-  query: string,
-  row: string,
-): "exact" | "partial" | "mismatch" | "none" {
-  if (!query) return "none";
-  if (!row) return "none";
-  if (row === query) return "exact";
-  if (row.includes(query) || query.includes(row)) return "partial";
-  return "mismatch";
+function partialField(a: string, b: string): boolean {
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
 }
 
 /**
- * Vehicle fields only affect rank. Inclusion needs a technical signal:
- * shared DTC, or token overlap on problem/symptoms (stricter alone than with model/engine).
- * Make alone never qualifies.
+ * Prefer same model/engine when trimming the pool for token budget.
+ * Not a technical-relevance judgment — Claude does that.
  */
-function scoreRow(
-  row: PriorCaseRow,
+function preferVehicleMatch(
+  rows: PriorCaseRow[],
   query: PriorCaseSearchInput,
-): { row: PriorCaseRow; score: number } | null {
-  const qMake = norm(query.vehicle?.make);
+): PriorCaseRow[] {
+  if (rows.length <= MAX_CANDIDATES) return rows;
+
   const qModel = norm(query.vehicle?.model);
   const qEngine = norm(query.vehicle?.engine);
-  const rMake = norm(row.vehicle_make);
-  const rModel = norm(row.vehicle_model);
-  const rEngine = norm(row.vehicle_engine);
+  const modelHits: PriorCaseRow[] = [];
+  const engineHits: PriorCaseRow[] = [];
+  const rest: PriorCaseRow[] = [];
 
-  const make = fieldMatch(qMake, rMake);
-  const model = fieldMatch(qModel, rModel);
-  const engine = fieldMatch(qEngine, rEngine);
-  const modelOrEngine =
-    model === "exact" ||
-    model === "partial" ||
-    engine === "exact" ||
-    engine === "partial";
-
-  let score = 0;
-  if (make === "exact") score += 3;
-  else if (make === "partial") score += 1;
-  else if (make === "mismatch") score -= 2;
-  if (model === "exact") score += 3;
-  else if (model === "partial") score += 1;
-  if (engine === "exact") score += 2;
-  else if (engine === "partial") score += 1;
-  if (
-    query.vehicle?.year != null &&
-    row.vehicle_year === query.vehicle.year
-  ) {
-    score += 1;
+  for (const row of rows) {
+    if (qModel && partialField(norm(row.vehicle_model), qModel)) {
+      modelHits.push(row);
+    } else if (qEngine && partialField(norm(row.vehicle_engine), qEngine)) {
+      engineHits.push(row);
+    } else {
+      rest.push(row);
+    }
   }
 
-  const vehicleDrop = [
-    query.vehicle?.make,
-    query.vehicle?.model,
-    query.vehicle?.engine,
-    row.vehicle_make,
-    row.vehicle_model,
-    row.vehicle_engine,
-  ].filter(Boolean) as string[];
-
-  const qTokens = tokens(
-    [query.problemText, ...(query.symptoms ?? []), ...(query.dtcs ?? [])].join(
-      " ",
-    ),
-    vehicleDrop,
-  );
-  const rTokens = tokens(
-    [row.problem_text, row.confirmed_fault].join(" "),
-    vehicleDrop,
-  );
-
-  let overlap = 0;
-  for (const t of rTokens) {
-    if (qTokens.has(t)) overlap += 1;
-  }
-
-  const queryDtcs = new Set(
-    extractDtcCodes(query.problemText, ...(query.dtcs ?? [])),
-  );
-  const rowDtcs = new Set(
-    extractDtcCodes(row.problem_text, row.confirmed_fault),
-  );
-  let dtcHits = 0;
-  for (const code of queryDtcs) {
-    if (rowDtcs.has(code)) dtcHits += 1;
-  }
-
-  const technical =
-    dtcHits > 0 ||
-    overlap >= 2 ||
-    (overlap >= 1 && modelOrEngine);
-
-  if (!technical) return null;
-
-  score += overlap + dtcHits * 3;
-  return { row, score };
+  return [...modelHits, ...engineHits, ...rest].slice(0, MAX_CANDIDATES);
 }
 
-function toHint(row: PriorCaseRow): PriorResolvedCaseHint {
+function toHint(row: PriorCaseRow): PriorResolvedCaseHint | null {
+  const priorEvidence =
+    row.source === "manual" || row.diagnosis_certainty === "CONFIRMED"
+      ? "technician_confirmed"
+      : row.diagnosis_certainty === "HIGH_CONFIDENCE"
+        ? "ai_high_confidence"
+        : null;
+  if (!priorEvidence) return null;
+
   return {
     vehicle: vehicleLabel(row),
     problem: row.problem_text
       ? truncate(row.problem_text, PROBLEM_SNIPPET)
       : null,
-    resolvedFault: row.confirmed_fault?.trim() || null,
+    resolvedFault: row.confirmed_fault
+      ? truncate(row.confirmed_fault, FAULT_SNIPPET)
+      : null,
     source: row.source === "manual" ? "manual" : "carai",
-    certainty:
-      row.source === "manual"
-        ? "manual"
-        : row.diagnosis_certainty ?? "unknown",
+    priorEvidence,
   };
 }
 
 type UserSupabase = NonNullable<Awaited<ReturnType<typeof createClient>>>;
 
+/**
+ * Narrow candidate pool in SQL by vehicle / DTC only.
+ * No symptom-token filters — synonyms must reach Claude.
+ */
 async function searchPriorResolvedCases(
   supabase: UserSupabase,
   query: PriorCaseSearchInput,
@@ -224,12 +169,14 @@ async function searchPriorResolvedCases(
   let builder = supabase
     .from("diagnostic_cases")
     .select(
-      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty",
+      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty, updated_at",
     )
     .neq("id", query.excludeCaseId)
     .or(
       "source.eq.manual,diagnosis_certainty.eq.CONFIRMED,diagnosis_certainty.eq.HIGH_CONFIDENCE",
-    );
+    )
+    .order("updated_at", { ascending: false })
+    .limit(FETCH_POOL);
 
   const make = query.vehicle?.make?.trim();
   if (make && make.length >= 2) {
@@ -247,25 +194,20 @@ async function searchPriorResolvedCases(
         })
         .join(",");
       builder = builder.or(dtcOr);
-    } else {
-      const sig = [...tokens(query.problemText)].slice(0, 6);
-      if (sig.length === 0) return [];
-      const tokenOr = sig
-        .map((t) => `problem_text.ilike.${ilikeContains(t)}`)
-        .join(",");
-      builder = builder.or(tokenOr);
     }
+    // No make and no DTC: recent resolved cases for this user (RLS). Claude filters.
   }
 
-  const { data, error } = await builder.limit(FETCH_CAP);
+  const { data, error } = await builder;
   if (error || !data?.length) return [];
 
-  return (data as PriorCaseRow[])
-    .map((row) => scoreRow(row, query))
-    .filter((item): item is { row: PriorCaseRow; score: number } => item != null)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, TOP_N)
-    .map((item) => toHint(item.row));
+  const picked = preferVehicleMatch(data as PriorCaseRow[], query);
+  const hints: PriorResolvedCaseHint[] = [];
+  for (const row of picked) {
+    const hint = toHint(row);
+    if (hint) hints.push(hint);
+  }
+  return hints;
 }
 
 function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
@@ -290,7 +232,7 @@ function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
 }
 
 /**
- * Attach prior-case hints from a server-side search/cache.
+ * Attach prior-case candidates from a server-side search/cache.
  * Ignores any client-supplied priorResolvedHints (spoofing / cache poisoning).
  */
 export async function attachPriorResolvedHints(
@@ -310,11 +252,11 @@ export async function attachPriorResolvedHints(
 
     const fingerprint = priorSearchFingerprint(clean);
     const key = `${user.id}:${clean.id}`;
-    const cached = priorHintsCache.get(key);
-    if (cached?.fingerprint === fingerprint) {
+    const cachedItems = cacheGet(key, fingerprint);
+    if (cachedItems) {
       return {
         ...clean,
-        priorResolvedHints: { fingerprint, items: cached.items },
+        priorResolvedHints: { fingerprint, items: cachedItems },
       };
     }
 
@@ -322,11 +264,14 @@ export async function attachPriorResolvedHints(
       excludeCaseId: clean.id,
       problemText: clean.problemText,
       vehicle: clean.extracted?.vehicle,
-      symptoms: clean.extracted?.symptoms,
       dtcs: clean.extracted?.dtcs,
     });
 
-    rememberCache(key, { fingerprint, items });
+    rememberCache(key, {
+      fingerprint,
+      items,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    });
     return {
       ...clean,
       priorResolvedHints: { fingerprint, items },
@@ -336,7 +281,7 @@ export async function attachPriorResolvedHints(
   }
 }
 
-/** Compact lines for the diagnostic Claude prompt. Null when nothing to show. */
+/** Compact candidate list for the diagnostic Claude prompt. */
 export function formatPriorResolvedHintsForPrompt(
   hints: PriorResolvedHints | undefined,
 ): string | null {
@@ -348,11 +293,11 @@ export function formatPriorResolvedHintsForPrompt(
     if (item.problem) row.problem = item.problem;
     if (item.resolvedFault) row.resolvedFault = item.resolvedFault;
     row.source = item.source;
-    row.certainty = item.certainty;
+    row.priorEvidence = item.priorEvidence;
     return row;
   });
   return [
-    "PRIOR_RESOLVED_CASES (samo mogući tragovi iz prošlih kvarova istog korisnika; nisu dokaz trenutačnog kvara; i dalje traži potvrdu ASK/TEST):",
+    "PRIOR_RESOLVED_CASE_CANDIDATES (backend shortlist iz prošlih kvarova istog korisnika. Ti procijeni tehničku relevantnost prema vozilu, motoru, simptomima, DTC i rezultatima OVOG slučaja. Smiješ zanemariti sve. Samo tragovi, nikad dokaz. Ne preskači potrebne TEST. Ne diži diagnosisCertainty zbog sličnog prošlog kvara. priorEvidence technician_confirmed ≠ ai_high_confidence.):",
     JSON.stringify(compact),
   ].join("\n");
 }
