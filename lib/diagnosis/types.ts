@@ -119,7 +119,7 @@ export interface PriorResolvedCaseHint {
   certainty: string;
 }
 
-/** Client-carried cache so ASK/TEST continues skip re-search when keys are unchanged. */
+/** Server-attached prior hints for the current request prompt. Not trusted from the client. */
 export interface PriorResolvedHints {
   fingerprint: string;
   items: PriorResolvedCaseHint[];
@@ -139,7 +139,8 @@ export interface DiagnosticCase {
    */
   strongVerifierUsed?: boolean;
   /**
-   * Ephemeral prior-case hints for Claude. Not proof. Stripped before DB save.
+   * Ephemeral prior-case hints for Claude (server-filled only). Not proof.
+   * Client-supplied values are ignored. Stripped before DB save.
    */
   priorResolvedHints?: PriorResolvedHints;
 }

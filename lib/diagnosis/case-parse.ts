@@ -12,8 +12,6 @@ import type {
   ExtractedCaseFacts,
   Hypothesis,
   HypothesisStatus,
-  PriorResolvedCaseHint,
-  PriorResolvedHints,
   VehicleInfo,
 } from "./types";
 
@@ -222,34 +220,6 @@ export function parseDiagnosticCase(value: unknown): DiagnosticCase {
     if (typeof raw.strongVerifierUsed !== "boolean") invalid();
     diagnosticCase.strongVerifierUsed = raw.strongVerifierUsed;
   }
-  const priorResolvedHints = parsePriorResolvedHints(raw.priorResolvedHints);
-  if (priorResolvedHints) diagnosticCase.priorResolvedHints = priorResolvedHints;
+  // priorResolvedHints from the client are ignored (server search + cache only).
   return diagnosticCase;
-}
-
-function parsePriorResolvedHints(value: unknown): PriorResolvedHints | undefined {
-  if (value == null) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  if (typeof raw.fingerprint !== "string" || !raw.fingerprint.trim()) {
-    return undefined;
-  }
-  if (!Array.isArray(raw.items)) return undefined;
-  const items: PriorResolvedCaseHint[] = [];
-  for (const entry of raw.items.slice(0, 5)) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const row = entry as Record<string, unknown>;
-    const source = row.source === "manual" || row.source === "carai" ? row.source : null;
-    if (!source) continue;
-    if (typeof row.certainty !== "string" || !row.certainty.trim()) continue;
-    items.push({
-      vehicle: typeof row.vehicle === "string" ? row.vehicle : null,
-      problem: typeof row.problem === "string" ? row.problem : null,
-      resolvedFault:
-        typeof row.resolvedFault === "string" ? row.resolvedFault : null,
-      source,
-      certainty: row.certainty.trim(),
-    });
-  }
-  return { fingerprint: raw.fingerprint.trim(), items };
 }
