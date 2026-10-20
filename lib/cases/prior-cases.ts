@@ -8,6 +8,8 @@ import type {
 
 /** Max short candidates sent to Claude (Claude judges relevance). */
 const MAX_CANDIDATES = 8;
+/** DTC pool before engine/model preference (avoids “8 newest DTC only”). */
+const DTC_MATCH_POOL = 40;
 const PROBLEM_SNIPPET = 100;
 const FAULT_SNIPPET = 80;
 const CACHE_MAX_ENTRIES = 200;
@@ -174,13 +176,48 @@ async function fetchMatchingRows(
   excludeCaseId: string,
   make: string | null,
   orFilter: string,
+  limit: number,
 ): Promise<PriorCaseRow[]> {
   const { data, error } = await resolvedBaseQuery(supabase, excludeCaseId, make)
     .or(orFilter)
-    .order("updated_at", { ascending: false })
-    .limit(MAX_CANDIDATES);
+    .limit(limit);
   if (error || !data?.length) return [];
   return data as PriorCaseRow[];
+}
+
+function partialField(a: string, b: string): boolean {
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+
+/**
+ * Within a DTC (or other) pool: same engine+model, then engine, then model.
+ * Not symptom scoring — vehicle fields only. Date is not a ranking key.
+ */
+function preferEngineThenModel(
+  rows: PriorCaseRow[],
+  engine: string | null,
+  model: string | null,
+): PriorCaseRow[] {
+  if (rows.length <= MAX_CANDIDATES) return rows;
+  const qEngine = engine ? norm(engine) : "";
+  const qModel = model ? norm(model) : "";
+  if (!qEngine && !qModel) return rows.slice(0, MAX_CANDIDATES);
+
+  const both: PriorCaseRow[] = [];
+  const engOnly: PriorCaseRow[] = [];
+  const modOnly: PriorCaseRow[] = [];
+  const rest: PriorCaseRow[] = [];
+  for (const row of rows) {
+    const eOk = qEngine
+      ? partialField(norm(row.vehicle_engine), qEngine)
+      : false;
+    const mOk = qModel ? partialField(norm(row.vehicle_model), qModel) : false;
+    if (eOk && mOk) both.push(row);
+    else if (eOk) engOnly.push(row);
+    else if (mOk) modOnly.push(row);
+    else rest.push(row);
+  }
+  return [...both, ...engOnly, ...modOnly, ...rest].slice(0, MAX_CANDIDATES);
 }
 
 /**
@@ -230,17 +267,37 @@ async function searchPriorResolvedCases(
     ? `vehicle_model.ilike.${ilikeContains(keys.model)}`
     : null;
 
-  const [dtcRows, engineRows, modelRows] = await Promise.all([
+  const [dtcPool, engineRows, modelRows] = await Promise.all([
     dtcOr
-      ? fetchMatchingRows(supabase, query.excludeCaseId, keys.make, dtcOr)
+      ? fetchMatchingRows(
+          supabase,
+          query.excludeCaseId,
+          keys.make,
+          dtcOr,
+          DTC_MATCH_POOL,
+        )
       : Promise.resolve([]),
     engineOr
-      ? fetchMatchingRows(supabase, query.excludeCaseId, keys.make, engineOr)
+      ? fetchMatchingRows(
+          supabase,
+          query.excludeCaseId,
+          keys.make,
+          engineOr,
+          MAX_CANDIDATES,
+        )
       : Promise.resolve([]),
     modelOr
-      ? fetchMatchingRows(supabase, query.excludeCaseId, keys.make, modelOr)
+      ? fetchMatchingRows(
+          supabase,
+          query.excludeCaseId,
+          keys.make,
+          modelOr,
+          MAX_CANDIDATES,
+        )
       : Promise.resolve([]),
   ]);
+
+  const dtcRows = preferEngineThenModel(dtcPool, keys.engine, keys.model);
 
   const hints: PriorResolvedCaseHint[] = [];
   for (const row of mergeByPriority(dtcRows, engineRows, modelRows)) {
