@@ -148,9 +148,64 @@ function toHint(row: PriorCaseRow): PriorResolvedCaseHint | null {
 
 type UserSupabase = NonNullable<Awaited<ReturnType<typeof createClient>>>;
 
+const CASE_LIST_SELECT =
+  "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty";
+
+function resolvedBaseQuery(
+  supabase: UserSupabase,
+  excludeCaseId: string,
+  make: string | null,
+) {
+  let builder = supabase
+    .from("diagnostic_cases")
+    .select(CASE_LIST_SELECT)
+    .neq("id", excludeCaseId)
+    .or(
+      "source.eq.manual,diagnosis_certainty.eq.CONFIRMED,diagnosis_certainty.eq.HIGH_CONFIDENCE",
+    );
+  if (make) {
+    builder = builder.ilike("vehicle_make", ilikeContains(make));
+  }
+  return builder;
+}
+
+async function fetchMatchingRows(
+  supabase: UserSupabase,
+  excludeCaseId: string,
+  make: string | null,
+  orFilter: string,
+): Promise<PriorCaseRow[]> {
+  const { data, error } = await resolvedBaseQuery(supabase, excludeCaseId, make)
+    .or(orFilter)
+    .order("updated_at", { ascending: false })
+    .limit(MAX_CANDIDATES);
+  if (error || !data?.length) return [];
+  return data as PriorCaseRow[];
+}
+
 /**
- * SQL narrows by model / engine / DTC (any age). Optional make scopes the brand.
- * No symptom-token filters. No "newest N then hope".
+ * Prefer DTC matches, then engine, then model — each bucket has its own query
+ * so older DTC cases are not crowded out by newer model-only rows.
+ */
+function mergeByPriority(
+  dtcRows: PriorCaseRow[],
+  engineRows: PriorCaseRow[],
+  modelRows: PriorCaseRow[],
+): PriorCaseRow[] {
+  const out: PriorCaseRow[] = [];
+  const seen = new Set<string>();
+  for (const row of [...dtcRows, ...engineRows, ...modelRows]) {
+    if (out.length >= MAX_CANDIDATES) break;
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row);
+  }
+  return out;
+}
+
+/**
+ * SQL narrows by DTC / engine / model (any age within each bucket).
+ * Optional make scopes the brand. No symptom scoring.
  */
 async function searchPriorResolvedCases(
   supabase: UserSupabase,
@@ -159,42 +214,36 @@ async function searchPriorResolvedCases(
   const keys = searchableKeys(query);
   if (!keys) return [];
 
-  let builder = supabase
-    .from("diagnostic_cases")
-    .select(
-      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty",
-    )
-    .neq("id", query.excludeCaseId)
-    .or(
-      "source.eq.manual,diagnosis_certainty.eq.CONFIRMED,diagnosis_certainty.eq.HIGH_CONFIDENCE",
-    );
+  const dtcOr =
+    keys.dtcs.length > 0
+      ? keys.dtcs
+          .flatMap((code) => {
+            const p = ilikeContains(code);
+            return [`problem_text.ilike.${p}`, `confirmed_fault.ilike.${p}`];
+          })
+          .join(",")
+      : null;
+  const engineOr = keys.engine
+    ? `vehicle_engine.ilike.${ilikeContains(keys.engine)}`
+    : null;
+  const modelOr = keys.model
+    ? `vehicle_model.ilike.${ilikeContains(keys.model)}`
+    : null;
 
-  if (keys.make) {
-    builder = builder.ilike("vehicle_make", ilikeContains(keys.make));
-  }
-
-  const orParts: string[] = [];
-  if (keys.model) {
-    orParts.push(`vehicle_model.ilike.${ilikeContains(keys.model)}`);
-  }
-  if (keys.engine) {
-    orParts.push(`vehicle_engine.ilike.${ilikeContains(keys.engine)}`);
-  }
-  for (const code of keys.dtcs) {
-    const p = ilikeContains(code);
-    orParts.push(`problem_text.ilike.${p}`);
-    orParts.push(`confirmed_fault.ilike.${p}`);
-  }
-  builder = builder.or(orParts.join(","));
-
-  const { data, error } = await builder
-    .order("updated_at", { ascending: false })
-    .limit(MAX_CANDIDATES);
-
-  if (error || !data?.length) return [];
+  const [dtcRows, engineRows, modelRows] = await Promise.all([
+    dtcOr
+      ? fetchMatchingRows(supabase, query.excludeCaseId, keys.make, dtcOr)
+      : Promise.resolve([]),
+    engineOr
+      ? fetchMatchingRows(supabase, query.excludeCaseId, keys.make, engineOr)
+      : Promise.resolve([]),
+    modelOr
+      ? fetchMatchingRows(supabase, query.excludeCaseId, keys.make, modelOr)
+      : Promise.resolve([]),
+  ]);
 
   const hints: PriorResolvedCaseHint[] = [];
-  for (const row of data as PriorCaseRow[]) {
+  for (const row of mergeByPriority(dtcRows, engineRows, modelRows)) {
     const hint = toHint(row);
     if (hint) hints.push(hint);
   }
