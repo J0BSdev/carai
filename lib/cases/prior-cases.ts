@@ -22,6 +22,7 @@ type PriorCaseRow = {
   confirmed_fault: string | null;
   source: string;
   diagnosis_certainty: string | null;
+  updated_at: string;
 };
 
 type PriorCaseSearchInput = {
@@ -146,14 +147,12 @@ async function fetchMatchingRows(
   excludeCaseId: string,
   make: string | null,
   orFilter: string,
-  limit: number,
-  /** AND filters — DTC+engine+model decided in SQL, not after a pool limit. */
-  matchVehicle?: { engine: string | null; model: string | null },
+  matchVehicle?: { engine?: string | null; model?: string | null },
 ): Promise<PriorCaseRow[]> {
   let builder = supabase
     .from("diagnostic_cases")
     .select(
-      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty",
+      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty, updated_at",
     )
     .neq("id", excludeCaseId)
     .or(
@@ -174,7 +173,11 @@ async function fetchMatchingRows(
       ilikeContains(matchVehicle.model),
     );
   }
-  const { data, error } = await builder.or(orFilter).limit(limit);
+  const { data, error } = await builder
+    .or(orFilter)
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(MAX_CANDIDATES);
   if (error) {
     console.error("[prior-cases] query failed", error.message);
     return [];
@@ -183,18 +186,17 @@ async function fetchMatchingRows(
   return data as PriorCaseRow[];
 }
 
-function mergeByPriority(
-  dtcRows: PriorCaseRow[],
-  engineRows: PriorCaseRow[],
-  modelRows: PriorCaseRow[],
-): PriorCaseRow[] {
+/** Merge priority tiers in order; each tier is already sorted updated_at DESC, id. */
+function mergeTiers(tiers: PriorCaseRow[][]): PriorCaseRow[] {
   const out: PriorCaseRow[] = [];
   const seen = new Set<string>();
-  for (const row of [...dtcRows, ...engineRows, ...modelRows]) {
-    if (out.length >= MAX_CANDIDATES) break;
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
-    out.push(row);
+  for (const tier of tiers) {
+    for (const row of tier) {
+      if (out.length >= MAX_CANDIDATES) return out;
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      out.push(row);
+    }
   }
   return out;
 }
@@ -222,39 +224,42 @@ async function searchPriorResolvedCases(
     ? `vehicle_model.ilike.${ilikeContains(keys.model)}`
     : null;
 
+  const ex = query.excludeCaseId;
+  const make = keys.make;
   const empty: PriorCaseRow[] = [];
-  const [dtcRows, engineRows, modelRows] = await Promise.all([
-    dtcOr
-      ? fetchMatchingRows(
-          supabase,
-          query.excludeCaseId,
-          keys.make,
-          dtcOr,
-          MAX_CANDIDATES,
-          { engine: keys.engine, model: keys.model },
-        )
-      : empty,
-    engineOr
-      ? fetchMatchingRows(
-          supabase,
-          query.excludeCaseId,
-          keys.make,
-          engineOr,
-          MAX_CANDIDATES,
-        )
-      : empty,
-    modelOr
-      ? fetchMatchingRows(
-          supabase,
-          query.excludeCaseId,
-          keys.make,
-          modelOr,
-          MAX_CANDIDATES,
-        )
-      : empty,
-  ]);
 
-  return mergeByPriority(dtcRows, engineRows, modelRows).map(toHint);
+  // One query per applicable tier so a lower tier limit cannot drop a higher match.
+  const [dtcEngineModel, dtcEngine, dtcModel, dtcOnly, engineOnly, modelOnly] =
+    await Promise.all([
+      dtcOr && keys.engine && keys.model
+        ? fetchMatchingRows(supabase, ex, make, dtcOr, {
+            engine: keys.engine,
+            model: keys.model,
+          })
+        : empty,
+      dtcOr && keys.engine
+        ? fetchMatchingRows(supabase, ex, make, dtcOr, {
+            engine: keys.engine,
+          })
+        : empty,
+      dtcOr && keys.model
+        ? fetchMatchingRows(supabase, ex, make, dtcOr, {
+            model: keys.model,
+          })
+        : empty,
+      dtcOr ? fetchMatchingRows(supabase, ex, make, dtcOr) : empty,
+      engineOr ? fetchMatchingRows(supabase, ex, make, engineOr) : empty,
+      modelOr ? fetchMatchingRows(supabase, ex, make, modelOr) : empty,
+    ]);
+
+  return mergeTiers([
+    dtcEngineModel,
+    dtcEngine,
+    dtcModel,
+    dtcOnly,
+    engineOnly,
+    modelOnly,
+  ]).map(toHint);
 }
 
 function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
