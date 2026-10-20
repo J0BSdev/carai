@@ -6,9 +6,8 @@ import type {
   VehicleInfo,
 } from "@/lib/diagnosis/types";
 
-/** Max short candidates sent to Claude (Claude judges relevance). */
 const MAX_CANDIDATES = 8;
-/** DTC pool before engine/model preference (avoids “8 newest DTC only”). */
+/** DTC pool before engine/model preference (not “8 newest DTC only”). */
 const DTC_MATCH_POOL = 40;
 const PROBLEM_SNIPPET = 100;
 const FAULT_SNIPPET = 80;
@@ -92,49 +91,43 @@ function vehicleLabel(row: PriorCaseRow): string | null {
   return parts.length ? parts.join(" ") : null;
 }
 
-function escapeIlike(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-}
-
 function ilikeContains(value: string): string {
-  return `%${escapeIlike(value)}%`;
+  const escaped = value
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");
+  return `%${escaped}%`;
 }
 
-/** DTC, model, or engine — enough to search without dumping unrelated history. */
+/** Null when there is no DTC / model / engine to search on. */
 function searchableKeys(query: PriorCaseSearchInput): {
   make: string | null;
   model: string | null;
   engine: string | null;
   dtcs: string[];
 } | null {
-  const make = query.vehicle?.make?.trim() ?? "";
-  const model = query.vehicle?.model?.trim() ?? "";
-  const engine = query.vehicle?.engine?.trim() ?? "";
+  const make = query.vehicle?.make?.trim() || null;
+  const model = query.vehicle?.model?.trim() || null;
+  const engine = query.vehicle?.engine?.trim() || null;
   const dtcs = extractDtcCodes(
     query.problemText,
     ...(query.dtcs ?? []),
   ).slice(0, 8);
 
-  const hasModel = model.length >= 2;
-  const hasEngine = engine.length >= 2;
-  const hasDtc = dtcs.length > 0;
-  if (!hasModel && !hasEngine && !hasDtc) return null;
+  const modelKey = model && model.length >= 2 ? model : null;
+  const engineKey = engine && engine.length >= 2 ? engine : null;
+  if (!modelKey && !engineKey && dtcs.length === 0) return null;
 
   return {
-    make: make.length >= 2 ? make : null,
-    model: hasModel ? model : null,
-    engine: hasEngine ? engine : null,
+    make: make && make.length >= 2 ? make : null,
+    model: modelKey,
+    engine: engineKey,
     dtcs,
   };
 }
 
-function toHint(row: PriorCaseRow): PriorResolvedCaseHint | null {
+function toHint(row: PriorCaseRow): PriorResolvedCaseHint {
   const source = row.source === "manual" ? "manual" : "carai";
-  if (source === "carai") {
-    const c = row.diagnosis_certainty;
-    if (c !== "CONFIRMED" && c !== "HIGH_CONFIDENCE") return null;
-  }
-
   return {
     vehicle: vehicleLabel(row),
     problem: row.problem_text
@@ -150,27 +143,6 @@ function toHint(row: PriorCaseRow): PriorResolvedCaseHint | null {
 
 type UserSupabase = NonNullable<Awaited<ReturnType<typeof createClient>>>;
 
-const CASE_LIST_SELECT =
-  "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty";
-
-function resolvedBaseQuery(
-  supabase: UserSupabase,
-  excludeCaseId: string,
-  make: string | null,
-) {
-  let builder = supabase
-    .from("diagnostic_cases")
-    .select(CASE_LIST_SELECT)
-    .neq("id", excludeCaseId)
-    .or(
-      "source.eq.manual,diagnosis_certainty.eq.CONFIRMED,diagnosis_certainty.eq.HIGH_CONFIDENCE",
-    );
-  if (make) {
-    builder = builder.ilike("vehicle_make", ilikeContains(make));
-  }
-  return builder;
-}
-
 async function fetchMatchingRows(
   supabase: UserSupabase,
   excludeCaseId: string,
@@ -178,21 +150,28 @@ async function fetchMatchingRows(
   orFilter: string,
   limit: number,
 ): Promise<PriorCaseRow[]> {
-  const { data, error } = await resolvedBaseQuery(supabase, excludeCaseId, make)
-    .or(orFilter)
-    .limit(limit);
+  let builder = supabase
+    .from("diagnostic_cases")
+    .select(
+      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty",
+    )
+    .neq("id", excludeCaseId)
+    .or(
+      "source.eq.manual,diagnosis_certainty.eq.CONFIRMED,diagnosis_certainty.eq.HIGH_CONFIDENCE",
+    );
+  if (make) {
+    builder = builder.ilike("vehicle_make", ilikeContains(make));
+  }
+  const { data, error } = await builder.or(orFilter).limit(limit);
   if (error || !data?.length) return [];
   return data as PriorCaseRow[];
 }
 
 function partialField(a: string, b: string): boolean {
-  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+  return Boolean(a && b && (a.includes(b) || b.includes(a)));
 }
 
-/**
- * Within a DTC (or other) pool: same engine+model, then engine, then model.
- * Not symptom scoring — vehicle fields only. Date is not a ranking key.
- */
+/** Within DTC pool: engine+model, then engine, then model. Date is not a key. */
 function preferEngineThenModel(
   rows: PriorCaseRow[],
   engine: string | null,
@@ -220,10 +199,6 @@ function preferEngineThenModel(
   return [...both, ...engOnly, ...modOnly, ...rest].slice(0, MAX_CANDIDATES);
 }
 
-/**
- * Prefer DTC matches, then engine, then model — each bucket has its own query
- * so older DTC cases are not crowded out by newer model-only rows.
- */
 function mergeByPriority(
   dtcRows: PriorCaseRow[],
   engineRows: PriorCaseRow[],
@@ -240,10 +215,6 @@ function mergeByPriority(
   return out;
 }
 
-/**
- * SQL narrows by DTC / engine / model (any age within each bucket).
- * Optional make scopes the brand. No symptom scoring.
- */
 async function searchPriorResolvedCases(
   supabase: UserSupabase,
   query: PriorCaseSearchInput,
@@ -267,6 +238,7 @@ async function searchPriorResolvedCases(
     ? `vehicle_model.ilike.${ilikeContains(keys.model)}`
     : null;
 
+  const empty: PriorCaseRow[] = [];
   const [dtcPool, engineRows, modelRows] = await Promise.all([
     dtcOr
       ? fetchMatchingRows(
@@ -276,7 +248,7 @@ async function searchPriorResolvedCases(
           dtcOr,
           DTC_MATCH_POOL,
         )
-      : Promise.resolve([]),
+      : empty,
     engineOr
       ? fetchMatchingRows(
           supabase,
@@ -285,7 +257,7 @@ async function searchPriorResolvedCases(
           engineOr,
           MAX_CANDIDATES,
         )
-      : Promise.resolve([]),
+      : empty,
     modelOr
       ? fetchMatchingRows(
           supabase,
@@ -294,17 +266,14 @@ async function searchPriorResolvedCases(
           modelOr,
           MAX_CANDIDATES,
         )
-      : Promise.resolve([]),
+      : empty,
   ]);
 
-  const dtcRows = preferEngineThenModel(dtcPool, keys.engine, keys.model);
-
-  const hints: PriorResolvedCaseHint[] = [];
-  for (const row of mergeByPriority(dtcRows, engineRows, modelRows)) {
-    const hint = toHint(row);
-    if (hint) hints.push(hint);
-  }
-  return hints;
+  return mergeByPriority(
+    preferEngineThenModel(dtcPool, keys.engine, keys.model),
+    engineRows,
+    modelRows,
+  ).map(toHint);
 }
 
 function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
@@ -328,10 +297,7 @@ function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
   ].join("|");
 }
 
-/**
- * Attach prior-case candidates from a server-side search/cache.
- * Ignores any client-supplied priorResolvedHints (spoofing / cache poisoning).
- */
+/** Server search/cache only — client priorResolvedHints are ignored. */
 export async function attachPriorResolvedHints(
   diagnosticCase: DiagnosticCase,
 ): Promise<DiagnosticCase> {
@@ -385,11 +351,10 @@ export function formatPriorResolvedHintsForPrompt(
   const items = hints?.items;
   if (!items?.length) return null;
   const compact = items.map((item) => {
-    const row: Record<string, string> = {};
+    const row: Record<string, string> = { source: item.source };
     if (item.vehicle) row.vehicle = item.vehicle;
     if (item.problem) row.problem = item.problem;
     if (item.resolvedFault) row.resolvedFault = item.resolvedFault;
-    row.source = item.source;
     if (item.diagnosisCertainty) {
       row.diagnosisCertainty = item.diagnosisCertainty;
     }
