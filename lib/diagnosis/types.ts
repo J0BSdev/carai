@@ -115,11 +115,8 @@ export interface PriorResolvedCaseHint {
   problem: string | null;
   resolvedFault: string | null;
   source: "manual" | "carai";
-  /**
-   * How that past fault was established.
-   * technician_confirmed = manual entry or CONFIRMED; ai_high_confidence = AI HIGH_CONFIDENCE only.
-   */
-  priorEvidence: "technician_confirmed" | "ai_high_confidence";
+  /** From the stored case; null for manual rows (column is unused there). */
+  diagnosisCertainty: string | null;
 }
 
 /** Server-attached prior hints for the current request prompt. Not trusted from the client. */

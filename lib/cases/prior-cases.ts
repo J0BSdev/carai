@@ -8,8 +8,6 @@ import type {
 
 /** Max short candidates sent to Claude (Claude judges relevance). */
 const MAX_CANDIDATES = 8;
-/** Pool fetched before vehicle preference trim (make-filtered or recent). */
-const FETCH_POOL = 40;
 const PROBLEM_SNIPPET = 100;
 const FAULT_SNIPPET = 80;
 const CACHE_MAX_ENTRIES = 200;
@@ -25,7 +23,6 @@ type PriorCaseRow = {
   confirmed_fault: string | null;
   source: string;
   diagnosis_certainty: string | null;
-  updated_at?: string;
 };
 
 type PriorCaseSearchInput = {
@@ -101,47 +98,40 @@ function ilikeContains(value: string): string {
   return `%${escapeIlike(value)}%`;
 }
 
-function partialField(a: string, b: string): boolean {
-  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
-}
+/** DTC, model, or engine — enough to search without dumping unrelated history. */
+function searchableKeys(query: PriorCaseSearchInput): {
+  make: string | null;
+  model: string | null;
+  engine: string | null;
+  dtcs: string[];
+} | null {
+  const make = query.vehicle?.make?.trim() ?? "";
+  const model = query.vehicle?.model?.trim() ?? "";
+  const engine = query.vehicle?.engine?.trim() ?? "";
+  const dtcs = extractDtcCodes(
+    query.problemText,
+    ...(query.dtcs ?? []),
+  ).slice(0, 8);
 
-/**
- * Prefer same model/engine when trimming the pool for token budget.
- * Not a technical-relevance judgment — Claude does that.
- */
-function preferVehicleMatch(
-  rows: PriorCaseRow[],
-  query: PriorCaseSearchInput,
-): PriorCaseRow[] {
-  if (rows.length <= MAX_CANDIDATES) return rows;
+  const hasModel = model.length >= 2;
+  const hasEngine = engine.length >= 2;
+  const hasDtc = dtcs.length > 0;
+  if (!hasModel && !hasEngine && !hasDtc) return null;
 
-  const qModel = norm(query.vehicle?.model);
-  const qEngine = norm(query.vehicle?.engine);
-  const modelHits: PriorCaseRow[] = [];
-  const engineHits: PriorCaseRow[] = [];
-  const rest: PriorCaseRow[] = [];
-
-  for (const row of rows) {
-    if (qModel && partialField(norm(row.vehicle_model), qModel)) {
-      modelHits.push(row);
-    } else if (qEngine && partialField(norm(row.vehicle_engine), qEngine)) {
-      engineHits.push(row);
-    } else {
-      rest.push(row);
-    }
-  }
-
-  return [...modelHits, ...engineHits, ...rest].slice(0, MAX_CANDIDATES);
+  return {
+    make: make.length >= 2 ? make : null,
+    model: hasModel ? model : null,
+    engine: hasEngine ? engine : null,
+    dtcs,
+  };
 }
 
 function toHint(row: PriorCaseRow): PriorResolvedCaseHint | null {
-  const priorEvidence =
-    row.source === "manual" || row.diagnosis_certainty === "CONFIRMED"
-      ? "technician_confirmed"
-      : row.diagnosis_certainty === "HIGH_CONFIDENCE"
-        ? "ai_high_confidence"
-        : null;
-  if (!priorEvidence) return null;
+  const source = row.source === "manual" ? "manual" : "carai";
+  if (source === "carai") {
+    const c = row.diagnosis_certainty;
+    if (c !== "CONFIRMED" && c !== "HIGH_CONFIDENCE") return null;
+  }
 
   return {
     vehicle: vehicleLabel(row),
@@ -151,59 +141,60 @@ function toHint(row: PriorCaseRow): PriorResolvedCaseHint | null {
     resolvedFault: row.confirmed_fault
       ? truncate(row.confirmed_fault, FAULT_SNIPPET)
       : null,
-    source: row.source === "manual" ? "manual" : "carai",
-    priorEvidence,
+    source,
+    diagnosisCertainty: source === "manual" ? null : row.diagnosis_certainty,
   };
 }
 
 type UserSupabase = NonNullable<Awaited<ReturnType<typeof createClient>>>;
 
 /**
- * Narrow candidate pool in SQL by vehicle / DTC only.
- * No symptom-token filters — synonyms must reach Claude.
+ * SQL narrows by model / engine / DTC (any age). Optional make scopes the brand.
+ * No symptom-token filters. No "newest N then hope".
  */
 async function searchPriorResolvedCases(
   supabase: UserSupabase,
   query: PriorCaseSearchInput,
 ): Promise<PriorResolvedCaseHint[]> {
+  const keys = searchableKeys(query);
+  if (!keys) return [];
+
   let builder = supabase
     .from("diagnostic_cases")
     .select(
-      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty, updated_at",
+      "id, vehicle_make, vehicle_model, vehicle_year, vehicle_engine, problem_text, confirmed_fault, source, diagnosis_certainty",
     )
     .neq("id", query.excludeCaseId)
     .or(
       "source.eq.manual,diagnosis_certainty.eq.CONFIRMED,diagnosis_certainty.eq.HIGH_CONFIDENCE",
-    )
-    .order("updated_at", { ascending: false })
-    .limit(FETCH_POOL);
+    );
 
-  const make = query.vehicle?.make?.trim();
-  if (make && make.length >= 2) {
-    builder = builder.ilike("vehicle_make", ilikeContains(make));
-  } else {
-    const dtcCodes = extractDtcCodes(
-      query.problemText,
-      ...(query.dtcs ?? []),
-    ).slice(0, 8);
-    if (dtcCodes.length > 0) {
-      const dtcOr = dtcCodes
-        .flatMap((code) => {
-          const p = ilikeContains(code);
-          return [`problem_text.ilike.${p}`, `confirmed_fault.ilike.${p}`];
-        })
-        .join(",");
-      builder = builder.or(dtcOr);
-    }
-    // No make and no DTC: recent resolved cases for this user (RLS). Claude filters.
+  if (keys.make) {
+    builder = builder.ilike("vehicle_make", ilikeContains(keys.make));
   }
 
-  const { data, error } = await builder;
+  const orParts: string[] = [];
+  if (keys.model) {
+    orParts.push(`vehicle_model.ilike.${ilikeContains(keys.model)}`);
+  }
+  if (keys.engine) {
+    orParts.push(`vehicle_engine.ilike.${ilikeContains(keys.engine)}`);
+  }
+  for (const code of keys.dtcs) {
+    const p = ilikeContains(code);
+    orParts.push(`problem_text.ilike.${p}`);
+    orParts.push(`confirmed_fault.ilike.${p}`);
+  }
+  builder = builder.or(orParts.join(","));
+
+  const { data, error } = await builder
+    .order("updated_at", { ascending: false })
+    .limit(MAX_CANDIDATES);
+
   if (error || !data?.length) return [];
 
-  const picked = preferVehicleMatch(data as PriorCaseRow[], query);
   const hints: PriorResolvedCaseHint[] = [];
-  for (const row of picked) {
+  for (const row of data as PriorCaseRow[]) {
     const hint = toHint(row);
     if (hint) hints.push(hint);
   }
@@ -293,11 +284,13 @@ export function formatPriorResolvedHintsForPrompt(
     if (item.problem) row.problem = item.problem;
     if (item.resolvedFault) row.resolvedFault = item.resolvedFault;
     row.source = item.source;
-    row.priorEvidence = item.priorEvidence;
+    if (item.diagnosisCertainty) {
+      row.diagnosisCertainty = item.diagnosisCertainty;
+    }
     return row;
   });
   return [
-    "PRIOR_RESOLVED_CASE_CANDIDATES (backend shortlist iz prošlih kvarova istog korisnika. Ti procijeni tehničku relevantnost prema vozilu, motoru, simptomima, DTC i rezultatima OVOG slučaja. Smiješ zanemariti sve. Samo tragovi, nikad dokaz. Ne preskači potrebne TEST. Ne diži diagnosisCertainty zbog sličnog prošlog kvara. priorEvidence technician_confirmed ≠ ai_high_confidence.):",
+    "PRIOR_RESOLVED_CASE_CANDIDATES (backend shortlist iz prošlih kvarova istog korisnika. Ti procijeni tehničku relevantnost prema vozilu, motoru, simptomima, DTC i rezultatima OVOG slučaja. Smiješ zanemariti sve. Samo tragovi, nikad dokaz. Ne preskači potrebne TEST. Ne diži diagnosisCertainty zbog sličnog prošlog kvara. source/diagnosisCertainty su izvorni podaci slučaja — ne pretpostavljaj tko je potvrdio kvar.):",
     JSON.stringify(compact),
   ].join("\n");
 }
