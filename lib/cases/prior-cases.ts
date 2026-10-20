@@ -7,8 +7,6 @@ import type {
 } from "@/lib/diagnosis/types";
 
 const MAX_CANDIDATES = 8;
-/** DTC pool before engine/model preference (not “8 newest DTC only”). */
-const DTC_MATCH_POOL = 40;
 const PROBLEM_SNIPPET = 100;
 const FAULT_SNIPPET = 80;
 const CACHE_MAX_ENTRIES = 200;
@@ -149,6 +147,8 @@ async function fetchMatchingRows(
   make: string | null,
   orFilter: string,
   limit: number,
+  /** AND filters — DTC+engine+model decided in SQL, not after a pool limit. */
+  matchVehicle?: { engine: string | null; model: string | null },
 ): Promise<PriorCaseRow[]> {
   let builder = supabase
     .from("diagnostic_cases")
@@ -162,41 +162,25 @@ async function fetchMatchingRows(
   if (make) {
     builder = builder.ilike("vehicle_make", ilikeContains(make));
   }
-  const { data, error } = await builder.or(orFilter).limit(limit);
-  if (error || !data?.length) return [];
-  return data as PriorCaseRow[];
-}
-
-function partialField(a: string, b: string): boolean {
-  return Boolean(a && b && (a.includes(b) || b.includes(a)));
-}
-
-/** Within DTC pool: engine+model, then engine, then model. Date is not a key. */
-function preferEngineThenModel(
-  rows: PriorCaseRow[],
-  engine: string | null,
-  model: string | null,
-): PriorCaseRow[] {
-  if (rows.length <= MAX_CANDIDATES) return rows;
-  const qEngine = engine ? norm(engine) : "";
-  const qModel = model ? norm(model) : "";
-  if (!qEngine && !qModel) return rows.slice(0, MAX_CANDIDATES);
-
-  const both: PriorCaseRow[] = [];
-  const engOnly: PriorCaseRow[] = [];
-  const modOnly: PriorCaseRow[] = [];
-  const rest: PriorCaseRow[] = [];
-  for (const row of rows) {
-    const eOk = qEngine
-      ? partialField(norm(row.vehicle_engine), qEngine)
-      : false;
-    const mOk = qModel ? partialField(norm(row.vehicle_model), qModel) : false;
-    if (eOk && mOk) both.push(row);
-    else if (eOk) engOnly.push(row);
-    else if (mOk) modOnly.push(row);
-    else rest.push(row);
+  if (matchVehicle?.engine) {
+    builder = builder.ilike(
+      "vehicle_engine",
+      ilikeContains(matchVehicle.engine),
+    );
   }
-  return [...both, ...engOnly, ...modOnly, ...rest].slice(0, MAX_CANDIDATES);
+  if (matchVehicle?.model) {
+    builder = builder.ilike(
+      "vehicle_model",
+      ilikeContains(matchVehicle.model),
+    );
+  }
+  const { data, error } = await builder.or(orFilter).limit(limit);
+  if (error) {
+    console.error("[prior-cases] query failed", error.message);
+    return [];
+  }
+  if (!data?.length) return [];
+  return data as PriorCaseRow[];
 }
 
 function mergeByPriority(
@@ -239,14 +223,15 @@ async function searchPriorResolvedCases(
     : null;
 
   const empty: PriorCaseRow[] = [];
-  const [dtcPool, engineRows, modelRows] = await Promise.all([
+  const [dtcRows, engineRows, modelRows] = await Promise.all([
     dtcOr
       ? fetchMatchingRows(
           supabase,
           query.excludeCaseId,
           keys.make,
           dtcOr,
-          DTC_MATCH_POOL,
+          MAX_CANDIDATES,
+          { engine: keys.engine, model: keys.model },
         )
       : empty,
     engineOr
@@ -269,11 +254,7 @@ async function searchPriorResolvedCases(
       : empty,
   ]);
 
-  return mergeByPriority(
-    preferEngineThenModel(dtcPool, keys.engine, keys.model),
-    engineRows,
-    modelRows,
-  ).map(toHint);
+  return mergeByPriority(dtcRows, engineRows, modelRows).map(toHint);
 }
 
 function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
