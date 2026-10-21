@@ -1,6 +1,6 @@
 "use server";
 
-import { caseForStorage, storedCaseFields, type StoredCaseStatus } from "@/lib/cases/stored-case";
+import { caseForStorage, type StoredCaseStatus } from "@/lib/cases/stored-case";
 import type { DiagnosisCertainty, DiagnosticCase } from "@/lib/diagnosis/types";
 import { createClient } from "@/lib/supabase/server";
 
@@ -123,76 +123,6 @@ async function userId(): Promise<
     };
   }
   return { supabase, id };
-}
-
-export async function saveDiagnosticCase(
-  input: DiagnosticCase,
-): Promise<CaseStoreResult<{ id: string }>> {
-  const auth = await userId();
-  if ("ok" in auth) return auth;
-
-  let stored: DiagnosticCase;
-  try {
-    stored = caseForStorage(input);
-  } catch {
-    return {
-      ok: false,
-      code: "INVALID",
-      message: "Slučaj nije valjan za spremanje.",
-    };
-  }
-
-  const fields = storedCaseFields(stored);
-  const { data: existing, error: readError } = await auth.supabase
-    .from("diagnostic_cases")
-    .select("case_data, source")
-    .eq("id", stored.id)
-    .maybeSingle();
-  if (!readError && existing?.source === "manual") {
-    return {
-      ok: false,
-      code: "INVALID",
-      message: "Ručno unesen kvar nije AI dijagnostika.",
-    };
-  }
-  if (!readError && existing?.case_data) {
-    try {
-      const previous = caseForStorage(existing.case_data);
-      if (JSON.stringify(previous) === JSON.stringify(stored)) {
-        return { ok: true, data: { id: stored.id } };
-      }
-    } catch {
-      // The stored row is not comparable, so replace it.
-    }
-  }
-
-  const { error } = await auth.supabase.from("diagnostic_cases").upsert(
-    {
-      id: stored.id,
-      user_id: auth.id,
-      created_at: stored.createdAt,
-      problem_text: fields.problemText,
-      vehicle_make: fields.vehicleMake,
-      vehicle_model: fields.vehicleModel,
-      vehicle_year: fields.vehicleYear,
-      vehicle_engine: fields.vehicleEngine,
-      confirmed_fault: fields.confirmedFault,
-      status: fields.status,
-      source: "carai",
-      case_data: stored,
-    },
-    { onConflict: "id" },
-  );
-
-  if (error) {
-    console.error("saveDiagnosticCase", error.code);
-    return {
-      ok: false,
-      code: "FAILED",
-      message: "Spremanje slučaja nije uspjelo.",
-    };
-  }
-  return { ok: true, data: { id: stored.id } };
 }
 
 type ParsedManualFault = {

@@ -92,12 +92,14 @@ function responseFromCase(
 async function persistOrThrow(
   diagnosticCase: DiagnosticCase,
   expectedVersion: number,
+  lockToken: string,
   userId: string | null,
 ): Promise<number> {
   try {
     const next = await commitCaseUpdate(
       diagnosticCase,
       expectedVersion,
+      lockToken,
       userId,
     );
     if (next == null) {
@@ -174,19 +176,19 @@ export async function diagnoseContinue(input: {
     );
   }
 
-  if (isTurnLocked(loaded, input.stepId)) {
+  if (isTurnLocked(loaded)) {
     throw new CaseConflictError(
       "Slučaj se trenutačno obrađuje. Pokušaj ponovno za trenutak.",
     );
   }
 
-  const locked = await tryAcquireTurnLock(
+  const lockToken = await tryAcquireTurnLock(
     input.caseId,
     version,
     input.stepId,
     userId,
   );
-  if (!locked) {
+  if (!lockToken) {
     const again = await loadOwnedCase(input.caseId, userId);
     if (again && turnAlreadyCompleted(again.caseData, input.stepId)) {
       const existing = again.caseData.observations.find(
@@ -211,10 +213,15 @@ export async function diagnoseContinue(input: {
       input.image,
     );
 
-    const caseVersion = await persistOrThrow(result.case, version, userId);
+    const caseVersion = await persistOrThrow(
+      result.case,
+      version,
+      lockToken,
+      userId,
+    );
     return { ...result, caseVersion };
   } catch (error) {
-    await releaseTurnLock(input.caseId, version, input.stepId, userId);
+    await releaseTurnLock(input.caseId, version, lockToken, userId);
     throw error;
   }
 }

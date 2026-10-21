@@ -7,6 +7,7 @@ export type CaseRecord = {
   version: number;
   turnLockStepId: string | null;
   turnLockUntil: string | null;
+  turnLockToken: string | null;
 };
 
 const TURN_LOCK_MS = 120_000;
@@ -20,6 +21,7 @@ const ephemeral = new Map<
     version: number;
     turnLockStepId: string | null;
     turnLockUntil: number | null;
+    turnLockToken: string | null;
     userId: string | null;
   }
 >();
@@ -29,6 +31,7 @@ function rowToRecord(row: {
   case_version: number;
   turn_lock_step_id: string | null;
   turn_lock_until: string | null;
+  turn_lock_token: string | null;
   source?: string;
 }): CaseRecord {
   if (row.source === "manual") {
@@ -39,6 +42,7 @@ function rowToRecord(row: {
     version: row.case_version,
     turnLockStepId: row.turn_lock_step_id,
     turnLockUntil: row.turn_lock_until,
+    turnLockToken: row.turn_lock_token,
   };
 }
 
@@ -61,6 +65,7 @@ function upsertPayload(diagnosticCase: DiagnosticCase, userId: string, version: 
     case_version: version,
     turn_lock_step_id: null as string | null,
     turn_lock_until: null as string | null,
+    turn_lock_token: null as string | null,
   };
 }
 
@@ -77,6 +82,7 @@ export async function loadOwnedCase(
       turnLockStepId: row.turnLockStepId,
       turnLockUntil:
         row.turnLockUntil != null ? new Date(row.turnLockUntil).toISOString() : null,
+      turnLockToken: row.turnLockToken,
     };
   }
 
@@ -86,7 +92,7 @@ export async function loadOwnedCase(
   const { data, error } = await supabase
     .from("diagnostic_cases")
     .select(
-      "case_data, case_version, turn_lock_step_id, turn_lock_until, source",
+      "case_data, case_version, turn_lock_step_id, turn_lock_until, turn_lock_token, source",
     )
     .eq("id", caseId)
     .eq("user_id", userId)
@@ -112,6 +118,7 @@ export async function insertStartedCase(
       version: 1,
       turnLockStepId: null,
       turnLockUntil: null,
+      turnLockToken: null,
       userId: null,
     });
     return 1;
@@ -127,45 +134,47 @@ export async function insertStartedCase(
     .insert(upsertPayload(stored, userId, 1));
   if (error) {
     console.error("[server-case-store] insert", error.message);
-    // Do not retry inserts: a timed-out success + retry would hit a duplicate key
-    // and hide the fact that the row already exists.
     throw new Error("Spremanje slučaja nije uspjelo.");
   }
   return 1;
 }
 
+/**
+ * Acquire an exclusive turn lock. Returns a unique lockToken, or null if busy.
+ * Only unlocked / expired locks may be taken — prevents concurrent same-step runs.
+ */
 export async function tryAcquireTurnLock(
   caseId: string,
   expectedVersion: number,
   stepId: string,
   userId: string | null,
-): Promise<boolean> {
+): Promise<string | null> {
+  const lockToken = crypto.randomUUID();
   const untilMs = Date.now() + TURN_LOCK_MS;
   const nowIso = new Date().toISOString();
   const untilIso = new Date(untilMs).toISOString();
 
   if (!userId) {
     const row = ephemeral.get(caseId);
-    if (!row || row.version !== expectedVersion) return false;
-    // Held by anyone (including same step) → reject; only expired/null may acquire.
+    if (!row || row.version !== expectedVersion) return null;
     if (row.turnLockUntil != null && row.turnLockUntil > Date.now()) {
-      return false;
+      return null;
     }
     row.turnLockStepId = stepId;
     row.turnLockUntil = untilMs;
-    return true;
+    row.turnLockToken = lockToken;
+    return lockToken;
   }
 
   const supabase = await createClient();
-  if (!supabase) return false;
+  if (!supabase) return null;
 
-  // Single atomic UPDATE: version match AND (unlocked OR expired).
-  // Two concurrent callers cannot both succeed — the second sees an active lock.
   const { data, error } = await supabase
     .from("diagnostic_cases")
     .update({
       turn_lock_step_id: stepId,
       turn_lock_until: untilIso,
+      turn_lock_token: lockToken,
     })
     .eq("id", caseId)
     .eq("user_id", userId)
@@ -175,27 +184,35 @@ export async function tryAcquireTurnLock(
 
   if (error) {
     console.error("[server-case-store] lock", error.message);
-    return false;
+    return null;
   }
-  return (data?.length ?? 0) > 0;
+  return (data?.length ?? 0) > 0 ? lockToken : null;
 }
 
-/** CAS write of full case_data; clears turn lock. Returns new version or null on conflict. */
+/**
+ * CAS write: requires matching case_version AND lockToken, and a still-valid lock.
+ * Clears the lock on success. Stale holders (expired / stolen lock) cannot commit.
+ */
 export async function commitCaseUpdate(
   diagnosticCase: DiagnosticCase,
   expectedVersion: number,
+  lockToken: string,
   userId: string | null,
 ): Promise<number | null> {
   const stored = caseForStorage(diagnosticCase);
   const nextVersion = expectedVersion + 1;
+  const nowIso = new Date().toISOString();
 
   if (!userId) {
     const row = ephemeral.get(stored.id);
     if (!row || row.version !== expectedVersion) return null;
+    if (row.turnLockToken !== lockToken) return null;
+    if (row.turnLockUntil == null || row.turnLockUntil <= Date.now()) return null;
     row.caseData = stored;
     row.version = nextVersion;
     row.turnLockStepId = null;
     row.turnLockUntil = null;
+    row.turnLockToken = null;
     return nextVersion;
   }
 
@@ -222,14 +239,17 @@ export async function commitCaseUpdate(
         case_version: nextVersion,
         turn_lock_step_id: null,
         turn_lock_until: null,
+        turn_lock_token: null,
       })
       .eq("id", stored.id)
       .eq("user_id", userId)
       .eq("case_version", expectedVersion)
+      .eq("turn_lock_token", lockToken)
+      .gt("turn_lock_until", nowIso)
       .select("case_version");
 
     if (!error) {
-      if (!data?.length) return null; // CAS conflict — do not retry
+      if (!data?.length) return null;
       return nextVersion;
     }
     console.error("[server-case-store] commit", error.message);
@@ -240,19 +260,20 @@ export async function commitCaseUpdate(
   return null;
 }
 
+/** Release only the lock owned by this lockToken. */
 export async function releaseTurnLock(
   caseId: string,
   expectedVersion: number,
-  stepId: string,
+  lockToken: string,
   userId: string | null,
 ): Promise<void> {
   if (!userId) {
     const row = ephemeral.get(caseId);
     if (!row || row.version !== expectedVersion) return;
-    if (row.turnLockStepId === stepId) {
-      row.turnLockStepId = null;
-      row.turnLockUntil = null;
-    }
+    if (row.turnLockToken !== lockToken) return;
+    row.turnLockStepId = null;
+    row.turnLockUntil = null;
+    row.turnLockToken = null;
     return;
   }
 
@@ -261,16 +282,20 @@ export async function releaseTurnLock(
 
   await supabase
     .from("diagnostic_cases")
-    .update({ turn_lock_step_id: null, turn_lock_until: null })
+    .update({
+      turn_lock_step_id: null,
+      turn_lock_until: null,
+      turn_lock_token: null,
+    })
     .eq("id", caseId)
     .eq("user_id", userId)
     .eq("case_version", expectedVersion)
-    .eq("turn_lock_step_id", stepId);
+    .eq("turn_lock_token", lockToken);
 }
 
-/** True when another in-flight turn holds a non-expired lock. */
-export function isTurnLocked(record: CaseRecord, _stepId: string): boolean {
-  if (!record.turnLockUntil || !record.turnLockStepId) return false;
+/** True when a non-expired turn lock is held. */
+export function isTurnLocked(record: CaseRecord): boolean {
+  if (!record.turnLockUntil || !record.turnLockToken) return false;
   const until = Date.parse(record.turnLockUntil);
   if (Number.isNaN(until) || until <= Date.now()) return false;
   return true;
