@@ -157,7 +157,10 @@ export type TurnImage = {
 export interface DiagnoseRequest {
   action: DiagnoseAction;
   problemText?: string;
-  case?: DiagnosticCase;
+  /** Continue only — server loads the case; client must not send case history. */
+  caseId?: string;
+  /** Continue only — must match the server's current open step. */
+  stepId?: string;
   observation?: ObservationInput;
   image?: TurnImage;
 }
@@ -166,6 +169,8 @@ export interface DiagnoseResponse {
   case: DiagnosticCase;
   /** Current open step; null when case is completed after FINISH. */
   nextStep: DiagnosticStep | null;
+  /** Optimistic-concurrency version stored with the case. */
+  caseVersion: number;
 }
 
 export interface DiagnosticEngine {

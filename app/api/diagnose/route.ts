@@ -5,9 +5,14 @@ import {
   ObservationConflictError,
   type DiagnoseRequest,
 } from "@/lib/diagnosis";
-import { parseDiagnosticCase } from "@/lib/diagnosis/case-parse";
-import { LlmDiagnosticEngine } from "@/lib/diagnosis/llm-engine";
 import { parseObservationInput } from "@/lib/diagnosis/observation";
+import {
+  CaseConflictError,
+  CaseNotFoundError,
+  CasePersistError,
+  diagnoseContinue,
+  diagnoseStart,
+} from "@/lib/diagnosis/server-diagnose";
 import { parseTurnImage } from "@/lib/diagnosis/turn-image";
 import { authorizeUsage, usageDeniedResponse } from "@/lib/access";
 
@@ -26,7 +31,8 @@ function parseBody(body: unknown): DiagnoseRequest {
   return {
     action,
     problemText: typeof raw.problemText === "string" ? raw.problemText : undefined,
-    case: raw.case === undefined ? undefined : parseDiagnosticCase(raw.case),
+    caseId: typeof raw.caseId === "string" ? raw.caseId : undefined,
+    stepId: typeof raw.stepId === "string" ? raw.stepId : undefined,
     observation:
       raw.observation === undefined
         ? undefined
@@ -49,6 +55,16 @@ async function runPipeline(run: () => Promise<unknown>): Promise<Response> {
         { error: OBSERVATION_CONFLICT_MESSAGE },
         { status: 409 },
       );
+    }
+    if (error instanceof CaseNotFoundError) {
+      return Response.json({ error: error.message }, { status: 404 });
+    }
+    if (error instanceof CaseConflictError) {
+      return Response.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof CasePersistError) {
+      console.error("[diagnose] persist failed", error);
+      return Response.json({ error: error.message }, { status: 503 });
     }
     console.error("[diagnose] diagnostic pipeline failed", error);
     return Response.json(
@@ -77,8 +93,6 @@ export async function POST(request: Request) {
     return Response.json({ error: message }, { status: 400 });
   }
 
-  const engine = new LlmDiagnosticEngine();
-
   if (body.action === "start") {
     const problemText =
       typeof body.problemText === "string" ? body.problemText.trim() : "";
@@ -88,13 +102,20 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    return runPipeline(() => engine.startCase(problemText, body.image));
+    return runPipeline(() => diagnoseStart(problemText, body.image, access));
   }
 
-  const diagnosticCase = body.case;
-  if (!diagnosticCase) {
+  const caseId = body.caseId?.trim();
+  const stepId = body.stepId?.trim();
+  if (!caseId) {
     return Response.json(
-      { error: "case je obavezan kad je action continue" },
+      { error: "caseId je obavezan kad je action continue" },
+      { status: 400 },
+    );
+  }
+  if (!stepId) {
+    return Response.json(
+      { error: "stepId je obavezan kad je action continue" },
       { status: 400 },
     );
   }
@@ -108,6 +129,12 @@ export async function POST(request: Request) {
   }
 
   return runPipeline(() =>
-    engine.continueCase(diagnosticCase, observation, body.image),
+    diagnoseContinue({
+      caseId,
+      stepId,
+      observation,
+      image: body.image,
+      access,
+    }),
   );
 }

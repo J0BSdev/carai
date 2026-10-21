@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   listDiagnosticCases,
   loadDiagnosticCase,
-  saveDiagnosticCase,
   type CaseSummary,
 } from "@/app/actions/cases";
 import type { SessionUser } from "@/lib/supabase/env";
@@ -157,14 +156,11 @@ export default function DiagnosticScreen({
   const [hypOpen, setHypOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [futureNotice, setFutureNotice] = useState<string | null>(null);
-  const [saveNote, setSaveNote] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [history, setHistory] = useState<CaseSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
-  const saveGeneration = useRef(0);
-  const saveQueue = useRef(Promise.resolve());
 
   const statusLabel = useMemo(
     () => diagnosticStatusLabel(phase, diagnosticCase, nextStep),
@@ -211,7 +207,6 @@ export default function DiagnosticScreen({
 
   function resetCase() {
     requestGeneration.current += 1;
-    saveGeneration.current += 1;
     requestInFlight.current = false;
     setPhase("intake");
     setProblemText("");
@@ -225,7 +220,6 @@ export default function DiagnosticScreen({
     setCantOpen(false);
     setHowToOpen(false);
     setHypOpen(false);
-    setSaveNote(null);
     setNav("new");
   }
 
@@ -333,14 +327,16 @@ export default function DiagnosticScreen({
     image?: TurnImage,
   ) {
     const base = caseOverride ?? diagnosticCase;
-    if (!base) return;
+    const step = nextStep;
+    if (!base || !step) return;
     if (observation.kind === "RESULT" && !observation.text?.trim() && !image) {
       setError("Unesi rezultat ili fotografiju prije nastavka.");
       return;
     }
     void runDiagnose({
       action: "continue",
-      case: base,
+      caseId: base.id,
+      stepId: step.id,
       observation,
       ...(image ? { image } : {}),
     });
@@ -373,32 +369,6 @@ export default function DiagnosticScreen({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  const userId = user?.id ?? null;
-  useEffect(() => {
-    if (!userId || !diagnosticCase) return;
-    const snapshot = diagnosticCase;
-    const generation = saveGeneration.current + 1;
-    saveGeneration.current = generation;
-    saveQueue.current = saveQueue.current.then(async () => {
-      try {
-        const result = await saveDiagnosticCase(snapshot);
-        if (generation !== saveGeneration.current) return;
-        if (
-          result.ok ||
-          result.code === "UNAUTHENTICATED" ||
-          result.code === "UNCONFIGURED"
-        ) {
-          setSaveNote(null);
-          return;
-        }
-        setSaveNote(result.message);
-      } catch {
-        if (generation !== saveGeneration.current) return;
-        setSaveNote("Spremanje slučaja nije uspjelo.");
-      }
-    });
-  }, [userId, diagnosticCase]);
 
   async function refreshHistory() {
     if (!user) {
@@ -591,14 +561,6 @@ export default function DiagnosticScreen({
           onSignOut={() => void signOut()}
           signingOut={signingOut}
         />
-      )}
-
-      {showWorkspace && saveNote && (
-        <div className="mx-auto w-full max-w-6xl px-4 pt-3 sm:px-6">
-          <p role="status" className="text-sm text-[var(--warning)]">
-            {saveNote}
-          </p>
-        </div>
       )}
 
       {showWorkspace && futureNotice && (

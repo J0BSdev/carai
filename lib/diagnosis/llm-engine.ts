@@ -507,7 +507,7 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       strongVerifierUsed: withHints.strongVerifierUsed,
     };
 
-    return { case: diagnosticCase, nextStep };
+    return { case: diagnosticCase, nextStep, caseVersion: 0 };
   }
 
   async continueCase(
@@ -545,21 +545,19 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
     const existing = incoming.observations.find(
       (item) => item.stepId === currentStep.id,
     );
-    if (existing) {
-      if (!sameObservation(existing, nextObservation)) {
-        throw new ObservationConflictError(
-          `Conflicting second result for step ${currentStep.id}`,
-        );
-      }
-      throw new InvalidObservationError(
-        "Ovaj korak već ima zabilježen rezultat.",
+    if (existing && !sameObservation(existing, nextObservation)) {
+      throw new ObservationConflictError(
+        `Conflicting second result for step ${currentStep.id}`,
       );
     }
 
-    const caseWithObservation: DiagnosticCase = {
-      ...incoming,
-      observations: [...incoming.observations, nextObservation],
-    };
+    // Same observation already present: resume AI step (e.g. after a failed save).
+    const caseWithObservation: DiagnosticCase = existing
+      ? incoming
+      : {
+          ...incoming,
+          observations: [...incoming.observations, nextObservation],
+        };
 
     const withHints = await attachPriorResolvedHints(caseWithObservation);
     const nextStep = await callVerifiedDiagnosticStep(withHints, {
@@ -572,6 +570,6 @@ export class LlmDiagnosticEngine implements DiagnosticEngine {
       strongVerifierUsed: withHints.strongVerifierUsed,
     };
 
-    return { case: updated, nextStep };
+    return { case: updated, nextStep, caseVersion: 0 };
   }
 }
