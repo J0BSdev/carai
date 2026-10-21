@@ -7,6 +7,8 @@ import type {
 } from "@/lib/diagnosis/types";
 
 const MAX_CANDIDATES = 8;
+/** DTC rows fetched once, then ranked — high enough not to drop older priority hits per user. */
+const DTC_FETCH_CAP = 1000;
 const PROBLEM_SNIPPET = 100;
 const FAULT_SNIPPET = 80;
 const CACHE_MAX_ENTRIES = 200;
@@ -30,6 +32,13 @@ type PriorCaseSearchInput = {
   problemText: string;
   vehicle?: VehicleInfo;
   dtcs?: string[];
+};
+
+type SearchKeys = {
+  make: string | null;
+  model: string | null;
+  engine: string | null;
+  dtcs: string[];
 };
 
 type CacheEntry = {
@@ -98,13 +107,58 @@ function ilikeContains(value: string): string {
   return `%${escaped}%`;
 }
 
+/** Split engine labels into comparable tokens (handles "1.9TDI" vs "1.9 TDI"). */
+function engineTokens(raw: string): string[] {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, " ")
+    .replace(/(\d+(?:\.\d+)?)/g, " $1 ")
+    .replace(/([a-z]+)/g, " $1 ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/**
+ * Exact = same normalized designation; partial = all tokens of the shorter
+ * appear in the longer (same code, different spacing/order noise).
+ * Avoids raw ILIKE false friends like "2.0" ⊂ "12.0".
+ */
+function matchEngine(
+  query: string | null,
+  rowVal: string | null,
+): "exact" | "partial" | "none" {
+  if (!query || !rowVal) return "none";
+  const qt = engineTokens(query);
+  const rt = engineTokens(rowVal);
+  if (!qt.length || !rt.length) return "none";
+
+  const qc = qt.join("");
+  const rc = rt.join("");
+  if (qc === rc) return "exact";
+  if (
+    qt.length === rt.length &&
+    [...qt].sort().join("\0") === [...rt].sort().join("\0")
+  ) {
+    return "exact";
+  }
+
+  const [shorter, longer] = qt.length <= rt.length ? [qt, rt] : [rt, qt];
+  if (shorter.join("").length < 3) return "none";
+  if (!shorter.every((t) => longer.includes(t))) return "none";
+  return "partial";
+}
+
+function modelsMatch(query: string | null, rowVal: string | null): boolean {
+  if (!query || !rowVal) return false;
+  const a = norm(query);
+  const b = norm(rowVal);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
 /** Null when there is no DTC / model / engine to search on. */
-function searchableKeys(query: PriorCaseSearchInput): {
-  make: string | null;
-  model: string | null;
-  engine: string | null;
-  dtcs: string[];
-} | null {
+function searchableKeys(query: PriorCaseSearchInput): SearchKeys | null {
   const make = query.vehicle?.make?.trim() || null;
   const model = query.vehicle?.model?.trim() || null;
   const engine = query.vehicle?.engine?.trim() || null;
@@ -147,7 +201,7 @@ async function fetchMatchingRows(
   excludeCaseId: string,
   make: string | null,
   orFilter: string,
-  matchVehicle?: { engine?: string | null; model?: string | null },
+  limit: number,
 ): Promise<PriorCaseRow[]> {
   let builder = supabase
     .from("diagnostic_cases")
@@ -161,23 +215,11 @@ async function fetchMatchingRows(
   if (make) {
     builder = builder.ilike("vehicle_make", ilikeContains(make));
   }
-  if (matchVehicle?.engine) {
-    builder = builder.ilike(
-      "vehicle_engine",
-      ilikeContains(matchVehicle.engine),
-    );
-  }
-  if (matchVehicle?.model) {
-    builder = builder.ilike(
-      "vehicle_model",
-      ilikeContains(matchVehicle.model),
-    );
-  }
   const { data, error } = await builder
     .or(orFilter)
     .order("updated_at", { ascending: false })
     .order("id", { ascending: false })
-    .limit(MAX_CANDIDATES);
+    .limit(limit);
   if (error) {
     console.error("[prior-cases] query failed", error.message);
     return [];
@@ -186,19 +228,51 @@ async function fetchMatchingRows(
   return data as PriorCaseRow[];
 }
 
-/** Merge priority tiers in order; each tier is already sorted updated_at DESC, id. */
-function mergeTiers(tiers: PriorCaseRow[][]): PriorCaseRow[] {
-  const out: PriorCaseRow[] = [];
-  const seen = new Set<string>();
-  for (const tier of tiers) {
-    for (const row of tier) {
-      if (out.length >= MAX_CANDIDATES) return out;
-      if (seen.has(row.id)) continue;
-      seen.add(row.id);
-      out.push(row);
-    }
+function compareStable(a: PriorCaseRow, b: PriorCaseRow): number {
+  const byDate = b.updated_at.localeCompare(a.updated_at);
+  if (byDate !== 0) return byDate;
+  return b.id.localeCompare(a.id);
+}
+
+/** Priority 1–4 for DTC rows; lower number = higher priority. */
+function dtcRowPriority(row: PriorCaseRow, keys: SearchKeys): number {
+  const engineOk =
+    keys.engine != null && matchEngine(keys.engine, row.vehicle_engine) !== "none";
+  const modelOk =
+    keys.model != null && modelsMatch(keys.model, row.vehicle_model);
+  if (keys.engine && keys.model && engineOk && modelOk) return 1;
+  if (keys.engine && engineOk) return 2;
+  if (keys.model && modelOk) return 3;
+  return 4;
+}
+
+function pickDtcCandidates(
+  rows: PriorCaseRow[],
+  keys: SearchKeys,
+): PriorCaseRow[] {
+  return [...rows]
+    .map((row) => ({ row, priority: dtcRowPriority(row, keys) }))
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return compareStable(a.row, b.row);
+    })
+    .slice(0, MAX_CANDIDATES)
+    .map((item) => item.row);
+}
+
+function appendUnique(
+  out: PriorCaseRow[],
+  rows: PriorCaseRow[],
+  accept: (row: PriorCaseRow) => boolean,
+): void {
+  const seen = new Set(out.map((r) => r.id));
+  const sorted = [...rows].sort(compareStable);
+  for (const row of sorted) {
+    if (out.length >= MAX_CANDIDATES) return;
+    if (seen.has(row.id) || !accept(row)) continue;
+    seen.add(row.id);
+    out.push(row);
   }
-  return out;
 }
 
 async function searchPriorResolvedCases(
@@ -226,40 +300,50 @@ async function searchPriorResolvedCases(
 
   const ex = query.excludeCaseId;
   const make = keys.make;
-  const empty: PriorCaseRow[] = [];
+  const picked: PriorCaseRow[] = [];
 
-  // One query per applicable tier so a lower tier limit cannot drop a higher match.
-  const [dtcEngineModel, dtcEngine, dtcModel, dtcOnly, engineOnly, modelOnly] =
-    await Promise.all([
-      dtcOr && keys.engine && keys.model
-        ? fetchMatchingRows(supabase, ex, make, dtcOr, {
-            engine: keys.engine,
-            model: keys.model,
-          })
-        : empty,
-      dtcOr && keys.engine
-        ? fetchMatchingRows(supabase, ex, make, dtcOr, {
-            engine: keys.engine,
-          })
-        : empty,
-      dtcOr && keys.model
-        ? fetchMatchingRows(supabase, ex, make, dtcOr, {
-            model: keys.model,
-          })
-        : empty,
-      dtcOr ? fetchMatchingRows(supabase, ex, make, dtcOr) : empty,
-      engineOr ? fetchMatchingRows(supabase, ex, make, engineOr) : empty,
-      modelOr ? fetchMatchingRows(supabase, ex, make, modelOr) : empty,
-    ]);
+  // Single DTC fetch → rank by priority in memory (no 4× duplicate DTC queries).
+  if (dtcOr) {
+    const dtcRows = await fetchMatchingRows(
+      supabase,
+      ex,
+      make,
+      dtcOr,
+      DTC_FETCH_CAP,
+    );
+    picked.push(...pickDtcCandidates(dtcRows, keys));
+  }
 
-  return mergeTiers([
-    dtcEngineModel,
-    dtcEngine,
-    dtcModel,
-    dtcOnly,
-    engineOnly,
-    modelOnly,
-  ]).map(toHint);
+  // Fill remaining slots: motor, then model (only if needed).
+  if (picked.length < MAX_CANDIDATES && engineOr && keys.engine) {
+    const engineRows = await fetchMatchingRows(
+      supabase,
+      ex,
+      make,
+      engineOr,
+      MAX_CANDIDATES,
+    );
+    appendUnique(
+      picked,
+      engineRows,
+      (row) => matchEngine(keys.engine, row.vehicle_engine) !== "none",
+    );
+  }
+
+  if (picked.length < MAX_CANDIDATES && modelOr && keys.model) {
+    const modelRows = await fetchMatchingRows(
+      supabase,
+      ex,
+      make,
+      modelOr,
+      MAX_CANDIDATES,
+    );
+    appendUnique(picked, modelRows, (row) =>
+      modelsMatch(keys.model, row.vehicle_model),
+    );
+  }
+
+  return picked.map(toHint);
 }
 
 function priorSearchFingerprint(diagnosticCase: DiagnosticCase): string {
