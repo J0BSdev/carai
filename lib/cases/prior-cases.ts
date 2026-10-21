@@ -98,22 +98,6 @@ function ilikeContains(value: string): string {
   return `%${escaped}%`;
 }
 
-/**
- * Spaced + compact forms so SQL finds "1.9 TDI" and "1.9TDI".
- * Not similarity logic — only writing variants of the same query string.
- */
-function engineIlikeOr(engine: string): string {
-  const spaced = engine.trim().replace(/\s+/g, " ");
-  const compact = spaced.replace(/\s+/g, "");
-  const patterns = new Set<string>([ilikeContains(spaced)]);
-  if (compact.length >= 2 && compact !== spaced) {
-    patterns.add(ilikeContains(compact));
-  }
-  return [...patterns]
-    .map((p) => `vehicle_engine.ilike.${p}`)
-    .join(",");
-}
-
 /** Null when there is no DTC / model / engine to search on. */
 function searchableKeys(query: PriorCaseSearchInput): {
   make: string | null;
@@ -184,7 +168,7 @@ async function fetchTier(
     builder = builder.ilike("vehicle_make", ilikeContains(keys.make));
   }
   if (tier.engine && keys.engine) {
-    builder = builder.or(engineIlikeOr(keys.engine));
+    builder = builder.ilike("vehicle_engine", ilikeContains(keys.engine));
   }
   if (tier.model && keys.model) {
     builder = builder.ilike("vehicle_model", ilikeContains(keys.model));
