@@ -32,11 +32,7 @@ function rowToRecord(row: {
   turn_lock_step_id: string | null;
   turn_lock_until: string | null;
   turn_lock_token: string | null;
-  source?: string;
 }): CaseRecord {
-  if (row.source === "manual") {
-    throw new Error("Ručno unesen kvar nema CarAI dijagnostiku.");
-  }
   return {
     caseData: caseForStorage(row.case_data),
     version: row.case_version,
@@ -103,6 +99,8 @@ export async function loadOwnedCase(
     throw new Error("Dohvat slučaja nije uspio.");
   }
   if (!data) return null;
+  // Manual rows are not diagnosable — same as a missing CarAI case (404 path).
+  if (data.source === "manual") return null;
   return rowToRecord(data);
 }
 

@@ -7,23 +7,13 @@ type AIAnalysisStateProps = {
   mode?: "init" | "reanalyze";
 };
 
-export default function AIAnalysisState({
-  active,
-  mode = "reanalyze",
-}: AIAnalysisStateProps) {
+function ActiveAnalysis({ mode }: { mode: "init" | "reanalyze" }) {
   const [phase, setPhase] = useState<"analyze" | "next">("analyze");
 
   useEffect(() => {
-    if (!active) {
-      setPhase("analyze");
-      return;
-    }
-    setPhase("analyze");
     const id = window.setTimeout(() => setPhase("next"), 1800);
     return () => window.clearTimeout(id);
-  }, [active, mode]);
-
-  if (!active) return null;
+  }, [mode]);
 
   const isInit = mode === "init";
   const statusText =
@@ -55,4 +45,12 @@ export default function AIAnalysisState({
       </div>
     </section>
   );
+}
+
+export default function AIAnalysisState({
+  active,
+  mode = "reanalyze",
+}: AIAnalysisStateProps) {
+  if (!active) return null;
+  return <ActiveAnalysis mode={mode} />;
 }
