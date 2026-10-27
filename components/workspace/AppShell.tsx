@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-type NavKey = "new" | "active" | "history" | "settings";
+type NavKey = "chat" | "active" | "history" | "settings";
 
 type AppShellProps = {
   children: ReactNode;
@@ -47,16 +47,16 @@ export default function AppShell({
 
         <nav className="flex flex-1 flex-col gap-1 px-2">
           <NavBtn
-            active={activeNav === "new"}
+            active={activeNav === "chat"}
             collapsed={collapsed}
-            label="Novi slučaj"
-            onClick={() => onNavigate("new")}
-            icon={<PlusIcon />}
+            label="Chat"
+            onClick={() => onNavigate("chat")}
+            icon={<ChatIcon />}
           />
           <NavBtn
             active={activeNav === "active"}
             collapsed={collapsed}
-            label="Aktivni slučaj"
+            label="Dijagnostika"
             onClick={() => onNavigate("active")}
             icon={<PulseIcon />}
             disabled={!hasActiveCase}
@@ -92,15 +92,15 @@ export default function AppShell({
             <p className="text-sm font-semibold">CarAI</p>
             <p className="truncate text-xs text-[var(--muted)]">
               {hasActiveCase
-                ? `Aktivni slučaj${caseElapsed ? ` · ${caseElapsed}` : ""}`
-                : "AI dijagnostički workspace"}
+                ? `Dijagnostika${caseElapsed ? ` · ${caseElapsed}` : ""}`
+                : "Chat · dijagnostika"}
             </p>
           </div>
           <div className="hidden min-w-0 lg:block">
             <p className="text-sm text-[var(--muted)]">
               {hasActiveCase
-                ? `Aktivni slučaj${caseElapsed ? ` · ${caseElapsed}` : ""}`
-                : "Nema aktivnog slučaja"}
+                ? `Aktivna dijagnostika${caseElapsed ? ` · ${caseElapsed}` : ""}`
+                : "Slobodni chat"}
             </p>
           </div>
           <div className="flex items-center gap-2">{topRight}</div>
@@ -111,14 +111,14 @@ export default function AppShell({
         {/* Mobile bottom nav */}
         <nav className="surface-3 sticky bottom-0 z-30 flex border-t border-[var(--border)] px-2 py-2 lg:hidden pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           <MobileNav
-            active={activeNav === "new"}
-            label="Novi"
-            onClick={() => onNavigate("new")}
-            icon={<PlusIcon />}
+            active={activeNav === "chat"}
+            label="Chat"
+            onClick={() => onNavigate("chat")}
+            icon={<ChatIcon />}
           />
           <MobileNav
             active={activeNav === "active"}
-            label="Slučaj"
+            label="Dijagnoza"
             onClick={() => onNavigate("active")}
             icon={<PulseIcon />}
             disabled={!hasActiveCase}
@@ -220,10 +220,15 @@ function MobileNav({
   );
 }
 
-function PlusIcon() {
+function ChatIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path
+        d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H12l-4 3.5V15H7.5A2.5 2.5 0 0 1 5 12.5v-6Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

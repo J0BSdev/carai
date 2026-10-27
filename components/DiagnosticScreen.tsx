@@ -34,6 +34,7 @@ import DiagnosisCompletion from "@/components/workspace/DiagnosisCompletion";
 import EvidenceTimeline from "@/components/workspace/EvidenceTimeline";
 import HowToTestDrawer from "@/components/workspace/HowToTestDrawer";
 import HypothesisPanel from "@/components/workspace/HypothesisPanel";
+import ChatScreen from "@/components/ChatScreen";
 import NewCaseExperience from "@/components/workspace/NewCaseExperience";
 import NextActionCard from "@/components/workspace/NextActionCard";
 import QuickAddMenu from "@/components/workspace/QuickAddMenu";
@@ -41,7 +42,7 @@ import ResultModal from "@/components/workspace/ResultModal";
 import VehicleHeader from "@/components/workspace/VehicleHeader";
 
 type Phase = "intake" | "active" | "completed";
-type NavKey = "new" | "active" | "history" | "settings";
+type NavKey = "chat" | "active" | "history" | "settings";
 
 function elapsedLabel(iso: string): string {
   const mins = Math.max(
@@ -149,7 +150,9 @@ export default function DiagnosticScreen({
   const requestGeneration = useRef(0);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [nav, setNav] = useState<NavKey>("new");
+  const [nav, setNav] = useState<NavKey>("chat");
+  /** Manual intake when "Pokreni dijagnostiku" has no chat user text yet. */
+  const [diagnoseIntake, setDiagnoseIntake] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
   const [cantOpen, setCantOpen] = useState(false);
   const [howToOpen, setHowToOpen] = useState(false);
@@ -220,7 +223,26 @@ export default function DiagnosticScreen({
     setCantOpen(false);
     setHowToOpen(false);
     setHypOpen(false);
-    setNav("new");
+    setDiagnoseIntake(false);
+    setNav("chat");
+  }
+
+  function startDiagnosisFromChat(handoffText: string) {
+    const text = handoffText.trim();
+    setError(null);
+    setFailedRequest(null);
+    setDiagnoseIntake(true);
+    setNav("active");
+    setPhase("intake");
+    setDiagnosticCase(null);
+    setNextStep(null);
+    setProblemText(text);
+    if (!text) return;
+    // runDiagnose owns loading flags (avoid stuck loading on early return).
+    void runDiagnose({
+      action: "start",
+      problemText: text,
+    });
   }
 
   function openStoredCase(stored: DiagnosticCase) {
@@ -234,6 +256,7 @@ export default function DiagnosticScreen({
     setCantOpen(false);
     setHowToOpen(false);
     setHypOpen(false);
+    setDiagnoseIntake(true);
     setProblemText(stored.problemText);
     setDiagnosticCase(stored);
     const last = stored.steps[stored.steps.length - 1] ?? null;
@@ -286,7 +309,8 @@ export default function DiagnosticScreen({
       );
       if (isStart) {
         setPhase("intake");
-        setNav("new");
+        setDiagnoseIntake(true);
+        setNav("active");
       }
     } finally {
       if (generation === requestGeneration.current) {
@@ -424,21 +448,27 @@ export default function DiagnosticScreen({
       setNav("settings");
       return;
     }
-    if (key === "new") {
-      resetCase();
+    if (key === "chat") {
+      setNav("chat");
       return;
     }
-    if (key === "active" && diagnosticCase) {
+    if (key === "active" && (diagnosticCase || diagnoseIntake)) {
       setNav("active");
     }
   }
 
   const commands = [
     {
-      id: "new",
-      label: "Novi dijagnostički slučaj",
+      id: "chat",
+      label: "Otvori chat",
       enabled: true,
-      run: () => resetCase(),
+      run: () => setNav("chat"),
+    },
+    {
+      id: "diagnose",
+      label: "Pokreni dijagnostiku",
+      enabled: true,
+      run: () => startDiagnosisFromChat(problemText),
     },
     {
       id: "result",
@@ -473,7 +503,9 @@ export default function DiagnosticScreen({
     },
   ];
 
-  const showWorkspace = nav === "new" || nav === "active";
+  const showWorkspace = nav === "active";
+  const showChat = nav === "chat";
+  const hasDiagnoseSession = Boolean(diagnosticCase) || diagnoseIntake;
 
   return (
     <AppShell
@@ -481,7 +513,7 @@ export default function DiagnosticScreen({
       onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
       activeNav={nav}
       onNavigate={onNavigate}
-      hasActiveCase={Boolean(diagnosticCase)}
+      hasActiveCase={hasDiagnoseSession}
       caseElapsed={
         diagnosticCase ? elapsedLabel(diagnosticCase.createdAt) : undefined
       }
@@ -522,15 +554,15 @@ export default function DiagnosticScreen({
               Prijava
             </button>
           )}
-          {phase !== "intake" && (
+          {hasDiagnoseSession ? (
             <button
               type="button"
               onClick={resetCase}
               className="min-h-10 rounded-xl border border-[var(--border-strong)] px-3 text-sm"
             >
-              Novi slučaj
+              Zatvori dijagnostiku
             </button>
-          )}
+          ) : null}
         </>
       }
     >
@@ -560,6 +592,14 @@ export default function DiagnosticScreen({
           configured={persistenceConfigured}
           onSignOut={() => void signOut()}
           signingOut={signingOut}
+        />
+      )}
+
+      {showChat && (
+        <ChatScreen
+          signedIn={user != null}
+          persistenceConfigured={persistenceConfigured}
+          onStartDiagnosis={startDiagnosisFromChat}
         />
       )}
 

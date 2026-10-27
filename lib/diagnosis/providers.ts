@@ -74,29 +74,20 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
   }
 }
 
+export type AnthropicChatMessage = {
+  role: "user" | "assistant";
+  content: string | Array<Record<string, unknown>>;
+};
+
 /** Plain Claude Messages call: model + max_tokens + system + messages (no temperature). */
 async function fetchAnthropicText(params: {
   apiKey: string;
   model: string;
   system: string;
-  user: string;
+  messages: AnthropicChatMessage[];
   maxTokens?: number;
-  image?: TurnImage;
 }): Promise<AnthropicResult> {
   const started = Date.now();
-  const content = params.image
-    ? [
-        {
-          type: "image",
-          source: {
-            type: "base64",
-            media_type: params.image.mediaType,
-            data: params.image.data,
-          },
-        },
-        { type: "text", text: params.user },
-      ]
-    : params.user;
   const response = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -117,7 +108,7 @@ async function fetchAnthropicText(params: {
           cache_control: { type: "ephemeral", ttl: "1h" },
         },
       ],
-      messages: [{ role: "user", content }],
+      messages: params.messages,
     }),
   });
 
@@ -209,6 +200,51 @@ function emitCall(
   });
 }
 
+function singleUserMessages(
+  user: string,
+  image?: TurnImage,
+): AnthropicChatMessage[] {
+  if (!image) return [{ role: "user", content: user }];
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: image.mediaType,
+            data: image.data,
+          },
+        },
+        { type: "text", text: user },
+      ],
+    },
+  ];
+}
+
+/** Free-form Claude chat (plain text). Reuses the same Messages API path as diagnosis. */
+export async function callAnthropicChat(params: {
+  apiKey: string;
+  model: string;
+  system: string;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  maxTokens?: number;
+}): Promise<string> {
+  const result = await fetchAnthropicText({
+    apiKey: params.apiKey,
+    model: params.model,
+    system: params.system,
+    messages: params.messages,
+    maxTokens: params.maxTokens ?? 4096,
+  });
+  if (result.stopReason === "max_tokens") {
+    // Still return partial text for chat — better than failing the turn.
+    return result.text;
+  }
+  return result.text;
+}
+
 /** Claude diagnostic call (plain text JSON). No format-repair retries. */
 export async function callAnthropicJson(params: {
   apiKey: string;
@@ -219,7 +255,13 @@ export async function callAnthropicJson(params: {
   image?: TurnImage;
   telemetry?: AiCallMeta;
 }): Promise<string> {
-  const primary = await fetchAnthropicText(params);
+  const primary = await fetchAnthropicText({
+    apiKey: params.apiKey,
+    model: params.model,
+    system: params.system,
+    messages: singleUserMessages(params.user, params.image),
+    maxTokens: params.maxTokens,
+  });
   emitCall(
     params.telemetry,
     "anthropic",
