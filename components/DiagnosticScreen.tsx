@@ -228,7 +228,7 @@ export default function DiagnosticScreen({
   }
 
   function startDiagnosisFromChat(handoffText: string) {
-    const text = handoffText.trim();
+    // Prefill intake only — mechanic reviews/edits before Claude runs.
     setError(null);
     setFailedRequest(null);
     setDiagnoseIntake(true);
@@ -236,13 +236,7 @@ export default function DiagnosticScreen({
     setPhase("intake");
     setDiagnosticCase(null);
     setNextStep(null);
-    setProblemText(text);
-    if (!text) return;
-    // runDiagnose owns loading flags (avoid stuck loading on early return).
-    void runDiagnose({
-      action: "start",
-      problemText: text,
-    });
+    setProblemText(handoffText.trim());
   }
 
   function openStoredCase(stored: DiagnosticCase) {

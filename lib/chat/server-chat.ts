@@ -1,6 +1,7 @@
 import { generateChatReply } from "@/lib/chat/engine";
 import { conversationTitleFromMessages } from "@/lib/chat/handoff";
 import {
+  ChatConflictError,
   loadChatConversation,
   saveChatConversation,
 } from "@/lib/chat/store";
@@ -26,6 +27,8 @@ export class ChatAiError extends Error {
     this.conversation = conversation;
   }
 }
+
+export { ChatConflictError };
 
 function userIdOf(access: UsageAccess & { ok: true }): string | null {
   return access.user?.id ?? null;
@@ -93,40 +96,55 @@ export async function chatSend(input: {
   const userId = userIdOf(input.access);
   const now = new Date().toISOString();
 
-  let conversation: ChatConversation;
+  let base: ChatConversation;
+  let claimExpected: number | null;
+
   if (input.conversationId) {
     const existing = await loadChatConversation(input.conversationId, userId);
     if (!existing) {
       throw new ChatError("Razgovor nije pronađen.");
     }
-    conversation = existing;
+    base = existing;
+    claimExpected = existing.revision;
   } else {
-    conversation = {
+    base = {
       id: crypto.randomUUID(),
       title: "Novi razgovor",
       messages: [],
       createdAt: now,
       updatedAt: now,
+      revision: 0,
     };
+    claimExpected = null;
   }
 
-  const withUser = withUserTurn(conversation, text);
+  const withUser = withUserTurn(base, text);
+
+  // Claim the next turn before Claude so a concurrent request cannot overwrite.
+  let claimed: ChatConversation;
+  try {
+    claimed = await saveChatConversation(withUser, userId, claimExpected);
+  } catch (error) {
+    if (error instanceof ChatConflictError) throw error;
+    throw error;
+  }
 
   let reply: string;
   try {
-    reply = await generateChatReply(withUser.messages);
+    reply = await generateChatReply(claimed.messages);
   } catch (error) {
-    const saved = await saveChatConversation(withUser, userId);
     const detail =
       error instanceof Error ? error.message : "AI odgovor nije uspio.";
-    throw new ChatAiError(detail, saved);
+    throw new ChatAiError(detail, claimed);
   }
 
   const assistantMessage = newMessage("assistant", reply);
   const completed: ChatConversation = {
-    ...withUser,
-    messages: [...withUser.messages, assistantMessage],
+    ...claimed,
+    messages: [...claimed.messages, assistantMessage],
   };
 
-  return saveChatConversation(completed, userId);
+  // Second CAS: attach assistant reply. Conflict here means another writer won —
+  // user turn is already durable; do not pretend the assistant message was saved.
+  return saveChatConversation(completed, userId, claimed.revision);
 }

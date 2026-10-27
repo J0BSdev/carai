@@ -13,6 +13,8 @@ export type ChatConversation = {
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
+  /** Optimistic-concurrency counter; bumped on every successful save. */
+  revision: number;
 };
 
 export type ChatSummary = {

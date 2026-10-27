@@ -118,6 +118,7 @@ export default function ChatScreen({
           messages: [optimisticUser],
           createdAt: optimisticUser.createdAt,
           updatedAt: optimisticUser.createdAt,
+          revision: 0,
         };
       }
       const last = prev.messages[prev.messages.length - 1];

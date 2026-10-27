@@ -1,6 +1,11 @@
 import { authorizeUsage, usageDeniedResponse } from "@/lib/access";
 import { DIAGNOSTIC_UNAVAILABLE_MESSAGE } from "@/lib/diagnosis/errors";
-import { ChatAiError, ChatError, chatSend } from "@/lib/chat/server-chat";
+import {
+  ChatAiError,
+  ChatConflictError,
+  ChatError,
+  chatSend,
+} from "@/lib/chat/server-chat";
 
 function parseBody(body: unknown): {
   conversationId?: string;
@@ -41,6 +46,9 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof ChatError) {
       return Response.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof ChatConflictError) {
+      return Response.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof ChatAiError) {
       console.error("[chat] ai failed", error.message);

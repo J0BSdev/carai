@@ -46,12 +46,18 @@ export function parseChatConversation(row: {
   messages: unknown;
   created_at: string;
   updated_at: string;
+  revision?: number | null;
 }): ChatConversation {
+  const revision =
+    typeof row.revision === "number" && Number.isInteger(row.revision)
+      ? row.revision
+      : 0;
   return {
     id: row.id,
     title: row.title?.trim() || "Novi razgovor",
     messages: parseChatMessages(row.messages),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    revision,
   };
 }
